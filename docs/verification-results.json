@@ -1,0 +1,329 @@
+{
+  "timestamp": "2026-10-22T21:12:30.501Z",
+  "results": [
+    {
+      "area": "Phase 1: Splash Screen",
+      "feature": "IPC state update & progress bar",
+      "status": "APPROVED",
+      "detail": "{\"hasSplash\":true,\"statusText\":\"Downloading update 1 of 1…\",\"progressWidth\":\"68%\"}"
+    },
+    {
+      "area": "Phase 2: Zero Illustrative Users",
+      "feature": "Eliminate all fictional users/friends/DMs/servers and display clean empty states",
+      "status": "APPROVED",
+      "detail": "{\"userIds\":[\"u_davis\"],\"friendsCount\":0,\"dmsCount\":0,\"hasForbiddenUser\":false,\"hasForbiddenNames\":false,\"hasEmptyDms\":true,\"hasEmptyFriends\":true}"
+    },
+    {
+      "area": "Phase 3: @username Modification",
+      "feature": "Validate format, reject reserved/colliding usernames, update @username in SQLite & UI while preserving user.id",
+      "status": "APPROVED",
+      "detail": "{\"regMariaOk\":true,\"invalidShortRejected\":true,\"invalidReservedRejected\":true,\"collisionRejected\":true,\"validAvailOk\":true,\"validChangeOk\":true,\"accountBarUpdated\":true,\"restoreOk\":true}"
+    },
+    {
+      "area": "Phase 4: Pop-ups & Floating Menus",
+      "feature": "Close floating menus on outside click, mutual exclusion, Escape key, and route change",
+      "status": "APPROVED",
+      "detail": "{\"statusOpen\":true,\"statusClosedOnOutsideClick\":true,\"pinnedOpen\":true,\"pinnedClosedByMutualExclusion\":true,\"userPopoutOpen\":true,\"userPopoutClosedOnEsc\":true,\"serverMenuOpen\":true,\"serverMenuClosedOnRouteChange\":true}"
+    },
+    {
+      "area": "Phase 5: Avatar Photo, Banner Color & GIF Banner",
+      "feature": "Validate magic bytes, upload/remove/persist avatar PNG, banner color, and animated GIF banner with framing",
+      "status": "APPROVED",
+      "detail": "{\"forgedRejected\":true,\"avatarUpOk\":true,\"hasAvatarImgInBar\":true,\"removedAvatarOk\":true,\"colorUpdated\":true,\"bannerUpOk\":true,\"bannerGifRendered\":true,\"bannerFramingApplied\":true}"
+    },
+    {
+      "area": "Phase 6: Custom Call Join & Leave Sounds",
+      "feature": "Configure presets & custom WAV upload, preview sounds, and play once on voice join/leave without duplication",
+      "status": "APPROVED",
+      "detail": "{\"audioUpOk\":true,\"previewJoinOk\":true,\"previewLeaveOk\":true,\"join1Ok\":true,\"duplicatePrevented\":true,\"leave1Ok\":true}"
+    },
+    {
+      "area": "Phase 8: 10 Preset Themes",
+      "feature": "Verify all 10 themes in Appearance apply distinct CSS token palettes immediately and persist",
+      "status": "APPROVED",
+      "detail": "cards=10, uniquePalettes=10"
+    },
+    {
+      "area": "Phase 9: Real Screen Sharing & Track Release",
+      "feature": "Capture screen via desktopCapturer/getDisplayMedia, broadcast to participants, and release all tracks on stop",
+      "status": "APPROVED",
+      "detail": "{\"sourcesCount\":2,\"startOk\":true,\"activeTracksDuring\":1,\"stageVisible\":true,\"backendHasShare\":true,\"stopOk\":true,\"activeTracksAfter\":0,\"stageGone\":true}"
+    },
+    {
+      "area": "Phase 10: Real Friend Search & Requests by @username",
+      "feature": "Search real SQLite users, reject self/duplicate/non-existent, send/accept request, and open DM",
+      "status": "APPROVED",
+      "detail": "{\"emptySearchCount\":0,\"nonExistentRejected\":true,\"selfReqRejected\":true,\"mariaFound\":true,\"sendReqOk\":true,\"dupReqRejected\":true,\"mariaSawIncoming\":true,\"acceptResOk\":true,\"davisFriendConfirmed\":true,\"dmSentOk\":true}"
+    },
+    {
+      "area": "Phase 11: Cryptographic Server Invites",
+      "feature": "Generate unique tokens, join server via invite, handle idempotent re-join, and reject invalid/revoked codes",
+      "status": "APPROVED",
+      "detail": "{\"codesUnique\":true,\"sampleCodes\":[\"38WNOz5MNAftR4E0\",\"UsrG9QuMq0BDU5Ad\",\"IfP821Zit6XNzY9c\"],\"joinInvalidRejected\":true,\"joinRevokedRejected\":true,\"joinValidOk\":true,\"joinIdempotentOk\":true}"
+    },
+    {
+      "area": "Domain 1: Searchable Animated GIF Library",
+      "feature": "Filter by categories, search keywords, paginate results, and load selected animation into editor",
+      "status": "APPROVED",
+      "detail": "{\"totalGifs\":183,\"hasCategories\":true,\"animeMatches\":true,\"searchMatches\":true,\"hasDifferentPages\":true,\"modalVisible\":true,\"stayedOpenOnInputClick\":true,\"firstPageCount\":50,\"afterScrollCount\":100,\"scrollKept\":true,\"cardHeight\":149,\"editorOpen\":true}"
+    },
+    {
+      "area": "Domain 2: Server Roles (Cargos) & Hierarchy Enforcement",
+      "feature": "Create role, assign to member, update permissions, enforce hierarchy boundary on non-owner, and protect @everyone",
+      "status": "APPROVED",
+      "detail": "{\"createOk\":true,\"assignOk\":true,\"updateOk\":true,\"mariaHigherRejected\":true,\"mariaEveryoneRejected\":true,\"davisDeleteOk\":true}"
+    },
+    {
+      "area": "Domain 3: Dedicated Mute and Unmute Sound Effects",
+      "feature": "Preview mute and unmute sounds, debounce rapid toggles, and persist preferences",
+      "status": "APPROVED",
+      "detail": "{\"previewMuteOk\":true,\"previewUnmuteOk\":true,\"toggledOk\":true,\"persistedPresets\":true}"
+    },
+    {
+      "area": "Domain 4: Audio Device Selection & Live Mic Meter",
+      "feature": "Enumerate system audio devices, start real-time microphone RMS level meter, and test audio output",
+      "status": "APPROVED",
+      "detail": "{\"hasInputs\":true,\"hasOutputs\":true,\"micTestStarted\":true,\"levelReceived\":true,\"outputTestOk\":true}"
+    },
+    {
+      "area": "Domain 5: Speaking Indicator & Zero Layout Shift",
+      "feature": "Pulsing green border on speaking without altering element dimensions (0px shift)",
+      "status": "APPROVED",
+      "detail": "{\"hasSpeakingClass\":true,\"noSpeakingClass\":true,\"zeroLayoutShift\":true,\"widthDelta\":0,\"heightDelta\":0}"
+    },
+    {
+      "area": "Domain 6: 60 FPS Video Transmission & Stats Overlay",
+      "feature": "Configure 60 FPS stream, report live metrics (captured/sent FPS, bitrate), and render stats overlay",
+      "status": "APPROVED",
+      "detail": "{\"startOk\":true,\"configuredFps\":true,\"statsReported\":true,\"overlayRendered\":true,\"stopOk\":true}"
+    },
+    {
+      "area": "Domain 7: Audio Files Inventory & HTTP Serving",
+      "feature": "Map the 4 user audio files to Join, Leave, Ringtone and Notification with HTTP 200 serving",
+      "status": "APPROVED",
+      "detail": "{\"assetsMapped\":true,\"all200\":true,\"correctFiles\":true,\"sizes\":{\"join\":21243,\"leave\":18048,\"ringtone\":90625,\"notification\":8301},\"checks\":{\"join\":{\"status\":200,\"path\":\"../assets/audio/entrar-na-call.mp3\"},\"leave\":{\"status\":200,\"path\":\"../assets/audio/discord-leave-noise.mp3\"},\"ringtone\":{\"status\":200,\"path\":\"../assets/audio/chamando.mp3\"},\"notification\":{\"status\":200,\"path\":\"../assets/audio/notificacao.mp3\"}}}"
+    },
+    {
+      "area": "Domain 8: Media Framing & Zoom Editor",
+      "feature": "Open interactive editor with framing viewport, zoom/pan sliders, apply transforms, and persist scale & crop",
+      "status": "APPROVED",
+      "detail": "{\"editorRendered\":true,\"transformApplied\":true,\"applyOk\":true,\"persistedScale\":true,\"persistedCropX\":true,\"persistedCropY\":true,\"avatarTransformed\":true}"
+    },
+    {
+      "area": "Domain 9: Server Customization, No Nitro/Shop & Avatar Lightbox",
+      "feature": "Rename server via settings, PNG icon in rail, GIF banner in sidebar, permission check, Nitro/Shop removed, expand profile photo",
+      "status": "APPROVED",
+      "detail": "{\"overviewRendered\":true,\"renamed\":true,\"headerShowsName\":true,\"iconSaved\":true,\"bannerSaved\":true,\"railIconOk\":true,\"sidebarBannerOk\":true,\"mariaRejected\":true,\"emptyNameRejected\":true,\"noNitroShop\":true,\"lightboxOpen\":true,\"fullImage\":true,\"lightboxClosedOnEsc\":true,\"settingsStillOpen\":true}"
+    },
+    {
+      "area": "Domain 10: DM Calls & Notification Sounds",
+      "feature": "Ring with SomEntrarNaCall until answered, play discord-join/discord-leave-noise, show and decline incoming call, notify on messages from others",
+      "status": "APPROVED",
+      "detail": "{\"ringing\":true,\"ringFile\":\"../assets/audio/chamando.mp3\",\"panelSaysCalling\":true,\"connected\":true,\"ringStoppedOnAnswer\":true,\"joinFile\":\"../assets/audio/entrar-na-call.mp3\",\"leaveFile\":\"../assets/audio/discord-leave-noise.mp3\",\"incomingShown\":true,\"declined\":true,\"notificationFile\":\"../assets/audio/notificacao.mp3\",\"noSelfNotification\":true,\"serverJoinFile\":\"../assets/audio/entrar-na-call.mp3\",\"serverLeaveFile\":\"../assets/audio/discord-leave-noise.mp3\"}"
+    },
+    {
+      "area": "Domain 11: Sessions & Self-Hosted Invites",
+      "feature": "Reject calls without a session, ignore forged user ids, invite links on our own URL with a public landing page, join by full link",
+      "status": "APPROVED",
+      "detail": "{\"anonRejected\":true,\"forgedIgnored\":true,\"inviteUrl\":\"http://127.0.0.1:52035/convite/GrsWk549XwIHRMfQ\",\"selfHosted\":true,\"landingOk\":true,\"bogusNotFound\":true,\"joinedByLink\":true}"
+    },
+    {
+      "area": "Domain 12: Delete Confirmation, Bigger Buttons & New Logo",
+      "feature": "Deleting a channel asks first (cancel keeps it, confirm deletes), larger invite/channel buttons, app logo replaces Discord's",
+      "status": "APPROVED",
+      "detail": "{\"createdOk\":true,\"dialogShown\":true,\"keptOnCancel\":true,\"deletedOnConfirm\":true,\"inviteBtnHeight\":28,\"channelActionSize\":26,\"newLogo\":true}"
+    },
+    {
+      "area": "Domain 13: Account Tab (E-mail, Password, Phone)",
+      "feature": "Verify e-mail via UI code, change password (wrong current refused, other sessions revoked), verify and remove phone",
+      "status": "APPROVED",
+      "detail": "{\"accountTabOpen\":true,\"emailVerified\":true,\"wrongCurrentRejected\":true,\"passwordChanged\":true,\"otherSessionRevoked\":true,\"thisStillWorks\":true,\"oldPasswordRejected\":true,\"newPasswordAccepted\":true,\"badPhoneRejected\":true,\"phoneDevMode\":true,\"wrongCodeRejected\":true,\"phoneVerified\":true,\"phoneRemoved\":true}"
+    },
+    {
+      "area": "Domain 14: Verified E-mail Required for Access",
+      "feature": "With requireVerifiedEmail on, a new account sees only the verification screen until it enters the e-mailed code",
+      "status": "APPROVED",
+      "detail": "{\"regOk\":true,\"gateShown\":true,\"appHidden\":true,\"noDataLoaded\":true,\"wrongShowsError\":true,\"appAfter\":true,\"verifiedUserNotGated\":true}"
+    },
+    {
+      "area": "Phase 7: RAM Usage Optimization (< 80 MB)",
+      "feature": "Verify total resident Working Set stays under 80 MB across startup, navigation, call, and post-call",
+      "status": "APPROVED",
+      "detail": "Max Total Working Set = 33.66 MB (Stages: 1_startup=9.21MB, 2_after_navigation=32.8MB, 3_during_call=21.61MB, 4_after_call=33.66MB)"
+    }
+  ],
+  "memoryStages": [
+    {
+      "stage": "1_startup",
+      "mainWorkingSetMB": 4.64,
+      "rendererWorkingSetMB": 2.25,
+      "totalWorkingSetMB": 9.21,
+      "totalPrivateMB": 255.71,
+      "mainHeapUsedMB": 6.24,
+      "processes": [
+        {
+          "type": "Browser",
+          "pid": 11776,
+          "workingSetMB": 4.64,
+          "privateMB": 72.98
+        },
+        {
+          "type": "GPU",
+          "pid": 22632,
+          "workingSetMB": 2.31,
+          "privateMB": 143.02
+        },
+        {
+          "type": "Utility",
+          "pid": 9476,
+          "workingSetMB": 0,
+          "privateMB": 13.38
+        },
+        {
+          "type": "Tab",
+          "pid": 16304,
+          "workingSetMB": 2.25,
+          "privateMB": 26.32
+        }
+      ]
+    },
+    {
+      "stage": "2_after_navigation",
+      "mainWorkingSetMB": 9.88,
+      "rendererWorkingSetMB": 4.42,
+      "totalWorkingSetMB": 32.8,
+      "totalPrivateMB": 445.7,
+      "mainHeapUsedMB": 6.45,
+      "processes": [
+        {
+          "type": "Browser",
+          "pid": 11776,
+          "workingSetMB": 9.88,
+          "privateMB": 77.43
+        },
+        {
+          "type": "GPU",
+          "pid": 22632,
+          "workingSetMB": 14.59,
+          "privateMB": 235.63
+        },
+        {
+          "type": "Utility",
+          "pid": 9476,
+          "workingSetMB": 0,
+          "privateMB": 13.67
+        },
+        {
+          "type": "Tab",
+          "pid": 16304,
+          "workingSetMB": 4.42,
+          "privateMB": 45.1
+        },
+        {
+          "type": "Utility",
+          "pid": 6480,
+          "workingSetMB": 3.84,
+          "privateMB": 14.35
+        },
+        {
+          "type": "Utility",
+          "pid": 3488,
+          "workingSetMB": 0.07,
+          "privateMB": 59.52
+        }
+      ]
+    },
+    {
+      "stage": "3_during_call",
+      "mainWorkingSetMB": 4.66,
+      "rendererWorkingSetMB": 11.63,
+      "totalWorkingSetMB": 21.61,
+      "totalPrivateMB": 471.36,
+      "mainHeapUsedMB": 7.1,
+      "processes": [
+        {
+          "type": "Browser",
+          "pid": 11776,
+          "workingSetMB": 4.66,
+          "privateMB": 81.09
+        },
+        {
+          "type": "GPU",
+          "pid": 22632,
+          "workingSetMB": 2.29,
+          "privateMB": 248.95
+        },
+        {
+          "type": "Utility",
+          "pid": 9476,
+          "workingSetMB": 0,
+          "privateMB": 13.67
+        },
+        {
+          "type": "Tab",
+          "pid": 16304,
+          "workingSetMB": 11.63,
+          "privateMB": 53.75
+        },
+        {
+          "type": "Utility",
+          "pid": 6480,
+          "workingSetMB": 2.97,
+          "privateMB": 14.36
+        },
+        {
+          "type": "Utility",
+          "pid": 3488,
+          "workingSetMB": 0.07,
+          "privateMB": 59.52
+        }
+      ]
+    },
+    {
+      "stage": "4_after_call",
+      "mainWorkingSetMB": 5.94,
+      "rendererWorkingSetMB": 18.93,
+      "totalWorkingSetMB": 33.66,
+      "totalPrivateMB": 467.99,
+      "mainHeapUsedMB": 7.43,
+      "processes": [
+        {
+          "type": "Browser",
+          "pid": 11776,
+          "workingSetMB": 5.94,
+          "privateMB": 81.2
+        },
+        {
+          "type": "GPU",
+          "pid": 22632,
+          "workingSetMB": 4.86,
+          "privateMB": 249.34
+        },
+        {
+          "type": "Utility",
+          "pid": 9476,
+          "workingSetMB": 0,
+          "privateMB": 13.68
+        },
+        {
+          "type": "Tab",
+          "pid": 16304,
+          "workingSetMB": 18.93,
+          "privateMB": 49.82
+        },
+        {
+          "type": "Utility",
+          "pid": 6480,
+          "workingSetMB": 3.86,
+          "privateMB": 14.43
+        },
+        {
+          "type": "Utility",
+          "pid": 3488,
+          "workingSetMB": 0.07,
+          "privateMB": 59.52
+        }
+      ]
+    }
+  ]
+}

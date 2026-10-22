@@ -1,0 +1,21 @@
+# Dependências e builds
+node_modules/
+dist/
+
+# Segredos locais (chaves de API) — use app.config.local.example.json como modelo
+app.config.local.json
+.env
+.env.*
+
+# Bancos de dados e uploads gerados em execução
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+uploads/
+
+# Sistema / editores
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+*.log

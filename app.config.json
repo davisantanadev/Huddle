@@ -1,0 +1,14 @@
+{
+  "appName": "Eco",
+  "publicUrl": "",
+  "invitePath": "/convite",
+  "requireVerifiedEmail": false,
+  "email": {
+    "provider": "resend",
+    "from": ""
+  },
+  "sms": {
+    "provider": "twilio",
+    "from": ""
+  }
+}

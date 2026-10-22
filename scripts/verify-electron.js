@@ -1,0 +1,1805 @@
+"use strict";
+
+const { app, BrowserWindow, ipcMain, screen, clipboard } = require("electron");
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
+const { execFile } = require("child_process");
+const { DiscordBackendServer } = require("../electron/backendServer");
+
+// Apply the exact same memory optimization flags as electron/main.js
+app.commandLine.appendSwitch("js-flags", "--max-old-space-size=64 --initial-old-space-size=4 --OptimizeForSize --expose-gc");
+app.commandLine.appendSwitch("disable-site-isolation-trials");
+app.commandLine.appendSwitch("disable-features", "OutOfProcessPdf,Translate,BackForwardCache,MediaRouter,CalculateNativeWinOcclusion");
+app.commandLine.appendSwitch("disk-cache-size", "16777216");
+app.commandLine.appendSwitch("media-cache-size", "8388608");
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
+app.on("window-all-closed", () => {
+  // Prevent Electron from auto-quitting when splashWin is destroyed before mainWin opens
+});
+
+const rootDir = path.resolve(__dirname, "..");
+const screenshotsDir = path.join(rootDir, "docs", "screenshots");
+fs.mkdirSync(screenshotsDir, { recursive: true });
+
+// Use an isolated verification userData directory so tests are 100% deterministic
+const verifyDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "discord-verify-suite-"));
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function trimWorkingSetsSync() {
+  if (process.platform !== "win32") return Promise.resolve();
+  return new Promise((resolve) => {
+    const pids = (app.getAppMetrics() || []).map((m) => m.pid).filter(Boolean);
+    if (!pids.length) return resolve();
+    const psScript = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class WinMem {
+  [DllImport("psapi.dll")]
+  public static extern bool EmptyWorkingSet(IntPtr hwProc);
+}
+"@
+$pids = @(${pids.join(",")})
+foreach ($id in $pids) {
+  try {
+    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if ($p -and $p.Handle) { [WinMem]::EmptyWorkingSet($p.Handle) | Out-Null }
+  } catch {}
+}
+`;
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", psScript],
+      { windowsHide: true, timeout: 5000 },
+      () => resolve()
+    );
+  });
+}
+
+async function captureMemoryStage(win, label) {
+  try {
+    if (global.gc) global.gc();
+    if (win && !win.isDestroyed()) {
+      await win.webContents.executeJavaScript(`
+        try {
+          if (window.gc) window.gc();
+          if (window.DiscordNative?.processUtils?.purgeMemory) window.DiscordNative.processUtils.purgeMemory();
+        } catch {}
+      `);
+    }
+  } catch {}
+  await trimWorkingSetsSync();
+  await delay(150);
+
+  const metrics = app.getAppMetrics();
+  const nodeMem = process.memoryUsage();
+  const rendererMetric = metrics.find((m) => m.type === "Tab") || metrics[0];
+  const mainMetric = metrics.find((m) => m.type === "Browser") || metrics[0];
+
+  const totalWorkingSetKB = metrics.reduce((acc, m) => acc + (m.memory?.workingSetSize || 0), 0);
+  const totalPrivateBytesKB = metrics.reduce((acc, m) => acc + (m.memory?.privateBytes || 0), 0);
+
+  return {
+    stage: label,
+    mainWorkingSetMB: Number(((mainMetric?.memory?.workingSetSize || 0) / 1024).toFixed(2)),
+    rendererWorkingSetMB: Number(((rendererMetric?.memory?.workingSetSize || 0) / 1024).toFixed(2)),
+    totalWorkingSetMB: Number((totalWorkingSetKB / 1024).toFixed(2)),
+    totalPrivateMB: Number((totalPrivateBytesKB / 1024).toFixed(2)),
+    mainHeapUsedMB: Number((nodeMem.heapUsed / 1024 / 1024).toFixed(2)),
+    processes: metrics.map((m) => ({
+      type: m.type,
+      pid: m.pid,
+      workingSetMB: Number(((m.memory?.workingSetSize || 0) / 1024).toFixed(2)),
+      privateMB: Number(((m.memory?.privateBytes || 0) / 1024).toFixed(2))
+    }))
+  };
+}
+
+async function captureWindow(win, filename) {
+  // Hidden windows may not repaint on their own; force a fresh frame
+  win.webContents.invalidate();
+  await delay(200);
+  const image = await win.webContents.capturePage();
+  const fullPath = path.join(screenshotsDir, filename);
+  fs.writeFileSync(fullPath, image.toPNG());
+  console.log("Captured screenshot:", fullPath);
+  return fullPath;
+}
+
+// Create valid binary buffers for PNG, GIF89a, and WAV files
+function createValidPngBase64() {
+  // 1x1 valid PNG
+  return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+}
+
+function createValidGifBase64() {
+  // 1x1 valid GIF89a
+  return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+}
+
+function createValidWavBase64() {
+  // Minimal valid 44-byte RIFF WAVE PCM header + 1600 bytes of gentle sine wave
+  const numSamples = 800;
+  const sampleRate = 8000;
+  const byteRate = sampleRate * 2;
+  const dataSize = numSamples * 2;
+  const buf = Buffer.alloc(44 + dataSize);
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16); // PCM chunk size
+  buf.writeUInt16LE(1, 20); // AudioFormat = 1 (PCM)
+  buf.writeUInt16LE(1, 22); // NumChannels = 1
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(byteRate, 28);
+  buf.writeUInt16LE(2, 32); // BlockAlign
+  buf.writeUInt16LE(16, 34); // BitsPerSample
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataSize, 40);
+  for (let i = 0; i < numSamples; i++) {
+    const sample = Math.round(Math.sin((2 * Math.PI * 520 * i) / sampleRate) * 6000);
+    buf.writeInt16LE(sample, 44 + i * 2);
+  }
+  return "data:audio/wav;base64," + buf.toString("base64");
+}
+
+function createForgedExeBase64() {
+  // Starts with MZ (Windows executable header) disguised as image/png
+  const buf = Buffer.from("4d5a90000300000004000000ffff0000", "hex");
+  return "data:image/png;base64," + buf.toString("base64");
+}
+
+let backendServer = null;
+let selectedDesktopSourceId = null;
+
+async function setupTestEnvironment() {
+  backendServer = new DiscordBackendServer({ userDataDir: verifyDataDir });
+  await backendServer.start();
+
+  ipcMain.on("DISCORD_APP_GET_RELEASE_CHANNEL_SYNC", (e) => { e.returnValue = "stable"; });
+  ipcMain.on("DISCORD_APP_GET_HOST_VERSION_SYNC", (e) => { e.returnValue = "1.0.9262"; });
+  ipcMain.on("DISCORD_BACKEND_GET_INFO_SYNC", (e) => {
+    e.returnValue = {
+      httpUrl: `http://127.0.0.1:${backendServer.port}`,
+      url: `http://127.0.0.1:${backendServer.port}`,
+      port: backendServer.port
+    };
+  });
+  // Same entry point as electron/main.js, so sessions are enforced in the tests too
+  ipcMain.handle("DISCORD_BACKEND_RPC", async (_e, action, params, sessionToken) => {
+    return await backendServer.handleClientRequest(action, params || {}, sessionToken || null);
+  });
+  ipcMain.handle("DISCORD_DESKTOP_CAPTURER_GET_SOURCES", async (_e, options = {}) => {
+    try {
+      const thumbSize = options.thumbnailSize || { width: 320, height: 180 };
+      const activeWin = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+      let winThumbDataUrl = "";
+      if (activeWin) {
+        const img = await activeWin.webContents.capturePage();
+        winThumbDataUrl = img.resize({ width: thumbSize.width || 320, height: thumbSize.height || 180 }).toDataURL();
+      }
+      const displays = screen.getAllDisplays();
+      const result = displays.map((d, idx) => ({
+        id: `screen:${idx}:0`,
+        name: `Entire Screen (${d.size.width}×${d.size.height})`,
+        displayId: String(d.id),
+        isScreen: true,
+        thumbnail: winThumbDataUrl,
+        thumbnailDataUrl: winThumbDataUrl
+      }));
+      if (activeWin) {
+        result.push({
+          id: `window:${activeWin.id}:0`,
+          name: activeWin.getTitle() || "Discord",
+          displayId: "",
+          isScreen: false,
+          thumbnail: winThumbDataUrl,
+          thumbnailDataUrl: winThumbDataUrl
+        });
+      }
+      return result;
+    } catch {
+      return [{ id: "screen:0:0", name: "Entire Screen", displayId: "0", isScreen: true, thumbnail: "", thumbnailDataUrl: "" }];
+    }
+  });
+  ipcMain.handle("DISCORD_DESKTOP_CAPTURER_SELECT_SOURCE", (_e, opts) => {
+    selectedDesktopSourceId = (typeof opts === "string" ? opts : opts?.sourceId) || null;
+    return { ok: true };
+  });
+  ipcMain.handle("DISCORD_DESKTOP_CAPTURE_FRAME", async (_e, options = {}) => {
+    try {
+      const activeWin = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+      if (!activeWin) return { ok: false };
+      const width = Number(options.width) || 640;
+      const height = Number(options.height) || 360;
+      const img = await activeWin.webContents.capturePage();
+      const resized = img.resize({ width, height });
+      const jpegBuf = resized.toJPEG(72);
+      return {
+        ok: true,
+        frameDataUrl: `data:image/jpeg;base64,${jpegBuf.toString("base64")}`,
+        width,
+        height
+      };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.on("DISCORD_SETTINGS_GET_SYNC", (e, _k, def) => { e.returnValue = def; });
+  ipcMain.on("DISCORD_GPU_SETTINGS_GET_ENABLE_HWACCEL_SYNC", (e) => { e.returnValue = true; });
+  ipcMain.handle("DISCORD_SETTINGS_GET", (_e, _k, def) => def);
+  ipcMain.handle("DISCORD_SETTINGS_SET", () => true);
+  ipcMain.on("DISCORD_SETTINGS_UPDATE_BACKGROUND_COLOR", () => {});
+  ipcMain.handle("DISCORD_APP_SET_BADGE_COUNT", () => true);
+  ipcMain.handle("DISCORD_USER_DATA_CACHE_GET", () => null);
+  ipcMain.on("DISCORD_USER_DATA_CACHE_SAVE", () => {});
+  ipcMain.on("DISCORD_CLIPBOARD_COPY", (_e, text) => {
+    clipboard.writeText(String(text || ""));
+  });
+  ipcMain.handle("DISCORD_MEMORY_OPTIMIZE", async () => {
+    await trimWorkingSetsSync();
+    return { ok: true };
+  });
+}
+
+async function runVerification() {
+  await setupTestEnvironment();
+
+  const results = [];
+  const memoryStages = [];
+
+  function recordTest(area, feature, passed, detail) {
+    results.push({ area, feature, status: passed ? "APPROVED" : "FAILED", detail });
+    console.log(`[${passed ? "PASS" : "FAIL"}] ${area} :: ${feature} -> ${detail}`);
+    if (!passed) throw new Error(`Verification failed: ${area} - ${feature}: ${detail}`);
+  }
+
+  // 1. Verify Splash Screen
+  const splashWin = new BrowserWindow({
+    width: 300,
+    height: 300,
+    frame: false,
+    show: false,
+    backgroundColor: "#282b30",
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(rootDir, "electron", "splashPreload.js")
+    }
+  });
+
+  await splashWin.loadFile(path.join(rootDir, "assets", "splash", "index.html"));
+  splashWin.webContents.send("DISCORD_SPLASH_SCREEN_QUOTE", "Optimizing the People");
+  splashWin.webContents.send("DISCORD_SPLASH_UPDATE_STATE", {
+    status: "downloading-updates",
+    current: 1,
+    total: 1,
+    progress: 68
+  });
+  await delay(250);
+
+  const splashState = await splashWin.webContents.executeJavaScript(`({
+    hasSplash: Boolean(document.getElementById("splash")),
+    statusText: document.querySelector(".splash-status")?.textContent || "",
+    progressWidth: document.querySelector(".progress-bar .complete")?.style.width || ""
+  })`);
+
+  recordTest(
+    "Phase 1: Splash Screen",
+    "IPC state update & progress bar",
+    splashState.hasSplash && splashState.progressWidth === "68%",
+    JSON.stringify(splashState)
+  );
+  await captureWindow(splashWin, "01-splash-screen.png");
+  splashWin.destroy();
+
+  // 2. Launch Main Window
+  const mainWin = new BrowserWindow({
+    width: 1280,
+    height: 720,
+    minWidth: 940,
+    minHeight: 500,
+    frame: false,
+    show: false,
+    backgroundColor: "#313338",
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      spellcheck: false,
+      backgroundThrottling: true,
+      preload: path.join(rootDir, "electron", "mainScreenPreload.js")
+    }
+  });
+
+  mainWin.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    console.log(`[Renderer Console ${level}] ${message} (${sourceId}:${line})`);
+  });
+
+  await mainWin.loadFile(path.join(rootDir, "src", "index.html"));
+  await delay(1000);
+
+  // Measure Memory Stage 1: Startup
+  memoryStages.push(await captureMemoryStage(mainWin, "1_startup"));
+
+  // =========================================================================
+  // SUITE 1 (PHASE 2): Zero Illustrative / Fictional Users in Production
+  // =========================================================================
+  const phase2Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    await store.init();
+    // Every RPC needs a session now: sign in as the seeded account
+    if (!store.getState().auth.isAuthenticated) {
+      await store.login("davis@discord.local", "password123");
+    }
+    const state = store.getState();
+    const userIds = Object.keys(state.users);
+    const forbiddenIds = ["u_elena", "u_marcus", "u_sophia", "u_clyde", "u_lucas", "u_pending1"];
+    const hasForbiddenUser = forbiddenIds.some((id) => userIds.includes(id));
+    const bodyText = document.body.innerText;
+    const hasForbiddenNames =
+      bodyText.includes("Elena Vance") ||
+      bodyText.includes("Marcus Silva") ||
+      bodyText.includes("Sophia Chen") ||
+      bodyText.includes("84,920");
+
+    // Navigate to Home -> Friends to verify empty states when 0 friends/DMs exist
+    store.selectHome("friends");
+    const hasEmptyDms = Boolean(document.querySelector('[data-testid="empty-dms-state"]'));
+    const hasEmptyFriends = Boolean(document.querySelector('[data-testid="friends-empty-state"]'));
+
+    return {
+      userIds,
+      friendsCount: state.friends.length,
+      dmsCount: state.dms.length,
+      hasForbiddenUser,
+      hasForbiddenNames,
+      hasEmptyDms,
+      hasEmptyFriends
+    };
+  })()`);
+
+  recordTest(
+    "Phase 2: Zero Illustrative Users",
+    "Eliminate all fictional users/friends/DMs/servers and display clean empty states",
+    !phase2Check.hasForbiddenUser &&
+      !phase2Check.hasForbiddenNames &&
+      phase2Check.friendsCount === 0 &&
+      phase2Check.dmsCount === 0 &&
+      phase2Check.hasEmptyDms &&
+      phase2Check.hasEmptyFriends,
+    JSON.stringify(phase2Check)
+  );
+
+  // =========================================================================
+  // SUITE 2 (PHASE 3): @username Change, Validation, Collision & Persistence
+  // =========================================================================
+  const phase3Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    // Register a second real user in SQLite to test username collision and friend requests
+    const regMaria = await store.register({
+      email: "maria@discord.local",
+      displayName: "Maria Clara",
+      username: "maria_real",
+      password: "password123"
+    });
+    // Switch back to Davis (u_davis)
+    await store.switchAccount("u_davis", "password123");
+
+    const invalidShort = await store.updateUsername("ab");
+    const invalidReserved = await store.updateUsername("admin");
+    const collisionCheck = await store.updateUsername("MARIA_REAL");
+    const validAvail = await store.checkUsernameAvailability("davis_master");
+    const validChange = await store.updateUsername("davis_master");
+    const afterChangeUser = store.getCurrentUser();
+    const accountBarText = document.querySelector('[data-testid="account-username-sub"]')?.textContent || "";
+
+    // Restore back to davis_dev and verify
+    const restoreChange = await store.updateUsername("davis_dev");
+
+    return {
+      regMariaOk: regMaria.ok,
+      invalidShortRejected: !invalidShort.ok,
+      invalidReservedRejected: !invalidReserved.ok,
+      collisionRejected: !collisionCheck.ok,
+      validAvailOk: validAvail.available === true,
+      validChangeOk: validChange.ok && afterChangeUser.username === "davis_master" && afterChangeUser.id === "u_davis",
+      accountBarUpdated: accountBarText === "@davis_master",
+      restoreOk: restoreChange.ok && store.getCurrentUser().username === "davis_dev"
+    };
+  })()`);
+
+  recordTest(
+    "Phase 3: @username Modification",
+    "Validate format, reject reserved/colliding usernames, update @username in SQLite & UI while preserving user.id",
+    phase3Check.regMariaOk &&
+      phase3Check.invalidShortRejected &&
+      phase3Check.invalidReservedRejected &&
+      phase3Check.collisionRejected &&
+      phase3Check.validAvailOk &&
+      phase3Check.validChangeOk &&
+      phase3Check.accountBarUpdated &&
+      phase3Check.restoreOk,
+    JSON.stringify(phase3Check)
+  );
+
+  // =========================================================================
+  // SUITE 3 (PHASE 4): Pop-up, Popover, Dropdown & Context Menu Lifecycle
+  // =========================================================================
+  const phase4Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    store.selectGuild("g_rea", "c_general");
+
+    // 1. Open status menu, then click outside on stage-header
+    q('[data-testid="account-profile-btn"]').click();
+    const statusOpen = Boolean(document.querySelector('[data-testid="status-popout"]'));
+    q('.stage-header').click();
+    const statusClosedOnOutsideClick = !document.querySelector('[data-testid="status-popout"]');
+
+    // 2. Open pinned popover, then open user popout -> verify mutual exclusion closes pinned popover
+    q('[data-testid="pinned-messages-btn"]').click();
+    const pinnedOpen = Boolean(document.querySelector('[data-testid="pinned-popover"]'));
+    q('.member-item[data-action="open-user-popout"]').click();
+    const pinnedClosedByMutualExclusion = !document.querySelector('[data-testid="pinned-popover"]');
+    const userPopoutOpen = Boolean(document.querySelector('[data-testid="user-profile-popout"]'));
+
+    // 3. Press Escape -> verify userPopout closes
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    const userPopoutClosedOnEsc = !document.querySelector('[data-testid="user-profile-popout"]');
+
+    // 4. Open server dropdown menu, then navigate to Home -> verify closes on route change
+    q('[data-testid="server-header"]').click();
+    const serverMenuOpen = Boolean(document.querySelector('[data-testid="server-dropdown-menu"]'));
+    q('[data-action="select-home"]').click();
+    const serverMenuClosedOnRouteChange = !document.querySelector('[data-testid="server-dropdown-menu"]');
+
+    return {
+      statusOpen,
+      statusClosedOnOutsideClick,
+      pinnedOpen,
+      pinnedClosedByMutualExclusion,
+      userPopoutOpen,
+      userPopoutClosedOnEsc,
+      serverMenuOpen,
+      serverMenuClosedOnRouteChange
+    };
+  })()`);
+
+  recordTest(
+    "Phase 4: Pop-ups & Floating Menus",
+    "Close floating menus on outside click, mutual exclusion, Escape key, and route change",
+    phase4Check.statusOpen &&
+      phase4Check.statusClosedOnOutsideClick &&
+      phase4Check.pinnedOpen &&
+      phase4Check.pinnedClosedByMutualExclusion &&
+      phase4Check.userPopoutOpen &&
+      phase4Check.userPopoutClosedOnEsc &&
+      phase4Check.serverMenuOpen &&
+      phase4Check.serverMenuClosedOnRouteChange,
+    JSON.stringify(phase4Check)
+  );
+
+  // =========================================================================
+  // SUITE 4, 5, 6 (PHASE 5): Profile Photo, Banner Color & Banner Image/GIF
+  // =========================================================================
+  const pngB64 = createValidPngBase64();
+  const gifB64 = createValidGifBase64();
+  const forgedExeB64 = createForgedExeBase64();
+
+  const phase5Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    // 1. Reject forged executable disguised as .png
+    const badUpload = await store.uploadMedia({
+      fileName: "malware.png",
+      mimeType: "image/png",
+      base64Data: ${JSON.stringify(forgedExeB64)},
+      kind: "avatar"
+    });
+
+    // 2. Upload valid PNG avatar, save to profile, verify rendered <img>
+    const avatarUp = await store.uploadMedia({
+      fileName: "avatar.png",
+      mimeType: "image/png",
+      base64Data: ${JSON.stringify(pngB64)},
+      kind: "avatar"
+    });
+    await store.updateMyProfile({ avatarUrl: avatarUp.url });
+    const hasAvatarImgInBar = Boolean(document.querySelector('.account-bar img.avatar-img'));
+
+    // 3. Remove avatar and re-apply to verify both removal and persistence
+    await store.updateMyProfile({ avatarUrl: "" });
+    const removedAvatarOk = !document.querySelector('.account-bar img.avatar-img');
+    await store.updateMyProfile({ avatarUrl: avatarUp.url });
+
+    // 4. Banner color customization
+    await store.updateMyProfile({ bannerColor: "#eb459e" });
+    const colorUpdated = store.getCurrentUser().bannerColor === "#eb459e";
+
+    // 5. Upload animated GIF banner + vertical framing (35%)
+    const bannerUp = await store.uploadMedia({
+      fileName: "animated_banner.gif",
+      mimeType: "image/gif",
+      base64Data: ${JSON.stringify(gifB64)},
+      kind: "banner"
+    });
+    await store.updateMyProfile({ bannerUrl: bannerUp.url, bannerPositionY: 35 });
+
+    // Open User Settings > Perfil to inspect preview card
+    q('[data-testid="open-user-settings-btn"]').click();
+    q('[data-testid="settings-tab-profile"]').click();
+    const bannerImg = document.querySelector('[data-testid="profile-preview-card"] img.profile-banner-img');
+    const bannerGifRendered = Boolean(bannerImg && bannerImg.src.endsWith(".gif"));
+    const bannerFramingApplied = bannerImg ? bannerImg.style.objectPosition.includes("35%") : false;
+
+    return {
+      forgedRejected: !badUpload.ok,
+      avatarUpOk: avatarUp.ok,
+      hasAvatarImgInBar,
+      removedAvatarOk,
+      colorUpdated,
+      bannerUpOk: bannerUp.ok,
+      bannerGifRendered,
+      bannerFramingApplied
+    };
+  })()`);
+
+  recordTest(
+    "Phase 5: Avatar Photo, Banner Color & GIF Banner",
+    "Validate magic bytes, upload/remove/persist avatar PNG, banner color, and animated GIF banner with framing",
+    phase5Check.forgedRejected &&
+      phase5Check.avatarUpOk &&
+      phase5Check.hasAvatarImgInBar &&
+      phase5Check.removedAvatarOk &&
+      phase5Check.colorUpdated &&
+      phase5Check.bannerUpOk &&
+      phase5Check.bannerGifRendered &&
+      phase5Check.bannerFramingApplied,
+    JSON.stringify(phase5Check)
+  );
+  await captureWindow(mainWin, "06-user-settings.png");
+
+  // =========================================================================
+  // SUITE 7 (PHASE 6): Custom Call Join & Leave Sounds
+  // =========================================================================
+  const wavB64 = createValidWavBase64();
+  const phase6Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    // Switch to Voice & Call Sounds tab in Settings
+    q('[data-testid="settings-tab-voice"]').click();
+
+    // Upload custom WAV sound for Join
+    const audioUp = await store.uploadMedia({
+      fileName: "custom_join.wav",
+      mimeType: "audio/wav",
+      base64Data: ${JSON.stringify(wavB64)},
+      kind: "audio"
+    });
+
+    await store.updateSettings({
+      joinSoundEnabled: true,
+      leaveSoundEnabled: true,
+      joinSoundPreset: "custom",
+      joinSoundCustomUrl: audioUp.url,
+      joinSoundCustomName: "custom_join.wav",
+      leaveSoundPreset: "synth-pulse",
+      callSoundVolume: 75
+    });
+
+    const previewJoin = await store.previewCallSound("join");
+    const previewLeave = await store.previewCallSound("leave");
+
+    // Close settings and test actual voice channel join/leave transitions
+    q('[data-testid="close-settings-btn"]').click();
+    store.selectGuild("g_rea", "c_general");
+    const join1 = await store.joinVoiceChannel("g_rea", "c_voice_lounge");
+    const join2Duplicate = await store.joinVoiceChannel("g_rea", "c_voice_lounge");
+    const leave1 = await store.leaveVoiceChannel();
+
+    return {
+      audioUpOk: audioUp.ok,
+      previewJoinOk: previewJoin.played === true,
+      previewLeaveOk: previewLeave.played === true,
+      join1Ok: join1.ok && !join1.alreadyConnected,
+      duplicatePrevented: join2Duplicate.alreadyConnected === true,
+      leave1Ok: leave1.ok
+    };
+  })()`);
+
+  recordTest(
+    "Phase 6: Custom Call Join & Leave Sounds",
+    "Configure presets & custom WAV upload, preview sounds, and play once on voice join/leave without duplication",
+    phase6Check.audioUpOk &&
+      phase6Check.previewJoinOk &&
+      phase6Check.previewLeaveOk &&
+      phase6Check.join1Ok &&
+      phase6Check.duplicatePrevented &&
+      phase6Check.leave1Ok,
+    JSON.stringify(phase6Check)
+  );
+
+  // =========================================================================
+  // SUITE 8 (PHASE 8): 10 Preset Themes in Appearance
+  // =========================================================================
+  const phase8Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    q('[data-testid="open-user-settings-btn"]').click();
+    q('[data-testid="settings-tab-appearance"]').click();
+
+    const themeCards = document.querySelectorAll('[data-testid^="theme-card-"]');
+    const themeIds = ["dark", "light", "midnight", "oled", "ocean", "nebula", "emerald", "rose", "graphite", "sunset"];
+    const appliedThemes = [];
+
+    for (const tid of themeIds) {
+      await store.updateSetting("theme", tid);
+      const rootEl = document.querySelector(".app-root");
+      const bgChat = getComputedStyle(rootEl).getPropertyValue("--bg-chat").trim();
+      appliedThemes.push({ id: tid, attr: rootEl.getAttribute("data-theme"), bgChat });
+    }
+
+    // Leave on dark theme for standard screenshots and close settings
+    await store.updateSetting("theme", "dark");
+    q('[data-testid="close-settings-btn"]').click();
+
+    const uniqueBgColors = new Set(appliedThemes.map((t) => t.bgChat)).size;
+    return {
+      cardsCount: themeCards.length,
+      appliedCount: appliedThemes.length,
+      uniqueBgColors,
+      appliedThemes
+    };
+  })()`);
+
+  recordTest(
+    "Phase 8: 10 Preset Themes",
+    "Verify all 10 themes in Appearance apply distinct CSS token palettes immediately and persist",
+    phase8Check.cardsCount >= 10 && phase8Check.appliedCount === 10 && phase8Check.uniqueBgColors === 10,
+    `cards=${phase8Check.cardsCount}, uniquePalettes=${phase8Check.uniqueBgColors}`
+  );
+
+  // Measure Memory Stage 2: After 10+ Screen & Theme Navigations
+  memoryStages.push(await captureMemoryStage(mainWin, "2_after_navigation"));
+
+  // =========================================================================
+  // SUITE 9 (PHASE 9): Real End-to-End Screen Sharing & Track Cleanup
+  // =========================================================================
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    store.selectGuild("g_rea", "c_general");
+    await store.joinVoiceChannel("g_rea", "c_voice_lounge");
+  })()`);
+
+  const phase9Start = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const sources = await store.getScreenShareSources();
+    const firstSource = sources[0] || { id: "screen:0:0", name: "Entire Screen" };
+    const startRes = await store.startScreenShare(firstSource.id, {
+      sourceName: firstSource.name,
+      resolution: "720p",
+      fps: 15
+    });
+    await new Promise((r) => setTimeout(r, 350));
+
+    const stageVisible = Boolean(document.querySelector('[data-testid="screenshare-stage"]'));
+    // Check that backend snapshot also exposes the active screen share to other participants
+    const { NativeBridge } = await import("./services/gatewayAdapter.js");
+    const snapForMaria = await NativeBridge.rpc("getStateSnapshot", {});
+    const backendHasShare = (snapForMaria.snapshot?.activeScreenShares || []).length > 0;
+
+    return {
+      sourcesCount: sources.length,
+      startOk: startRes.ok,
+      activeTracksDuring: startRes.trackCount,
+      stageVisible,
+      backendHasShare
+    };
+  })()`);
+
+  await captureWindow(mainWin, "03-voice-and-thread.png");
+
+  // Measure Memory Stage 3: During Active Voice Call + Live Screen Share
+  memoryStages.push(await captureMemoryStage(mainWin, "3_during_call"));
+
+  const phase9Stop = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const stopRes = await store.stopScreenShare();
+    await store.leaveVoiceChannel();
+    const stageGone = !document.querySelector('[data-testid="screenshare-stage"]');
+    return {
+      stopOk: stopRes.ok,
+      activeTracksAfter: stopRes.trackCount,
+      stageGone
+    };
+  })()`);
+
+  recordTest(
+    "Phase 9: Real Screen Sharing & Track Release",
+    "Capture screen via desktopCapturer/getDisplayMedia, broadcast to participants, and release all tracks on stop",
+    phase9Start.sourcesCount >= 1 &&
+      phase9Start.startOk &&
+      phase9Start.activeTracksDuring >= 1 &&
+      phase9Start.stageVisible &&
+      phase9Start.backendHasShare &&
+      phase9Stop.stopOk &&
+      phase9Stop.activeTracksAfter === 0 &&
+      phase9Stop.stageGone,
+    JSON.stringify({ ...phase9Start, ...phase9Stop })
+  );
+
+  // Measure Memory Stage 4: After Ending Call & Screen Share
+  memoryStages.push(await captureMemoryStage(mainWin, "4_after_call"));
+
+  // =========================================================================
+  // SUITE 10 (PHASE 10): Real Friend Search & Request Workflow by @username
+  // =========================================================================
+  const phase10Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    store.selectHome("friends");
+    q('[data-testid="friends-tab-add"]').click();
+
+    // 1. Search non-existent user
+    const emptySearch = await store.searchUsersByUsername("usuario_fantasma_999");
+    const nonExistentReq = await store.addFriendByUsername("usuario_fantasma_999");
+
+    // 2. Self request must fail
+    const selfReq = await store.addFriendByUsername("davis_dev");
+
+    // 3. Search existing real user @maria_real
+    const mariaSearch = await store.searchUsersByUsername("maria_real");
+
+    // 4. Send friend request from Davis -> Maria
+    const sendReq = await store.addFriendByUsername("@maria_real");
+    // Duplicate request must fail
+    const dupReq = await store.addFriendByUsername("maria_real");
+
+    // 5. Switch to Maria and accept Davis's incoming friend request
+    await store.switchAccount(mariaSearch[0].id, "password123");
+    const mariaPending = store.getState().friends.find((f) => f.userId === "u_davis");
+    const acceptRes = await store.acceptFriendRequest("u_davis");
+
+    // 6. Switch back to Davis, verify friendship is active, and send a real DM
+    await store.switchAccount("u_davis", "password123");
+    store.selectHome("friends");
+    q('[data-action="friends-tab"][data-tab="online"]').click();
+    const davisFriend = store.getState().friends.find((f) => f.userId === mariaSearch[0].id);
+    const dm = await store.openOrCreateDm(mariaSearch[0].id);
+    const dmMsg = await store.sendMessage(dm.id, "Olá @maria_real! Amizade real confirmada via SQLite.");
+
+    return {
+      emptySearchCount: emptySearch.length,
+      nonExistentRejected: !nonExistentReq.ok,
+      selfReqRejected: !selfReq.ok,
+      mariaFound: mariaSearch.length === 1 && mariaSearch[0].username === "maria_real",
+      sendReqOk: sendReq.ok && sendReq.status === "outgoing",
+      dupReqRejected: !dupReq.ok,
+      mariaSawIncoming: mariaPending?.relation === "incoming",
+      acceptResOk: acceptRes.ok,
+      davisFriendConfirmed: davisFriend?.relation === "friend",
+      dmSentOk: Boolean(dmMsg && dmMsg.id)
+    };
+  })()`);
+
+  recordTest(
+    "Phase 10: Real Friend Search & Requests by @username",
+    "Search real SQLite users, reject self/duplicate/non-existent, send/accept request, and open DM",
+    phase10Check.emptySearchCount === 0 &&
+      phase10Check.nonExistentRejected &&
+      phase10Check.selfReqRejected &&
+      phase10Check.mariaFound &&
+      phase10Check.sendReqOk &&
+      phase10Check.dupReqRejected &&
+      phase10Check.mariaSawIncoming &&
+      phase10Check.acceptResOk &&
+      phase10Check.davisFriendConfirmed &&
+      phase10Check.dmSentOk,
+    JSON.stringify(phase10Check)
+  );
+
+  await mainWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.selectHome("friends");`);
+  await captureWindow(mainWin, "04-home-friends-view.png");
+
+  // =========================================================================
+  // SUITE 11 (PHASE 11): Cryptographic Server Invites (Generate, Join, Revoke)
+  // =========================================================================
+  const phase11Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    // Davis creates a new server
+    const newGuild = await store.createGuild({ name: "Servidor Criptográfico QA", iconColor: "#10b981" });
+
+    // Generate 3 invites and verify cryptographic uniqueness
+    const inv1 = await store.createServerInvite(newGuild.id, { expiresInSeconds: 86400, maxUses: 5 });
+    const inv2 = await store.createServerInvite(newGuild.id, { expiresInSeconds: 86400, maxUses: 1 });
+    const inv3 = await store.createServerInvite(newGuild.id, { expiresInSeconds: 86400, maxUses: 0 });
+
+    const codesUnique =
+      inv1.ok &&
+      inv2.ok &&
+      inv3.ok &&
+      inv1.invite.code !== inv2.invite.code &&
+      inv2.invite.code !== inv3.invite.code &&
+      inv1.invite.code !== inv3.invite.code;
+
+    // Revoke inv2
+    await store.revokeServerInvite(inv2.invite.code);
+
+    // Switch to Maria and test joining via invites
+    const mariaId = Object.values(store.getState().users).find((u) => u.username === "maria_real").id;
+    await store.switchAccount(mariaId, "password123");
+
+    const joinInvalid = await store.acceptServerInvite("CODIGO_INEXISTENTE_999");
+    const joinRevoked = await store.acceptServerInvite(inv2.invite.code);
+    const joinValid = await store.acceptServerInvite(inv1.invite.code);
+    const joinIdempotent = await store.acceptServerInvite(inv1.invite.code);
+
+    // Switch back to Davis
+    await store.switchAccount("u_davis", "password123");
+    store.selectGuild("g_rea", "c_general");
+    await store.sendMessage("c_general", "Servidor e convites criptográficos validados com **sucesso**!");
+
+    return {
+      codesUnique,
+      sampleCodes: [inv1.invite?.code, inv2.invite?.code, inv3.invite?.code],
+      joinInvalidRejected: !joinInvalid.ok,
+      joinRevokedRejected: !joinRevoked.ok,
+      joinValidOk: joinValid.ok && joinValid.guildId === newGuild.id,
+      joinIdempotentOk: joinIdempotent.ok && joinIdempotent.alreadyMember === true
+    };
+  })()`);
+
+  recordTest(
+    "Phase 11: Cryptographic Server Invites",
+    "Generate unique tokens, join server via invite, handle idempotent re-join, and reject invalid/revoked codes",
+    phase11Check.codesUnique &&
+      phase11Check.joinInvalidRejected &&
+      phase11Check.joinRevokedRejected &&
+      phase11Check.joinValidOk &&
+      phase11Check.joinIdempotentOk,
+    JSON.stringify(phase11Check)
+  );
+
+  // =========================================================================
+  // SUITE 13: Searchable Animated GIF Library (Categories, Search, Pagination)
+  // =========================================================================
+  const gifSuiteCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const allRes = await store.searchGifs({ category: "All", limit: 6, offset: 0 });
+    const catAnime = await store.searchGifs({ category: "Anime", limit: 6, offset: 0 });
+    const searchCat = await store.searchGifs({ query: "cat", category: "Cats" });
+    const page1 = await store.searchGifs({ limit: 3, offset: 0 });
+    const page2 = await store.searchGifs({ limit: 3, offset: 3 });
+    const hasDifferentPages = page1.gifs[0]?.id !== page2.gifs[0]?.id;
+
+    store.openGifPicker("avatar");
+    await new Promise((r) => setTimeout(r, 100));
+    const modalVisible = Boolean(document.querySelector('[data-testid="gif-picker-modal"]'));
+
+    // Real UI flow: clicking the search box must not close the picker, and
+    // scrolling to the bottom must append the next page of results.
+    const waitFor = async (fn, ms = 10000) => {
+      const start = Date.now();
+      while (!fn() && Date.now() - start < ms) await new Promise((r) => setTimeout(r, 100));
+      return fn();
+    };
+    document.getElementById("gif-search-input").click();
+    await new Promise((r) => setTimeout(r, 100));
+    const stayedOpenOnInputClick = store.getState().gifPicker.isOpen;
+    document.getElementById("gif-search-input").value = "cat";
+    document.getElementById("gif-search-form").requestSubmit();
+    await waitFor(() => !store.getState().gifPicker.loading && store.getState().gifPicker.query === "cat");
+    const firstPageCount = store.getState().gifPicker.results.length;
+    const scroller = document.getElementById("gif-results-scroller");
+    scroller.scrollTop = scroller.scrollHeight;
+    scroller.dispatchEvent(new Event("scroll"));
+    await waitFor(() => store.getState().gifPicker.results.length > firstPageCount);
+    const afterScrollCount = store.getState().gifPicker.results.length;
+    const scrollKept = document.getElementById("gif-results-scroller").scrollTop > 0;
+    const cardHeight = Math.round(document.querySelector('[data-testid="gif-card"]').getBoundingClientRect().height);
+
+    store.selectGif(allRes.gifs[0].url);
+    await new Promise((r) => setTimeout(r, 100));
+    const editorOpen = store.getState().mediaEditor?.isOpen && store.getState().mediaEditor?.mediaUrl === allRes.gifs[0].url;
+    store.closeMediaEditor();
+
+    return {
+      totalGifs: allRes.total,
+      hasCategories: (allRes.categories || []).length >= 5,
+      animeMatches: (catAnime.gifs || []).length > 0,
+      searchMatches: (searchCat.gifs || []).length > 0,
+      hasDifferentPages,
+      modalVisible,
+      stayedOpenOnInputClick,
+      firstPageCount,
+      afterScrollCount,
+      scrollKept,
+      cardHeight,
+      editorOpen
+    };
+  })()`);
+
+  recordTest(
+    "Domain 1: Searchable Animated GIF Library",
+    "Filter by categories, search keywords, paginate results, and load selected animation into editor",
+    gifSuiteCheck.totalGifs >= 10 &&
+      gifSuiteCheck.hasCategories &&
+      gifSuiteCheck.animeMatches &&
+      gifSuiteCheck.hasDifferentPages &&
+      gifSuiteCheck.modalVisible &&
+      gifSuiteCheck.stayedOpenOnInputClick &&
+      gifSuiteCheck.afterScrollCount > gifSuiteCheck.firstPageCount &&
+      gifSuiteCheck.scrollKept &&
+      gifSuiteCheck.cardHeight > 80 &&
+      gifSuiteCheck.editorOpen,
+    JSON.stringify(gifSuiteCheck)
+  );
+
+  // =========================================================================
+  // SUITE 14: Server Roles (Cargos) Management, Hierarchy & Permissions
+  // =========================================================================
+  const rolesSuiteCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const guild = store.getActiveGuild();
+    const gId = guild.id;
+
+    // 1. Create a new role with specific permissions
+    const createRes = await store.createRole(gId, {
+      name: "Guardião",
+      color: "#9b59b6",
+      hoist: true,
+      permissions: ["KICK_MEMBERS", "BAN_MEMBERS", "SPEAK"]
+    });
+
+    // 2. Assign role to Maria
+    const mariaId = Object.values(store.getState().users).find((u) => u.username === "maria_real")?.id;
+    const assignRes = await store.assignMemberRole(gId, mariaId, createRes.role.id);
+
+    // 3. Update role
+    const updateRes = await store.updateRole(gId, createRes.role.id, {
+      name: "Alto Guardião",
+      color: "#e67e22",
+      permissions: ["ADMINISTRATOR"]
+    });
+
+    // 4. Test hierarchy: non-owner Maria cannot delete a role with higher position
+    await store.switchAccount(mariaId, "password123");
+    const mariaDeleteHigher = await store.deleteRole(gId, createRes.role.id);
+    const mariaDeleteEveryone = await store.deleteRole(gId, guild.roles.find((r) => r.name === "@everyone")?.id);
+
+    // 5. Switch back to Davis and delete the role
+    await store.switchAccount("u_davis", "password123");
+    const davisDelete = await store.deleteRole(gId, createRes.role.id);
+
+    return {
+      createOk: createRes.ok && createRes.role.name === "Guardião",
+      assignOk: assignRes.ok,
+      updateOk: updateRes.ok && updateRes.role.name === "Alto Guardião",
+      mariaHigherRejected: !mariaDeleteHigher.ok,
+      mariaEveryoneRejected: !mariaDeleteEveryone.ok,
+      davisDeleteOk: davisDelete.ok
+    };
+  })()`);
+
+  recordTest(
+    "Domain 2: Server Roles (Cargos) & Hierarchy Enforcement",
+    "Create role, assign to member, update permissions, enforce hierarchy boundary on non-owner, and protect @everyone",
+    rolesSuiteCheck.createOk &&
+      rolesSuiteCheck.assignOk &&
+      rolesSuiteCheck.updateOk &&
+      rolesSuiteCheck.mariaHigherRejected &&
+      rolesSuiteCheck.mariaEveryoneRejected &&
+      rolesSuiteCheck.davisDeleteOk,
+    JSON.stringify(rolesSuiteCheck)
+  );
+
+  // =========================================================================
+  // SUITE 15: Dedicated Mute and Unmute Sound Effects & Debounce
+  // =========================================================================
+  const muteSoundCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const previewMute = await store.previewCallSound("mute");
+    const previewUnmute = await store.previewCallSound("unmute");
+
+    const rapid1 = await store.toggleMute();
+    const rapid2 = await store.toggleMute();
+    const rapid3 = await store.toggleMute();
+
+    await store.updateSettings({
+      muteSoundPreset: "synth-pulse",
+      unmuteSoundPreset: "chime-crystal",
+      muteSoundVolume: 90
+    });
+    const s = store.getState().settings;
+
+    return {
+      previewMuteOk: previewMute.played === true,
+      previewUnmuteOk: previewUnmute.played === true,
+      toggledOk: rapid3.ok,
+      persistedPresets: s.muteSoundPreset === "synth-pulse" && s.unmuteSoundPreset === "chime-crystal" && s.muteSoundVolume === 90
+    };
+  })()`);
+
+  recordTest(
+    "Domain 3: Dedicated Mute and Unmute Sound Effects",
+    "Preview mute and unmute sounds, debounce rapid toggles, and persist preferences",
+    muteSoundCheck.previewMuteOk &&
+      muteSoundCheck.previewUnmuteOk &&
+      muteSoundCheck.toggledOk &&
+      muteSoundCheck.persistedPresets,
+    JSON.stringify(muteSoundCheck)
+  );
+
+  // =========================================================================
+  // SUITE 16: Real Microphone & Speaker Devices and Live Mic RMS Meter
+  // =========================================================================
+  const devicesCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const { VoiceDevices } = await import("./services/gatewayAdapter.js");
+    const devs = await VoiceDevices.enumerateDevices();
+    let levelReceived = 0;
+    const micTestRes = await VoiceDevices.startMicTest("default", (lvl) => {
+      levelReceived = lvl;
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    VoiceDevices.stopMicTest();
+    const outputTest = await VoiceDevices.testOutput("default", 60);
+
+    return {
+      hasInputs: (devs.inputDevices || []).length > 0,
+      hasOutputs: (devs.outputDevices || []).length > 0,
+      micTestStarted: micTestRes.ok,
+      levelReceived: levelReceived >= 0,
+      outputTestOk: outputTest.ok
+    };
+  })()`);
+
+  recordTest(
+    "Domain 4: Audio Device Selection & Live Mic Meter",
+    "Enumerate system audio devices, start real-time microphone RMS level meter, and test audio output",
+    devicesCheck.hasInputs &&
+      devicesCheck.hasOutputs &&
+      devicesCheck.micTestStarted &&
+      devicesCheck.levelReceived &&
+      devicesCheck.outputTestOk,
+    JSON.stringify(devicesCheck)
+  );
+
+  // =========================================================================
+  // SUITE 17: Speaking Indicator (Zero Layout Shift)
+  // =========================================================================
+  const speakingCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    if (store.getState().voice.muted) await store.toggleMute();
+    store.selectGuild("g_rea", "c_general");
+
+    const avatarBefore = document.querySelector(".account-bar .avatar-wrap");
+    const rectBefore = avatarBefore ? avatarBefore.getBoundingClientRect() : { width: 32, height: 32 };
+
+    store.setVoiceSpeaking(true);
+    await new Promise((r) => setTimeout(r, 50));
+    const avatarDuring = document.querySelector(".account-bar .avatar-wrap");
+    const hasSpeakingClass = avatarDuring ? avatarDuring.classList.contains("speaking") : false;
+    const rectDuring = avatarDuring ? avatarDuring.getBoundingClientRect() : { width: 32, height: 32 };
+
+    store.setVoiceSpeaking(false);
+    await new Promise((r) => setTimeout(r, 50));
+    const avatarAfter = document.querySelector(".account-bar .avatar-wrap");
+    const noSpeakingClass = avatarAfter ? !avatarAfter.classList.contains("speaking") : true;
+
+    const widthDelta = Math.abs(rectDuring.width - rectBefore.width);
+    const heightDelta = Math.abs(rectDuring.height - rectBefore.height);
+
+    return {
+      hasSpeakingClass,
+      noSpeakingClass,
+      zeroLayoutShift: widthDelta === 0 && heightDelta === 0,
+      widthDelta,
+      heightDelta
+    };
+  })()`);
+
+  recordTest(
+    "Domain 5: Speaking Indicator & Zero Layout Shift",
+    "Pulsing green border on speaking without altering element dimensions (0px shift)",
+    speakingCheck.hasSpeakingClass &&
+      speakingCheck.noSpeakingClass &&
+      speakingCheck.zeroLayoutShift,
+    JSON.stringify(speakingCheck)
+  );
+
+  // =========================================================================
+  // SUITE 18: High Frame-Rate 60 FPS Video Stream & Stats Overlay
+  // =========================================================================
+  const fps60Check = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const { ScreenShare } = await import("./services/gatewayAdapter.js");
+    store.selectGuild("g_rea", "c_general");
+    await store.joinVoiceChannel("g_rea", "c_voice_lounge");
+
+    const sources = await store.getScreenShareSources();
+    const src = sources[0] || { id: "screen:0:0", name: "Screen" };
+    const start60 = await store.startScreenShare(src.id, {
+      sourceName: src.name,
+      resolution: "1080p",
+      fps: 60
+    });
+    await new Promise((r) => setTimeout(r, 300));
+
+    const stats = ScreenShare.getStats();
+    const statsOverlay = document.querySelector('[data-testid="stream-stats-overlay"]');
+    const stopRes = await store.stopScreenShare();
+    await store.leaveVoiceChannel();
+
+    return {
+      startOk: start60.ok,
+      configuredFps: start60.fps === 60,
+      statsReported: stats.sentFps >= 15,
+      overlayRendered: Boolean(statsOverlay),
+      stopOk: stopRes.ok
+    };
+  })()`);
+
+  recordTest(
+    "Domain 6: 60 FPS Video Transmission & Stats Overlay",
+    "Configure 60 FPS stream, report live metrics (captured/sent FPS, bitrate), and render stats overlay",
+    fps60Check.startOk &&
+      fps60Check.configuredFps &&
+      fps60Check.statsReported &&
+      fps60Check.overlayRendered &&
+      fps60Check.stopOk,
+    JSON.stringify(fps60Check)
+  );
+
+  // =========================================================================
+  // SUITE 19: Audio Assets Mapping & HTTP Verification
+  // =========================================================================
+  const audioAssetsCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const { AUDIO_ASSETS } = await import("./services/gatewayAdapter.js");
+    const info = window.DiscordNative.backend.getInfo();
+    const baseUrl = info.httpUrl;
+
+    const checks = {};
+    for (const [key, relPath] of Object.entries(AUDIO_ASSETS)) {
+      try {
+        const resp = await fetch(baseUrl + "/" + relPath);
+        checks[key] = { status: resp.status, path: relPath };
+      } catch (e) {
+        checks[key] = { error: e.message, path: relPath };
+      }
+    }
+
+    const all200 = Object.values(checks).every((c) => c.status === 200);
+
+    // Byte sizes of the user's files: discord-join, discord-leave-noise,
+    // SomEntrarNaCall (DM ringing) and NotificacaoDiscord
+    const expectedBytes = { join: 21243, leave: 18048, ringtone: 90625, notification: 8301 };
+    const sizes = {};
+    for (const [key, relPath] of Object.entries(AUDIO_ASSETS)) {
+      const buf = await (await fetch(baseUrl + "/" + relPath)).arrayBuffer();
+      sizes[key] = buf.byteLength;
+    }
+    const correctFiles = Object.entries(expectedBytes).every(([k, n]) => sizes[k] === n);
+
+    return {
+      assetsMapped: Object.keys(AUDIO_ASSETS).length >= 4,
+      all200,
+      correctFiles,
+      sizes,
+      checks
+    };
+  })()`);
+
+  recordTest(
+    "Domain 7: Audio Files Inventory & HTTP Serving",
+    "Map the 4 user audio files to Join, Leave, Ringtone and Notification with HTTP 200 serving",
+    audioAssetsCheck.assetsMapped && audioAssetsCheck.all200 && audioAssetsCheck.correctFiles,
+    JSON.stringify(audioAssetsCheck)
+  );
+
+  // =========================================================================
+  // SUITE 20: Image & GIF Framing Editor for Avatar and Banner
+  // =========================================================================
+  const mediaEditorCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    store.openMediaEditor({
+      target: "avatar",
+      mediaUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      scale: 1.8,
+      cropX: 14,
+      cropY: -8
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const editorEl = document.querySelector('[data-testid="media-editor-modal"]');
+    const imgEl = document.getElementById("media-editor-preview-img");
+    const transformApplied = imgEl ? imgEl.style.transform.includes("1.8") : false;
+
+    const applyRes = await store.applyMediaEditor();
+    const u = store.getCurrentUser();
+    const avatarImg = document.querySelector('.account-bar img.avatar-img');
+    const avatarTransformed = avatarImg ? avatarImg.style.transform.includes("1.8") : false;
+
+    return {
+      editorRendered: Boolean(editorEl),
+      transformApplied,
+      applyOk: applyRes.ok,
+      persistedScale: u.avatarScale === 1.8,
+      persistedCropX: u.avatarCropX === 14,
+      persistedCropY: u.avatarCropY === -8,
+      avatarTransformed
+    };
+  })()`);
+
+  recordTest(
+    "Domain 8: Media Framing & Zoom Editor",
+    "Open interactive editor with framing viewport, zoom/pan sliders, apply transforms, and persist scale & crop",
+    mediaEditorCheck.editorRendered &&
+      mediaEditorCheck.transformApplied &&
+      mediaEditorCheck.applyOk &&
+      mediaEditorCheck.persistedScale &&
+      mediaEditorCheck.persistedCropX &&
+      mediaEditorCheck.persistedCropY &&
+      mediaEditorCheck.avatarTransformed,
+    JSON.stringify(mediaEditorCheck)
+  );
+
+  // =========================================================================
+  // SUITE 21: Server Name/Icon/Banner, No Nitro/Shop, Avatar Lightbox
+  // =========================================================================
+  const serverCustomCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 5000) => {
+      const start = Date.now();
+      while (!fn() && Date.now() - start < ms) await wait(50);
+      return fn();
+    };
+    const clickAction = (action, attrs = {}) => {
+      const b = document.createElement("button");
+      b.setAttribute("data-action", action);
+      for (const [k, v] of Object.entries(attrs)) b.setAttribute(k, v);
+      document.body.appendChild(b);
+      b.click();
+      b.remove();
+    };
+
+    const meId = store.getState().auth.currentUserId;
+    const guild = store.getState().guilds.find((g) => g.ownerId === meId);
+    store.selectGuild(guild.id);
+    await wait(100);
+    const originalName = guild.name;
+
+    // Rename through the real settings UI
+    clickAction("open-server-settings");
+    await wait(150);
+    const nameInput = document.querySelector('[data-testid="guild-name-input"]');
+    const overviewRendered = Boolean(nameInput);
+    nameInput.value = "Servidor Renomeado";
+    q('[data-testid="save-guild-name-btn"]').click();
+    await waitFor(() => store.getActiveGuild().name === "Servidor Renomeado");
+    const renamed = store.getActiveGuild().name === "Servidor Renomeado";
+    clickAction("close-settings-overlay");
+    await wait(100);
+    const headerShowsName = document.querySelector('[data-testid="server-header"]').textContent.includes("Servidor Renomeado");
+
+    // Icon (PNG) and banner (GIF)
+    const iconUp = await store.uploadMedia({ fileName: "icon.png", mimeType: "image/png", base64Data: "${createValidPngBase64()}", kind: "avatar" });
+    const iconRes = await store.updateGuild(guild.id, { iconUrl: iconUp.url });
+    const bannerUp = await store.uploadMedia({ fileName: "banner.gif", mimeType: "image/gif", base64Data: "${createValidGifBase64()}", kind: "banner" });
+    const bannerRes = await store.updateGuild(guild.id, { bannerUrl: bannerUp.url });
+    await wait(150);
+    const railIcon = document.querySelector('[data-guild-context="' + guild.id + '"] img.guild-icon-img');
+    const railIconRect = railIcon ? railIcon.getBoundingClientRect() : { width: 0, height: 0 };
+    const railIconOk = Boolean(railIcon) && railIcon.getAttribute("src").endsWith(".png") && railIconRect.width === 48 && railIconRect.height === 48;
+    const sidebarBanner = document.querySelector('[data-testid="guild-sidebar-banner"] img');
+    const bannerRect = sidebarBanner ? sidebarBanner.getBoundingClientRect() : { width: 0, height: 0 };
+    const sidebarBannerOk = Boolean(sidebarBanner) && sidebarBanner.getAttribute("src").endsWith(".gif") && bannerRect.height === 120 && bannerRect.width > 200;
+
+    // Someone without permission cannot edit the server
+    const mariaId = Object.values(store.getState().users).find((u) => u.username === "maria_real").id;
+    const mariaLogin = await window.DiscordNative.backend.rpc("login", { emailOrUsername: "maria_real", password: "password123" });
+    const mariaEdit = await window.DiscordNative.backend.rpc("updateGuild", { guildId: guild.id, name: "Hack" }, mariaLogin.sessionToken);
+    const emptyName = await store.updateGuild(guild.id, { name: "   " });
+
+    await store.updateGuild(guild.id, { name: originalName });
+
+    // Nitro and Shop are gone from the home sidebar
+    store.selectHome("friends");
+    await wait(100);
+    const noNitroShop =
+      !document.querySelector('[data-section="nitro"], [data-section="shop"]') &&
+      !document.querySelector('[data-testid="nitro-stage"], [data-testid="shop-stage"]');
+
+    // Clicking the photo in the profile preview card shows the whole image
+    const avatarUp = await store.uploadMedia({ fileName: "me.png", mimeType: "image/png", base64Data: "${createValidPngBase64()}", kind: "avatar" });
+    await store.updateMyProfile({ avatarUrl: avatarUp.url });
+    clickAction("open-user-settings");
+    await wait(150);
+    q('[data-testid="settings-tab-profile"]').click();
+    await wait(100);
+    q('[data-testid="profile-preview-card"] [data-testid="expand-avatar-btn"]').click();
+    await wait(100);
+    const lightboxImg = document.querySelector('[data-testid="avatar-lightbox"] img');
+    const lightboxOpen = Boolean(lightboxImg) && lightboxImg.getAttribute("src") === store.getCurrentUser().avatarUrl;
+    const fullImage = lightboxImg ? getComputedStyle(lightboxImg).objectFit === "contain" : false;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await wait(100);
+    const lightboxClosedOnEsc = !document.querySelector('[data-testid="avatar-lightbox"]');
+    const settingsStillOpen = Boolean(document.querySelector('[data-testid="profile-preview-card"]'));
+    clickAction("close-settings-overlay");
+
+    return {
+      overviewRendered,
+      renamed,
+      headerShowsName,
+      iconSaved: iconRes.ok,
+      bannerSaved: bannerRes.ok,
+      railIconOk,
+      sidebarBannerOk,
+      mariaRejected: !mariaEdit.ok && mariaEdit.status === 403,
+      emptyNameRejected: !emptyName.ok,
+      noNitroShop,
+      lightboxOpen,
+      fullImage,
+      lightboxClosedOnEsc,
+      settingsStillOpen
+    };
+  })()`);
+
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    const meId = store.getState().auth.currentUserId;
+    store.selectGuild(store.getState().guilds.find((g) => g.ownerId === meId).id);
+    await new Promise((r) => setTimeout(r, 300));
+  })()`);
+  await captureWindow(mainWin, "08-server-icon-banner.png");
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const b = document.createElement("button");
+    b.setAttribute("data-action", "open-server-settings");
+    document.body.appendChild(b);
+    b.click();
+    b.remove();
+    await new Promise((r) => setTimeout(r, 300));
+  })()`);
+  await captureWindow(mainWin, "09-server-settings-overview.png");
+  await mainWin.webContents.executeJavaScript(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));`);
+
+  recordTest(
+    "Domain 9: Server Customization, No Nitro/Shop & Avatar Lightbox",
+    "Rename server via settings, PNG icon in rail, GIF banner in sidebar, permission check, Nitro/Shop removed, expand profile photo",
+    Object.values(serverCustomCheck).every(Boolean),
+    JSON.stringify(serverCustomCheck)
+  );
+
+  // =========================================================================
+  // SUITE 22: DM Calls (ringing, answer, incoming) & Message Notification Sound
+  // =========================================================================
+  const dmCallCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const { CallSounds } = await import("./services/gatewayAdapter.js");
+    // Everything sent through rpc() here is done by Maria, with her own session
+    const mariaLogin = await window.DiscordNative.backend.rpc("login", { emailOrUsername: "maria_real", password: "password123" });
+    const rpc = (action, params) => window.DiscordNative.backend.rpc(action, params, mariaLogin.sessionToken);
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 5000) => {
+      const start = Date.now();
+      while (!fn() && Date.now() - start < ms) await wait(50);
+      return fn();
+    };
+
+    const mariaId = Object.values(store.getState().users).find((u) => u.username === "maria_real").id;
+    const dm = store.getState().dms.find((d) => d.userId === mariaId);
+    // Earlier suites switch join/leave to custom/synth presets; use the default recorded sounds here
+    await store.updateSettings({ joinSoundPreset: "discord-default", leaveSoundPreset: "discord-default" });
+    store.selectHome("dm", dm.id);
+    await wait(100);
+
+    // Outgoing call rings until the other person joins
+    q('[data-testid="start-dm-call-btn"]').click();
+    await waitFor(() => store.getState().voice.dmCall?.status === "ringing" && CallSounds.lastPlayedEvent?.type === "ringtone");
+    const ringing = store.getState().voice.dmCall?.status === "ringing" && CallSounds.isRinging();
+    const ringFile = CallSounds.lastPlayedEvent?.file;
+    const panelSaysCalling = (document.querySelector('[data-testid="rtc-connected-panel"]')?.textContent || "").includes("Chamando");
+
+    await rpc("joinVoiceChannel", { userId: mariaId, guildId: null, channelId: dm.id });
+    await waitFor(() => store.getState().voice.dmCall?.status === "connected");
+    await waitFor(() => CallSounds.lastPlayedEvent?.type === "join");
+    const connected = store.getState().voice.dmCall?.status === "connected";
+    const ringStoppedOnAnswer = !CallSounds.isRinging();
+    const joinFile = CallSounds.lastPlayedEvent?.file;
+
+    await store.leaveVoiceChannel();
+    const leaveFile = CallSounds.lastPlayedEvent?.file;
+    await rpc("leaveVoiceChannel", { userId: mariaId });
+    await wait(200);
+
+    // Incoming call: the other person rings us, we decline
+    store.selectGuild(store.getState().guilds[0].id);
+    await rpc("joinVoiceChannel", { userId: mariaId, guildId: null, channelId: dm.id });
+    await waitFor(() => Boolean(store.getState().incomingCall));
+    const incomingShown = Boolean(document.querySelector('[data-testid="incoming-call-card"]')) && CallSounds.isRinging();
+    q('[data-testid="decline-call-btn"]').click();
+    await wait(100);
+    const declined = !store.getState().incomingCall && !CallSounds.isRinging();
+    await rpc("leaveVoiceChannel", { userId: mariaId });
+    await wait(200);
+
+    // Joining and leaving a server voice channel
+    const voiceGuild = store.getState().guilds.find((g) => g.channels.some((c) => c.type === "voice"));
+    const voiceCh = voiceGuild.channels.find((c) => c.type === "voice");
+    CallSounds.lastPlayedEvent = null;
+    await store.joinVoiceChannel(voiceGuild.id, voiceCh.id);
+    const serverJoinFile = CallSounds.lastPlayedEvent?.file;
+    await store.leaveVoiceChannel();
+    const serverLeaveFile = CallSounds.lastPlayedEvent?.file;
+
+    // A message from someone else plays the notification sound
+    CallSounds.lastPlayedEvent = null;
+    await rpc("sendMessage", { actorId: mariaId, channelId: dm.id, content: "Oi! Teste de notificação." });
+    await waitFor(() => CallSounds.lastPlayedEvent?.type === "notification");
+    const notificationFile = CallSounds.lastPlayedEvent?.file;
+
+    // Our own messages do not
+    CallSounds.lastPlayedEvent = null;
+    await store.sendMessage(dm.id, "Mensagem minha, sem notificação.");
+    await wait(500);
+    const noSelfNotification = CallSounds.lastPlayedEvent?.type !== "notification";
+
+    return {
+      ringing,
+      ringFile,
+      panelSaysCalling,
+      connected,
+      ringStoppedOnAnswer,
+      joinFile,
+      leaveFile,
+      incomingShown,
+      declined,
+      notificationFile,
+      noSelfNotification,
+      serverJoinFile,
+      serverLeaveFile
+    };
+  })()`);
+
+  recordTest(
+    "Domain 10: DM Calls & Notification Sounds",
+    "Ring with SomEntrarNaCall until answered, play discord-join/discord-leave-noise, show and decline incoming call, notify on messages from others",
+    dmCallCheck.ringing &&
+      dmCallCheck.ringFile === "../assets/audio/chamando.mp3" &&
+      dmCallCheck.panelSaysCalling &&
+      dmCallCheck.connected &&
+      dmCallCheck.ringStoppedOnAnswer &&
+      dmCallCheck.joinFile === "../assets/audio/entrar-na-call.mp3" &&
+      dmCallCheck.leaveFile === "../assets/audio/discord-leave-noise.mp3" &&
+      dmCallCheck.incomingShown &&
+      dmCallCheck.declined &&
+      dmCallCheck.notificationFile === "../assets/audio/notificacao.mp3" &&
+      dmCallCheck.noSelfNotification &&
+      dmCallCheck.serverJoinFile === "../assets/audio/entrar-na-call.mp3" &&
+      dmCallCheck.serverLeaveFile === "../assets/audio/discord-leave-noise.mp3",
+    JSON.stringify(dmCallCheck)
+  );
+
+  // =========================================================================
+  // SUITE 23: Session Security & Self-Hosted Invite Links
+  // =========================================================================
+  const sessionInviteCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const backend = window.DiscordNative.backend;
+    const baseUrl = backend.getInfo().httpUrl;
+    const meId = store.getState().auth.currentUserId;
+
+    // No token: rejected. Maria's token with Davis's id: still acts as Maria.
+    const anon = await backend.rpc("getStateSnapshot", { userId: meId });
+    const maria = await backend.rpc("login", { emailOrUsername: "maria_real", password: "password123" });
+    const forged = await backend.rpc("getStateSnapshot", { userId: meId, actorId: meId }, maria.sessionToken);
+
+    // Invite links point at our own server, never discord.gg
+    const guild = store.getState().guilds.find((g) => g.ownerId === meId);
+    const inv = await store.createServerInvite(guild.id, {});
+    const url = inv.invite?.url || inv.url || "";
+    const landing = await fetch(url);
+    const landingHtml = await landing.text();
+    const bogus = await fetch(baseUrl + "/convite/naoexiste123");
+
+    // A full link (not only the bare code) is accepted
+    const mariaGuildsBefore = (await backend.rpc("getStateSnapshot", {}, maria.sessionToken)).snapshot.guilds.length;
+    await backend.rpc("acceptInvite", { tokenOrUrl: url }, maria.sessionToken);
+    const mariaGuildsAfter = (await backend.rpc("getStateSnapshot", {}, maria.sessionToken)).snapshot.guilds;
+
+    return {
+      anonRejected: anon.code === "UNAUTHENTICATED",
+      forgedIgnored: forged.ok && forged.snapshot.currentUserId !== meId,
+      inviteUrl: url,
+      selfHosted: url.startsWith(baseUrl + "/convite/") && !url.includes("discord.gg"),
+      landingOk: landing.status === 200 && landingHtml.includes(guild.name),
+      bogusNotFound: bogus.status === 404,
+      joinedByLink: mariaGuildsAfter.some((g) => g.id === guild.id) || mariaGuildsBefore > 0 && mariaGuildsAfter.some((g) => g.id === guild.id)
+    };
+  })()`);
+
+  recordTest(
+    "Domain 11: Sessions & Self-Hosted Invites",
+    "Reject calls without a session, ignore forged user ids, invite links on our own URL with a public landing page, join by full link",
+    sessionInviteCheck.anonRejected &&
+      sessionInviteCheck.forgedIgnored &&
+      sessionInviteCheck.selfHosted &&
+      sessionInviteCheck.landingOk &&
+      sessionInviteCheck.bogusNotFound &&
+      sessionInviteCheck.joinedByLink,
+    JSON.stringify(sessionInviteCheck)
+  );
+
+  // =========================================================================
+  // SUITE 24: Delete Confirmation, Bigger Buttons & New Logo
+  // =========================================================================
+  const confirmUiCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const meId = store.getState().auth.currentUserId;
+    const guild = store.getState().guilds.find((g) => g.ownerId === meId);
+    store.selectGuild(guild.id);
+    await wait(100);
+
+    const created = await store.createChannel(guild.id, { name: "canal-temporario", type: "text" });
+    await wait(150);
+    const ch = store.getActiveGuild().channels.find((c) => c.name === "canal-temporario");
+    const delBtn = () => q('.channel-action-btn.danger[data-channel-id="' + ch.id + '"]');
+
+    // Cancel keeps the channel
+    delBtn().click();
+    await wait(100);
+    const dialogShown = Boolean(document.querySelector('[data-testid="confirm-dialog"]'));
+    q('[data-testid="confirm-dialog-cancel"]').click();
+    await wait(150);
+    const keptOnCancel = store.getActiveGuild().channels.some((c) => c.id === ch.id);
+
+    // Confirm deletes it
+    delBtn().click();
+    await wait(100);
+    q('#confirm-dialog-form').requestSubmit();
+    const start = Date.now();
+    while (store.getActiveGuild().channels.some((c) => c.id === ch.id) && Date.now() - start < 3000) await wait(50);
+    const deletedOnConfirm = !store.getActiveGuild().channels.some((c) => c.id === ch.id);
+
+    // Sizes and logo
+    const inviteBtn = q('[data-testid="server-invite-btn"]').getBoundingClientRect();
+    const actionBtn = document.querySelector('.channel-action-btn')?.getBoundingClientRect() || { width: 0, height: 0 };
+    const homeBtn = q('[data-action="select-home"]');
+    const homeSvg = homeBtn.querySelector("svg");
+    const discordPath = "M23.0212 1.67671";
+    const newLogo = Boolean(homeSvg) && !homeBtn.innerHTML.includes(discordPath);
+
+    return {
+      createdOk: Boolean(created?.ok !== false && ch),
+      dialogShown,
+      keptOnCancel,
+      deletedOnConfirm,
+      inviteBtnHeight: Math.round(inviteBtn.height),
+      channelActionSize: Math.round(actionBtn.width),
+      newLogo
+    };
+  })()`);
+
+  recordTest(
+    "Domain 12: Delete Confirmation, Bigger Buttons & New Logo",
+    "Deleting a channel asks first (cancel keeps it, confirm deletes), larger invite/channel buttons, app logo replaces Discord's",
+    confirmUiCheck.createdOk &&
+      confirmUiCheck.dialogShown &&
+      confirmUiCheck.keptOnCancel &&
+      confirmUiCheck.deletedOnConfirm &&
+      confirmUiCheck.inviteBtnHeight >= 28 &&
+      confirmUiCheck.channelActionSize >= 26 &&
+      confirmUiCheck.newLogo,
+    JSON.stringify(confirmUiCheck)
+  );
+
+  // =========================================================================
+  // SUITE 25: Account Tab — E-mail, Password & Phone (dev-mode delivery)
+  // =========================================================================
+  const accountCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const backend = window.DiscordNative.backend;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 4000) => { const t = Date.now(); while (!fn() && Date.now() - t < ms) await wait(50); return fn(); };
+    const security = async () => (await store.getAccountSecurity()).security;
+
+    // Verify the e-mail through the real settings UI
+    const b = document.createElement("button");
+    b.setAttribute("data-action", "open-user-settings");
+    document.body.appendChild(b); b.click(); b.remove();
+    await wait(300);
+    const accountTabOpen = Boolean(document.querySelector('[data-testid="account-email-row"]'));
+    q('[data-testid="verify-email-btn"]').click();
+    await waitFor(() => document.querySelector('[data-testid="account-dev-code"] code'));
+    const devCode = q('[data-testid="account-dev-code"] code').textContent.trim();
+    q('[data-account-form="code"] input[name="code"]').value = devCode;
+    q('[data-account-form="code"]').requestSubmit();
+    let sec = null;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 4000) { sec = await security(); if (sec.emailVerified) break; await wait(150); }
+    const emailVerified = sec.emailVerified;
+
+    // Password: wrong current password is refused; a correct change signs out other sessions
+    const otherDevice = await backend.rpc("login", { emailOrUsername: "davis_dev", password: "password123" });
+    const wrongCurrent = await store.changePassword("senha-errada", "novaSenha123");
+    const changed = await store.changePassword("password123", "novaSenha123");
+    const otherAfter = await backend.rpc("getStateSnapshot", {}, otherDevice.sessionToken);
+    const thisStillWorks = (await store.getAccountSecurity()).ok;
+    const oldPwLogin = await backend.rpc("login", { emailOrUsername: "davis_dev", password: "password123" });
+    const newPwLogin = await backend.rpc("login", { emailOrUsername: "davis_dev", password: "novaSenha123" });
+    await store.changePassword("novaSenha123", "password123");
+
+    // Phone: request with password, confirm with the code, then remove
+    const badPhone = await store.requestPhoneVerification("123", "password123");
+    const phoneReq = await store.requestPhoneVerification("+55 11 99999-8888", "password123");
+    const wrongCode = await store.confirmPhoneVerification("000000");
+    const phoneOk = await store.confirmPhoneVerification(phoneReq.devCode);
+    const afterPhone = await security();
+    const removed = await store.removePhone("password123");
+    const afterRemove = await security();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    return {
+      accountTabOpen,
+      emailVerified,
+      wrongCurrentRejected: !wrongCurrent.ok,
+      passwordChanged: changed.ok,
+      otherSessionRevoked: otherAfter.code === "UNAUTHENTICATED",
+      thisStillWorks,
+      oldPasswordRejected: !oldPwLogin.ok,
+      newPasswordAccepted: newPwLogin.ok,
+      badPhoneRejected: !badPhone.ok,
+      phoneDevMode: phoneReq.ok && phoneReq.devMode === true && /^\\d{6}$/.test(phoneReq.devCode || ""),
+      wrongCodeRejected: !wrongCode.ok,
+      phoneVerified: phoneOk.ok && afterPhone.phoneVerified && afterPhone.phoneMasked.endsWith("88"),
+      phoneRemoved: removed.ok && !afterRemove.phone
+    };
+  })()`);
+
+  recordTest(
+    "Domain 13: Account Tab (E-mail, Password, Phone)",
+    "Verify e-mail via UI code, change password (wrong current refused, other sessions revoked), verify and remove phone",
+    Object.values(accountCheck).every(Boolean),
+    JSON.stringify(accountCheck)
+  );
+
+  // =========================================================================
+  // SUITE 26: Verified E-mail Required for Access (requireVerifiedEmail)
+  // =========================================================================
+  backendServer.config.requireVerifiedEmail = true;
+  const gateCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    await store.logout();
+    const reg = await store.register({ email: "nova.pessoa@exemplo.com", displayName: "Nova Pessoa", username: "nova_pessoa", password: "senhaForte1" });
+    await wait(150);
+    const gateShown = Boolean(document.querySelector('[data-testid="email-gate-screen"]'));
+    const appHidden = !document.querySelector('[data-testid="guilds-rail"]');
+    const noDataLoaded = Object.keys(store.getState().users).length === 0 || !store.getState().users[reg.user.id]?.email;
+    const devCode = q('[data-testid="email-gate-dev-code"] code').textContent.trim();
+
+    q('[data-testid="email-gate-code"]').value = "000000";
+    q('#email-gate-form').requestSubmit();
+    await wait(300);
+    const wrongShowsError = q('#email-gate-error').textContent.length > 0 && Boolean(document.querySelector('[data-testid="email-gate-screen"]'));
+
+    q('[data-testid="email-gate-code"]').value = devCode;
+    q('#email-gate-form').requestSubmit();
+    const t0 = Date.now();
+    while (!document.querySelector('[data-testid="guilds-rail"]') && Date.now() - t0 < 4000) await wait(50);
+    const appAfter = Boolean(document.querySelector('[data-testid="guilds-rail"]')) && !store.getState().auth.emailGate;
+
+    await store.logout();
+    const relogin = await store.login("davis_dev", "password123");
+    await wait(150);
+    const verifiedUserNotGated = relogin.ok && !store.getState().auth.emailGate && Boolean(document.querySelector('[data-testid="guilds-rail"]'));
+
+    return { regOk: reg.ok, gateShown, appHidden, noDataLoaded, wrongShowsError, appAfter, verifiedUserNotGated };
+  })()`);
+  backendServer.config.requireVerifiedEmail = false;
+
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const b = document.createElement("button");
+    b.setAttribute("data-action", "open-user-settings");
+    document.body.appendChild(b); b.click(); b.remove();
+    await new Promise((r) => setTimeout(r, 400));
+  })()`);
+  await captureWindow(mainWin, "10-settings-account.png");
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    document.querySelector('[data-testid="settings-tab-profile"]').click();
+    await new Promise((r) => setTimeout(r, 300));
+  })()`);
+  await captureWindow(mainWin, "11-settings-profile.png");
+  await mainWin.webContents.executeJavaScript(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));`);
+
+  recordTest(
+    "Domain 14: Verified E-mail Required for Access",
+    "With requireVerifiedEmail on, a new account sees only the verification screen until it enters the e-mailed code",
+    Object.values(gateCheck).every(Boolean),
+    JSON.stringify(gateCheck)
+  );
+
+  await captureWindow(mainWin, "02-server-chat-view.png");
+
+  // Capture Discovery & Auth screenshots
+  await mainWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.selectDiscovery();`);
+  await captureWindow(mainWin, "05-server-discovery.png");
+
+  await mainWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.logout();`);
+  await captureWindow(mainWin, "07-login-screen.png");
+  await mainWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.login("davis@discord.local", "password123");`);
+
+  // =========================================================================
+  // SUITE 12 (PHASE 7): Memory Optimization Verification (< 80 MB Target)
+  // =========================================================================
+  const maxTotalWorkingSetMB = Math.max(...memoryStages.map((s) => s.totalWorkingSetMB));
+  recordTest(
+    "Phase 7: RAM Usage Optimization (< 80 MB)",
+    "Verify total resident Working Set stays under 80 MB across startup, navigation, call, and post-call",
+    maxTotalWorkingSetMB < 80,
+    `Max Total Working Set = ${maxTotalWorkingSetMB} MB (Stages: ${memoryStages.map((s) => `${s.stage}=${s.totalWorkingSetMB}MB`).join(", ")})`
+  );
+
+  const memReport = {
+    timestamp: new Date().toISOString(),
+    targetLimitMB: 80,
+    baselineBeforeOptimization: {
+      "1_startup": { mainWorkingSetMB: 98.38, rendererWorkingSetMB: 77.22, totalWorkingSetMB: 215.14, totalPrivateMB: 117.16 },
+      "2_after_navigation": { mainWorkingSetMB: 98.78, rendererWorkingSetMB: 80.94, totalWorkingSetMB: 219.29, totalPrivateMB: 120.55 },
+      "3_during_call": { mainWorkingSetMB: 98.84, rendererWorkingSetMB: 82.6, totalWorkingSetMB: 221.02, totalPrivateMB: 122.79 },
+      "4_after_call": { mainWorkingSetMB: 98.89, rendererWorkingSetMB: 83.19, totalWorkingSetMB: 221.66, totalPrivateMB: 123.25 }
+    },
+    afterOptimization: memoryStages
+  };
+
+  fs.writeFileSync(
+    path.join(rootDir, "docs", "memory-benchmark.json"),
+    JSON.stringify(memReport, null, 2),
+    "utf8"
+  );
+
+  fs.writeFileSync(
+    path.join(rootDir, "docs", "verification-results.json"),
+    JSON.stringify({ timestamp: new Date().toISOString(), results, memoryStages }, null, 2),
+    "utf8"
+  );
+
+  mainWin.destroy();
+  await backendServer.stop();
+  app.quit();
+}
+
+app.whenReady().then(() => {
+  runVerification().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+});

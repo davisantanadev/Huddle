@@ -1,0 +1,360 @@
+/* ==========================================================================
+   Discord Design System Tokens (Extracted from app.asar & 10 Preset Themes)
+   ========================================================================== */
+
+@font-face {
+  font-family: 'gg sans';
+  font-weight: 400;
+  font-style: normal;
+  src: url('../../assets/splash/fonts/ggsans-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'gg sans';
+  font-weight: 500;
+  font-style: normal;
+  src: url('../../assets/splash/fonts/ggsans-500-medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'gg sans';
+  font-weight: 600;
+  font-style: normal;
+  src: url('../../assets/splash/fonts/ggsans-500-medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'gg sans';
+  font-weight: 700;
+  font-style: normal;
+  src: url('../../assets/splash/fonts/ggsans-500-medium.woff2') format('woff2');
+}
+
+/* 1. ESCURO PADRÃO (DARK / ASH) */
+:root,
+.app-root[data-theme="dark"] {
+  --primary-font: 'gg sans', 'Noto Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --monospace-font: 'Consolas', 'Andale Mono WT', 'Andale Mono', 'Lucida Console', monospace;
+  --brand-purple: #5865f2;
+  --hint-purple: #bbc0fb;
+  --dark-purple: #4752c4;
+  --brand-hover: #4752c4;
+  --brand-active: #3c45a5;
+  --brand-light: rgba(88, 101, 242, 0.15);
+
+  /* Status Palette */
+  --status-green: #23a55a;
+  --status-green-hover: #1a7f44;
+  --status-yellow: #f0b232;
+  --status-red: #f23f43;
+  --status-red-hover: #d83c3e;
+  --status-grey: #80848e;
+  --link-color: #00a8fc;
+
+  /* Surface Hierarchy (Discord Ash/Dark Desktop Standard) */
+  --bg-titlebar: #1e1f22;
+  --bg-guilds: #1e1f22;
+  --bg-channels: #2b2d31;
+  --bg-account: #232428;
+  --bg-voice-panel: #111214;
+  --bg-chat: #313338;
+  --bg-members: #2b2d31;
+  --bg-composer: #383a40;
+  --bg-floating: #111214;
+  --bg-modal: #313338;
+  --bg-modal-footer: #2b2d31;
+  --bg-card: #2b2d31;
+  --bg-card-secondary: #1e1f22;
+  --bg-input: #1e1f22;
+  --bg-modifier-hover: rgba(78, 80, 88, 0.3);
+  --bg-modifier-active: rgba(78, 80, 88, 0.48);
+  --bg-modifier-selected: rgba(78, 80, 88, 0.6);
+  --bg-message-hover: rgba(4, 4, 5, 0.07);
+  --bg-mention: rgba(240, 178, 50, 0.1);
+  --bg-mention-hover: rgba(240, 178, 50, 0.18);
+  --border-mention: #f0b232;
+
+  /* Typography Colors */
+  --header-primary: #f2f3f5;
+  --header-secondary: #b5bac1;
+  --text-normal: #dbdee1;
+  --text-muted: #949ba4;
+  --text-faint: #6d6f78;
+  --channels-default: #949ba4;
+  --interactive-normal: #b5bac1;
+  --interactive-hover: #dbdee1;
+  --interactive-active: #ffffff;
+  --interactive-muted: #4e5058;
+
+  /* Borders, Dividers & Elevations */
+  --divider-subtle: rgba(78, 80, 88, 0.48);
+  --border-faint: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --elevation-stroke: 0 0 0 1px rgba(4, 4, 5, 0.15);
+  --elevation-low: 0 1px 0 rgba(4, 4, 5, 0.2), 0 1.5px 0 rgba(6, 6, 7, 0.05), 0 2px 0 rgba(4, 4, 5, 0.05);
+  --elevation-medium: 0 4px 8px rgba(0, 0, 0, 0.24);
+  --elevation-high: 0 8px 16px rgba(0, 0, 0, 0.36);
+
+  /* Layout Dimensions */
+  --titlebar-height: 32px;
+  --guilds-width: 72px;
+  --channels-width: 240px;
+  --members-width: 240px;
+  --active-now-width: 360px;
+  --header-height: 48px;
+  --account-bar-height: 52px;
+
+  /* Radii & Transitions */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-round: 50%;
+  --font-scale: 1;
+}
+
+/* 2. CLARO (LIGHT) */
+.app-root[data-theme="light"] {
+  --bg-titlebar: #e3e5e8;
+  --bg-guilds: #e3e5e8;
+  --bg-channels: #f2f3f5;
+  --bg-account: #ebedef;
+  --bg-voice-panel: #1e1f22;
+  --bg-chat: #ffffff;
+  --bg-members: #f2f3f5;
+  --bg-composer: #ebedef;
+  --bg-floating: #ffffff;
+  --bg-modal: #ffffff;
+  --bg-modal-footer: #f2f3f5;
+  --bg-card: #f2f3f5;
+  --bg-card-secondary: #e3e5e8;
+  --bg-input: #e3e5e8;
+  --bg-modifier-hover: rgba(116, 127, 141, 0.16);
+  --bg-modifier-active: rgba(116, 127, 141, 0.24);
+  --bg-modifier-selected: rgba(116, 127, 141, 0.32);
+  --bg-message-hover: rgba(6, 6, 7, 0.04);
+  --header-primary: #060607;
+  --header-secondary: #4e5058;
+  --text-normal: #313338;
+  --text-muted: #5c5e66;
+  --text-faint: #80848e;
+  --channels-default: #5c5e66;
+  --interactive-normal: #4e5058;
+  --interactive-hover: #2e3035;
+  --interactive-active: #060607;
+  --divider-subtle: rgba(6, 6, 7, 0.12);
+  --border-faint: rgba(6, 6, 7, 0.08);
+  --border-strong: rgba(6, 6, 7, 0.16);
+}
+
+/* 3. MEIA-NOITE (MIDNIGHT) */
+.app-root[data-theme="midnight"] {
+  --bg-titlebar: #0b0e17;
+  --bg-guilds: #0b0e17;
+  --bg-channels: #121726;
+  --bg-account: #0e121e;
+  --bg-voice-panel: #080a11;
+  --bg-chat: #171d30;
+  --bg-members: #121726;
+  --bg-composer: #202840;
+  --bg-floating: #0b0e17;
+  --bg-modal: #171d30;
+  --bg-modal-footer: #121726;
+  --bg-card: #121726;
+  --bg-card-secondary: #0b0e17;
+  --bg-input: #0b0e17;
+  --brand-purple: #6366f1;
+  --brand-hover: #4f46e5;
+  --header-primary: #eef2ff;
+  --header-secondary: #c7d2fe;
+  --text-normal: #e0e7ff;
+  --text-muted: #94a3b8;
+  --channels-default: #94a3b8;
+  --divider-subtle: rgba(148, 163, 184, 0.2);
+}
+
+/* 4. OLED / PRETO PROFUNDO (OLED / ONYX) */
+.app-root[data-theme="oled"],
+.app-root[data-theme="onyx"] {
+  --bg-titlebar: #000000;
+  --bg-guilds: #000000;
+  --bg-channels: #08090c;
+  --bg-account: #050507;
+  --bg-voice-panel: #000000;
+  --bg-chat: #0d0e12;
+  --bg-members: #08090c;
+  --bg-composer: #16181f;
+  --bg-floating: #050507;
+  --bg-modal: #0d0e12;
+  --bg-modal-footer: #08090c;
+  --bg-card: #12141a;
+  --bg-card-secondary: #050507;
+  --bg-input: #050507;
+  --header-primary: #ffffff;
+  --text-normal: #e5e7eb;
+  --text-muted: #9ca3af;
+  --divider-subtle: rgba(255, 255, 255, 0.1);
+}
+
+/* 5. AZUL PROFUNDO (OCEAN) */
+.app-root[data-theme="ocean"] {
+  --bg-titlebar: #071925;
+  --bg-guilds: #071925;
+  --bg-channels: #0c2638;
+  --bg-account: #091f2e;
+  --bg-voice-panel: #05131c;
+  --bg-chat: #103147;
+  --bg-members: #0c2638;
+  --bg-composer: #17425e;
+  --bg-floating: #071925;
+  --bg-modal: #103147;
+  --bg-modal-footer: #0c2638;
+  --bg-card: #0c2638;
+  --bg-card-secondary: #071925;
+  --bg-input: #071925;
+  --brand-purple: #0ea5e9;
+  --brand-hover: #0284c7;
+  --brand-active: #0369a1;
+  --header-primary: #f0f9ff;
+  --header-secondary: #bae6fd;
+  --text-normal: #e0f2fe;
+  --text-muted: #7dd3fc;
+  --channels-default: #93c5fd;
+  --divider-subtle: rgba(125, 211, 252, 0.2);
+}
+
+/* 6. ROXO / NEBULA (NEBULA) */
+.app-root[data-theme="nebula"] {
+  --bg-titlebar: #160d29;
+  --bg-guilds: #160d29;
+  --bg-channels: #21143b;
+  --bg-account: #1a1030;
+  --bg-voice-panel: #110920;
+  --bg-chat: #291a47;
+  --bg-members: #21143b;
+  --bg-composer: #36235c;
+  --bg-floating: #160d29;
+  --bg-modal: #291a47;
+  --bg-modal-footer: #21143b;
+  --bg-card: #21143b;
+  --bg-card-secondary: #160d29;
+  --bg-input: #160d29;
+  --brand-purple: #a855f7;
+  --brand-hover: #9333ea;
+  --brand-active: #7e22ce;
+  --header-primary: #faf5ff;
+  --header-secondary: #e9d5ff;
+  --text-normal: #f3e8ff;
+  --text-muted: #c084fc;
+  --channels-default: #d8b4fe;
+  --divider-subtle: rgba(216, 180, 254, 0.2);
+}
+
+/* 7. VERDE ESCURO (EMERALD) */
+.app-root[data-theme="emerald"] {
+  --bg-titlebar: #091e16;
+  --bg-guilds: #091e16;
+  --bg-channels: #102c22;
+  --bg-account: #0c231b;
+  --bg-voice-panel: #06150f;
+  --bg-chat: #15382b;
+  --bg-members: #102c22;
+  --bg-composer: #1d4939;
+  --bg-floating: #091e16;
+  --bg-modal: #15382b;
+  --bg-modal-footer: #102c22;
+  --bg-card: #102c22;
+  --bg-card-secondary: #091e16;
+  --bg-input: #091e16;
+  --brand-purple: #10b981;
+  --brand-hover: #059669;
+  --brand-active: #047857;
+  --header-primary: #ecfdf5;
+  --header-secondary: #a7f3d0;
+  --text-normal: #d1fae5;
+  --text-muted: #6ee7b7;
+  --channels-default: #6ee7b7;
+  --divider-subtle: rgba(110, 231, 183, 0.2);
+}
+
+/* 8. ROSA / CARMESIM (ROSE) */
+.app-root[data-theme="rose"] {
+  --bg-titlebar: #240c16;
+  --bg-guilds: #240c16;
+  --bg-channels: #331321;
+  --bg-account: #2a0f1b;
+  --bg-voice-panel: #1a0810;
+  --bg-chat: #3f1829;
+  --bg-members: #331321;
+  --bg-composer: #522036;
+  --bg-floating: #240c16;
+  --bg-modal: #3f1829;
+  --bg-modal-footer: #331321;
+  --bg-card: #331321;
+  --bg-card-secondary: #240c16;
+  --bg-input: #240c16;
+  --brand-purple: #f43f5e;
+  --brand-hover: #e11d48;
+  --brand-active: #be123c;
+  --header-primary: #fff1f2;
+  --header-secondary: #fecdd3;
+  --text-normal: #ffe4e6;
+  --text-muted: #fda4af;
+  --channels-default: #fda4af;
+  --divider-subtle: rgba(253, 164, 175, 0.22);
+}
+
+/* 9. CINZA NEUTRO / GRAFITE (GRAPHITE) */
+.app-root[data-theme="graphite"] {
+  --bg-titlebar: #18181b;
+  --bg-guilds: #18181b;
+  --bg-channels: #232329;
+  --bg-account: #1d1d22;
+  --bg-voice-panel: #121215;
+  --bg-chat: #2b2b33;
+  --bg-members: #232329;
+  --bg-composer: #363640;
+  --bg-floating: #18181b;
+  --bg-modal: #2b2b33;
+  --bg-modal-footer: #232329;
+  --bg-card: #232329;
+  --bg-card-secondary: #18181b;
+  --bg-input: #18181b;
+  --brand-purple: #64748b;
+  --brand-hover: #475569;
+  --brand-active: #334155;
+  --header-primary: #f8fafc;
+  --header-secondary: #cbd5e1;
+  --text-normal: #e2e8f0;
+  --text-muted: #94a3b8;
+  --channels-default: #94a3b8;
+  --divider-subtle: rgba(148, 163, 184, 0.22);
+}
+
+/* 10. ÂMBAR / QUENTE (SUNSET) */
+.app-root[data-theme="sunset"] {
+  --bg-titlebar: #23120b;
+  --bg-guilds: #23120b;
+  --bg-channels: #331b11;
+  --bg-account: #2a160e;
+  --bg-voice-panel: #190c07;
+  --bg-chat: #402216;
+  --bg-members: #331b11;
+  --bg-composer: #522d1e;
+  --bg-floating: #23120b;
+  --bg-modal: #402216;
+  --bg-modal-footer: #331b11;
+  --bg-card: #331b11;
+  --bg-card-secondary: #23120b;
+  --bg-input: #23120b;
+  --brand-purple: #f97316;
+  --brand-hover: #ea580c;
+  --brand-active: #c2410c;
+  --header-primary: #fff7ed;
+  --header-secondary: #fed7aa;
+  --text-normal: #ffedd5;
+  --text-muted: #fdba74;
+  --channels-default: #fdba74;
+  --divider-subtle: rgba(253, 186, 116, 0.22);
+}

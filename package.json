@@ -1,0 +1,19 @@
+{
+  "name": "discord-desktop-replica",
+  "productName": "Discord",
+  "version": "1.0.9262",
+  "description": "Discord Client for Desktop - Functional Reconstruction (REA Verified)",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "electron scripts/verify-electron.js",
+    "build:exe": "node scripts/build-exe.js"
+  },
+  "author": "Discord Replica (REA Engineering)",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "^35.0.0"
+  }
+}
