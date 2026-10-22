@@ -66,10 +66,17 @@ O app funciona sem nenhuma chave. As integrações abaixo ficam desligadas até 
 
 ### 4.1. Arquivo de chaves local
 
-Copie o modelo e preencha só o que for usar:
+As chaves ficam num arquivo `app.config.local.json` que **nunca** vai para o GitHub nem para dentro do `.exe`. O app procura esse arquivo em dois lugares:
+
+| Onde | Quando usar |
+| --- | --- |
+| `%APPDATA%\Eco\app.config.local.json` | App instalado (`.exe`) — e também funciona com `npm start` |
+| `app.config.local.json` na pasta do projeto | Desenvolvimento (`npm start` / `npm test`) |
+
+Para criar a partir do modelo:
 
 ```powershell
-Copy-Item app.config.local.example.json app.config.local.json
+Copy-Item app.config.local.example.json "$env:APPDATA\Eco\app.config.local.json"
 ```
 
 ```json
@@ -92,6 +99,32 @@ O `app.config.local.json` está no `.gitignore`: **suas chaves nunca vão para o
 
 **Sem chave do Giphy**, a biblioteca de GIFs mostra GIFs gerados localmente.
 **Sem provedor de e-mail ou SMS**, o app entra em *modo desenvolvimento*: o código de verificação aparece na própria tela, com um aviso, em vez de ser enviado.
+
+> **Por que as chaves não vêm prontas?** Qualquer chave colocada dentro do app ou do repositório pode ser extraída por quem tiver o arquivo — e passaria a enviar e-mails/SMS na sua conta. Quando o app for hospedado, as chaves ficam só no servidor e todos os usuários usam esse servidor já configurado.
+
+#### Passo a passo: e-mail com Resend
+
+1. Crie uma conta em [resend.com](https://resend.com/) (plano grátis: 3.000 e-mails/mês, 100/dia).
+2. Em **Domains → Add Domain**, adicione um domínio seu e cadastre no seu provedor de DNS os registros que o Resend mostrar. Aguarde o status **Verified**.
+   *Sem domínio verificado, o Resend só entrega para o e-mail da sua própria conta (útil para testar, usando `onboarding@resend.dev` como remetente).*
+3. Em **API Keys → Create API Key**, crie uma chave com permissão **Sending access** e copie (começa com `re_`).
+4. No `app.config.local.json`, preencha:
+   ```json
+   "email": { "resendApiKey": "re_...", "from": "Eco <no-reply@seudominio.com>" }
+   ```
+
+#### Passo a passo: SMS com Twilio
+
+1. Crie uma conta em [twilio.com](https://www.twilio.com/try-twilio) e confirme seu e-mail e celular.
+2. No **Console**, copie o **Account SID** (começa com `AC`) e o **Auth Token**.
+3. Em **Phone Numbers → Buy a number**, obtenha um número com capacidade de **SMS** (a conta de teste dá crédito para isso).
+   *Na conta de teste, o Twilio só envia para números verificados em **Verified Caller IDs**. Para enviar para qualquer pessoa, faça o upgrade da conta.*
+4. No `app.config.local.json`, preencha:
+   ```json
+   "sms": { "twilioAccountSid": "AC...", "twilioAuthToken": "...", "from": "+15551234567" }
+   ```
+
+Reinicie o app. Em *Configurações → Minha Conta* o aviso de modo desenvolvimento some para o que estiver configurado.
 
 ### 4.2. Configurações gerais — `app.config.json`
 

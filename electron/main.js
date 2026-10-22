@@ -43,6 +43,9 @@ function migrateFromSharedDiscordFolder() {
 }
 
 app.setPath("userData", APP_DATA_DIR);
+// Lets electron/appConfig.js find app.config.local.json (API keys) in the data
+// folder, so keys never have to be packaged inside the executable
+process.env.ECO_DATA_DIR = APP_DATA_DIR;
 migrateFromSharedDiscordFolder();
 
 // Phase 7: V8 & Chromium Memory Optimization Flags
@@ -724,6 +727,10 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  // localStorage (the saved login) is written lazily; flush it so it survives quitting
+  try {
+    session.defaultSession.flushStorageData();
+  } catch (_) {}
   if (backendServer) {
     backendServer.close();
     backendServer = null;

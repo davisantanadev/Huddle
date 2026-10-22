@@ -2508,119 +2508,161 @@ function renderServerRolesManager(guild, me, state) {
 }
 
 // ==========================================================================
-// Phase 1: Searchable GIF Library Modal
+// GIF Library picker
+// Lives in its own container outside renderApp(), so app re-renders never touch
+// it, and new pages are appended to the grid instead of rebuilding it (rebuilding
+// re-downloaded and re-decoded every animation, which froze the UI).
 // ==========================================================================
-function renderGifPickerModal(state) {
-  const gp = state.gifPicker;
-  if (!gp || !gp.isOpen) return "";
+const GIF_PICKER_CATEGORIES = ["All", "Anime", "Gaming", "Gatos", "Reações", "Memes", "Cyberpunk", "Lofi", "Dança", "Celebração"];
+const GIF_SEARCH_DEBOUNCE_MS = 300;
+const gifView = { root: null, searchId: -1, rendered: 0, debounce: null };
 
-  const categories = [
-    "All",
-    "Anime",
-    "Gaming",
-    "Gatos",
-    "Reações",
-    "Memes",
-    "Cyberpunk",
-    "Lofi",
-    "Dança",
-    "Celebração"
-  ];
-
+function gifCardHtml(gif) {
   return `
+    <button
+      type="button"
+      class="gif-item-card"
+      data-action="pick-gif-item"
+      data-gif-url="${escapeHtml(gif.url)}"
+      data-gif-title="${escapeHtml(gif.title)}"
+      title="${escapeHtml(gif.title)}"
+      data-testid="gif-card"
+    >
+      <img src="${escapeHtml(gif.previewUrl || gif.url)}" alt="${escapeHtml(gif.title)}" loading="lazy" decoding="async" />
+      <span class="gif-item-overlay">${escapeHtml(gif.title)}</span>
+    </button>
+  `;
+}
+
+function mountGifPicker(gp) {
+  const root = document.createElement("div");
+  root.id = "gif-picker-root";
+  root.innerHTML = `
     <div class="modal-backdrop" data-action="close-gif-picker-backdrop">
-      <div class="modal-card wide gif-modal-box" data-testid="gif-picker-modal" style="max-width:680px;height:580px;display:flex;flex-direction:column;">
+      <div class="modal-card wide gif-modal-box" data-testid="gif-picker-modal" role="dialog" aria-labelledby="gif-picker-title">
         <div class="modal-header">
           <div>
-            <h2 style="font-size:18px;">✨ Biblioteca de GIFs Animados</h2>
+            <h2 id="gif-picker-title" style="font-size:18px;">Biblioteca de GIFs</h2>
             <div style="font-size:12px;color:var(--text-muted);">
-              Selecione uma animação para o seu ${gp.target === "avatar" ? "Avatar" : "Banner"} de perfil
+              Escolha uma animação para o seu ${gp.target === "avatar" ? "avatar" : "banner"}
             </div>
           </div>
-          <button class="icon-btn" data-action="close-gif-picker">${Icons.close}</button>
+          <button class="icon-btn" data-action="close-gif-picker" aria-label="Fechar">${Icons.close}</button>
         </div>
-
-        <div style="padding:12px 18px 0 18px;display:flex;flex-direction:column;gap:10px;">
-          <form id="gif-search-form" style="display:flex;gap:8px;">
-            <input
-              type="text"
-              id="gif-search-input"
-              class="form-input"
-              style="flex:1;"
-              placeholder="Pesquisar GIFs na biblioteca..."
-              value="${escapeHtml(gp.query || "")}"
-              autocomplete="off"
-            />
-            <button type="submit" class="btn btn-primary" style="height:36px;">Buscar</button>
+        <div class="gif-picker-controls">
+          <form id="gif-search-form" class="gif-search-row" role="search">
+            <input type="search" id="gif-search-input" class="form-input" placeholder="Pesquisar GIFs..." autocomplete="off" aria-label="Pesquisar GIFs" />
+            <button type="submit" class="btn btn-primary">Buscar</button>
           </form>
-
-          <div class="gif-categories-bar" style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;">
-            ${categories.map((c) => {
-              const active = (gp.category || "All").toLowerCase() === c.toLowerCase();
-              return `
-                <button
-                  type="button"
-                  class="btn ${active ? "btn-primary" : "btn-secondary"}"
-                  style="height:28px;font-size:11px;padding:0 10px;white-space:nowrap;border-radius:14px;"
-                  data-action="select-gif-category"
-                  data-category="${c}"
-                >
-                  ${c === "All" ? "Todos" : c}
-                </button>
-              `;
-            }).join("")}
+          <div class="gif-categories-bar" role="tablist">
+            ${GIF_PICKER_CATEGORIES.map(
+              (c) => `<button type="button" role="tab" class="gif-cat-chip" data-action="select-gif-category" data-category="${c}">${c === "All" ? "Todos" : c}</button>`
+            ).join("")}
           </div>
         </div>
-
-        <div class="modal-body" id="gif-results-scroller" style="flex:1;display:block;max-height:none;min-height:0;overflow-y:auto;padding:12px 18px;">
-          ${gp.loading ? `
-            <div style="display:flex;align-items:center;justify-content:center;height:240px;color:var(--text-muted);gap:10px;">
-              <span>⏳ Carregando biblioteca de GIFs...</span>
-            </div>
-          ` : (gp.results || []).length === 0 ? `
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px;color:var(--text-muted);gap:8px;">
-              <div style="font-size:32px;">🔍</div>
-              <div>Nenhum GIF encontrado para "${escapeHtml(gp.query || gp.category)}".</div>
-              <button class="btn btn-secondary" style="font-size:12px;" data-action="select-gif-category" data-category="All">Ver Todos</button>
-            </div>
-          ` : `
-            <div class="gif-grid" data-testid="gif-results-grid" style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;">
-              ${(gp.results || []).map((gif) => `
-                <div
-                  class="gif-item-card"
-                  data-action="pick-gif-item"
-                  data-gif-url="${escapeHtml(gif.url)}"
-                  data-gif-title="${escapeHtml(gif.title)}"
-                  title="${escapeHtml(gif.title)}"
-                  data-testid="gif-card"
-                  style="border-radius:8px;overflow:hidden;background:#18191c;cursor:pointer;position:relative;aspect-ratio:1.2;display:flex;align-items:center;justify-content:center;border:2px solid transparent;transition:border-color 0.15s, transform 0.15s;"
-                >
-                  <img src="${escapeHtml(gif.previewUrl || gif.url)}" alt="${escapeHtml(gif.title)}" style="width:100%;height:100%;object-fit:cover;" loading="lazy" />
-                  <div class="gif-item-overlay" style="position:absolute;bottom:0;left:0;right:0;padding:4px 8px;background:linear-gradient(transparent, rgba(0,0,0,0.8));font-size:11px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                    ${escapeHtml(gif.title)}
-                  </div>
-                </div>
-              `).join("")}
-            </div>
-            ${gp.loadingMore ? `
-              <div style="text-align:center;padding:14px;color:var(--text-muted);font-size:12px;">⏳ Carregando mais GIFs...</div>
-            ` : gp.hasMore ? `
-              <div style="text-align:center;padding:14px;">
-                <button type="button" class="btn btn-secondary" style="font-size:12px;" data-action="load-more-gifs">Carregar mais</button>
-              </div>
-            ` : ""}
-          `}
+        <div class="gif-results-scroller" id="gif-results-scroller">
+          <div class="gif-grid" data-testid="gif-results-grid"></div>
+          <div class="gif-status" id="gif-picker-status"></div>
         </div>
-
-        <div class="modal-footer" style="display:flex;align-items:center;justify-content:space-between;">
-          <div style="font-size:12px;color:var(--text-muted);">
-            ${(gp.results || []).length} de ${gp.total || (gp.results || []).length} GIF(s) carregados
-          </div>
+        <div class="modal-footer gif-picker-footer">
+          <div id="gif-picker-count" style="font-size:12px;color:var(--text-muted);"></div>
           <button type="button" class="btn btn-secondary" data-action="close-gif-picker">Cancelar</button>
         </div>
       </div>
     </div>
   `;
+  document.body.appendChild(root);
+  gifView.root = root;
+  gifView.searchId = -1;
+  gifView.rendered = 0;
+
+  const input = root.querySelector("#gif-search-input");
+  const runSearch = () => {
+    clearTimeout(gifView.debounce);
+    store.searchGifs({ query: input.value.trim(), category: store.getState().gifPicker.category });
+  };
+  root.querySelector("#gif-search-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    runSearch();
+  });
+  // Search as you type, once typing pauses
+  input.addEventListener("input", () => {
+    clearTimeout(gifView.debounce);
+    gifView.debounce = setTimeout(runSearch, GIF_SEARCH_DEBOUNCE_MS);
+  });
+
+  const scroller = root.querySelector("#gif-results-scroller");
+  scroller.addEventListener(
+    "scroll",
+    () => {
+      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) store.loadMoreGifs();
+    },
+    { passive: true }
+  );
+  input.focus();
+}
+
+function unmountGifPicker() {
+  clearTimeout(gifView.debounce);
+  gifView.root?.remove();
+  gifView.root = null;
+}
+
+function syncGifPicker(state) {
+  const gp = state.gifPicker;
+  if (!gp?.isOpen) {
+    if (gifView.root) unmountGifPicker();
+    return;
+  }
+  if (!gifView.root) mountGifPicker(gp);
+  const root = gifView.root;
+  const grid = root.querySelector(".gif-grid");
+  const results = gp.results || [];
+
+  for (const chip of root.querySelectorAll(".gif-cat-chip")) {
+    const active = chip.getAttribute("data-category").toLowerCase() === String(gp.category || "All").toLowerCase();
+    chip.classList.toggle("active", active);
+    chip.setAttribute("aria-selected", String(active));
+  }
+
+  // New search: replace the grid. Same search: append only the new items.
+  if (gp.searchId !== gifView.searchId) {
+    gifView.searchId = gp.searchId;
+    gifView.rendered = 0;
+    grid.textContent = "";
+    root.querySelector("#gif-results-scroller").scrollTop = 0;
+  }
+  if (results.length > gifView.rendered) {
+    const tpl = document.createElement("template");
+    tpl.innerHTML = results.slice(gifView.rendered).map(gifCardHtml).join("");
+    grid.appendChild(tpl.content);
+    gifView.rendered = results.length;
+  }
+
+  const status = root.querySelector("#gif-picker-status");
+  let statusHtml = "";
+  if (gp.loading && gifView.rendered === 0) {
+    statusHtml = `<div class="gif-grid gif-skeleton-grid" aria-label="Carregando GIFs">${'<div class="gif-skeleton"></div>'.repeat(12)}</div>`;
+  } else if (gp.loading) {
+    statusHtml = `<div class="gif-status-line">Buscando...</div>`;
+  } else if (results.length === 0) {
+    statusHtml = `
+      <div class="gif-empty">
+        <div>Nenhum GIF encontrado para "${escapeHtml(gp.query || gp.category)}".</div>
+        <button class="btn btn-secondary btn-sm" data-action="select-gif-category" data-category="All">Ver todos</button>
+      </div>
+    `;
+  } else if (gp.loadingMore) {
+    statusHtml = `<div class="gif-status-line">Carregando mais GIFs...</div>`;
+  } else if (gp.hasMore) {
+    statusHtml = `<div class="gif-status-line"><button type="button" class="btn btn-secondary btn-sm" data-action="load-more-gifs">Carregar mais</button></div>`;
+  }
+  if (status.innerHTML !== statusHtml) status.innerHTML = statusHtml;
+  grid.classList.toggle("is-stale", Boolean(gp.loading && gifView.rendered > 0));
+
+  root.querySelector("#gif-picker-count").textContent = results.length
+    ? `${results.length} de ${gp.total || results.length} GIF(s)`
+    : "";
 }
 
 // ==========================================================================
@@ -3209,6 +3251,19 @@ function renderProfileSettingsPanel(me) {
   `;
 }
 
+// Brazilian numbers: (DD) NNNN-NNNN (landline) or (DD) NNNNN-NNNN (mobile)
+function formatPhoneInput(rawDigits, international = false) {
+  if (international) return "+" + rawDigits.slice(0, 15);
+  const d = rawDigits.slice(0, 11);
+  if (!d) return "";
+  if (d.length <= 2) return `(${d}`;
+  const ddd = d.slice(0, 2);
+  const rest = d.slice(2);
+  if (rest.length <= 4) return `(${ddd}) ${rest}`;
+  const split = rest.length === 9 ? 5 : 4;
+  return `(${ddd}) ${rest.slice(0, split)}-${rest.slice(split)}`;
+}
+
 function formatDateTime(ts) {
   if (!ts) return "";
   return new Date(ts).toLocaleString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -3363,8 +3418,8 @@ function renderAccountSettingsPanel(me) {
       <form class="account-editor" data-account-form="phone">
         <div class="form-group">
           <label class="form-label" for="account-phone">Número de celular</label>
-          <input class="form-input" id="account-phone" name="phone" type="tel" autocomplete="tel" placeholder="+55 11 91234-5678" required />
-          <div class="setting-desc">Inclua o código do país. Números sem código são tratados como Brasil (+55).</div>
+          <input class="form-input" id="account-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel-national" maxlength="20" placeholder="(11) 91234-5678" required data-testid="account-phone-input" />
+          <div class="setting-desc">Número do Brasil com DDD. Para outro país, comece com + e o código do país.</div>
         </div>
         <div class="form-group">
           <label class="form-label" for="account-phone-password">Senha atual</label>
@@ -3443,10 +3498,16 @@ function renderAccountSettingsPanel(me) {
       ? `<div class="provider-note">
           ${Icons.alert}
           <div>
-            <strong>Envio de códigos em modo desenvolvimento.</strong>
-            ${!sec.providers.email ? "E-mail: defina <code>RESEND_API_KEY</code> e <code>MAIL_FROM</code>." : ""}
-            ${!sec.providers.sms ? "SMS: defina <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code> e <code>TWILIO_FROM</code>." : ""}
-            Enquanto isso, o código aparece aqui na tela para testes.
+            <strong>${
+              !sec.providers.email && !sec.providers.sms
+                ? "Envio de e-mail e SMS ainda não configurado."
+                : !sec.providers.email
+                  ? "Envio de e-mail ainda não configurado."
+                  : "Envio de SMS ainda não configurado."
+            }</strong>
+            Os códigos de verificação aparecem aqui na tela em vez de serem enviados.
+            Para ativar o envio, coloque as chaves do ${[!sec.providers.email && "Resend", !sec.providers.sms && "Twilio"].filter(Boolean).join(" e do ")}
+            em <code>%APPDATA%\\Eco\\app.config.local.json</code> e reinicie o app (passo a passo no README).
           </div>
         </div>`
       : "";
@@ -3699,10 +3760,6 @@ export function renderApp() {
     mainStageHtml = renderChatStage(state);
   }
 
-  // Full re-renders replace the GIF grid, so keep its scroll position across them
-  const prevGifScroller = document.getElementById("gif-results-scroller");
-  const gifScrollTop = prevGifScroller ? prevGifScroller.scrollTop : 0;
-
   root.innerHTML = `
     <div class="app-root" data-theme="${escapeHtml(state.settings.theme)}" style="--font-scale:${state.settings.fontScale || 1};">
       ${renderTitlebar(state)}
@@ -3717,7 +3774,6 @@ export function renderApp() {
       ${renderUserPopout(state)}
       ${renderEmojiPickerPopover()}
       ${renderActiveModal(state)}
-      ${renderGifPickerModal(state)}
       ${renderMediaEditorModal(state)}
       ${renderSettingsOverlay(state)}
       ${renderContextMenu()}
@@ -3728,8 +3784,6 @@ export function renderApp() {
     </div>
   `;
 
-  const nextGifScroller = document.getElementById("gif-results-scroller");
-  if (nextGifScroller && gifScrollTop) nextGifScroller.scrollTop = gifScrollTop;
 
   bindFormEvents();
   attachLiveScreenShareVideo();
@@ -4244,27 +4298,6 @@ function bindFormEvents() {
     });
   }
 
-  // Phase 1: GIF Search Form
-  const gifSearchForm = document.getElementById("gif-search-form");
-  if (gifSearchForm) {
-    gifSearchForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const inp = document.getElementById("gif-search-input");
-      const q = inp ? inp.value.trim() : "";
-      await store.searchGifs({ query: q, category: store.getState().gifPicker.category });
-    });
-  }
-
-  // GIF infinite scroll: fetch the next page when nearing the bottom of the grid
-  const gifScroller = document.getElementById("gif-results-scroller");
-  if (gifScroller) {
-    gifScroller.addEventListener("scroll", () => {
-      if (gifScroller.scrollTop + gifScroller.clientHeight >= gifScroller.scrollHeight - 300) {
-        store.loadMoreGifs();
-      }
-    });
-  }
-
   // Phase 8: Media Framing & Crop Sliders
   const zoomSlider = document.getElementById("media-editor-zoom-slider");
   const panXSlider = document.getElementById("media-editor-panx-slider");
@@ -4526,6 +4559,20 @@ function bindFormEvents() {
   });
 
   // Account security forms (e-mail change, password, phone, verification codes)
+  // Phone field: format as you type — (11) 91234-5678, or free "+<country> ..." for other countries
+  const phoneInput = document.getElementById("account-phone");
+  if (phoneInput) {
+    phoneInput.addEventListener("input", (e) => {
+      const prevDigits = phoneInput.dataset.digits || "";
+      let digits = phoneInput.value.replace(/\D/g, "");
+      // Backspace over "-", ")" or a space removes the digit before it instead of getting stuck
+      if (e.inputType === "deleteContentBackward" && digits === prevDigits) digits = digits.slice(0, -1);
+      const international = phoneInput.value.trim().startsWith("+");
+      phoneInput.value = formatPhoneInput(digits, international);
+      phoneInput.dataset.digits = digits;
+    });
+  }
+
   document.querySelectorAll("[data-account-form]").forEach((form) => {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -4594,6 +4641,12 @@ function bindFormEvents() {
       if (!prompt) return;
       const password = document.getElementById("switch-account-password")?.value || "";
       const res = await store.switchAccount(prompt.userId, password);
+      if (res.accountRemoved) {
+        uiState.switchAccountPrompt = null;
+        showToast(res.error);
+        renderApp();
+        return;
+      }
       if (!res.ok) {
         uiState.switchAccountPrompt = { ...prompt, error: res.error || "Senha incorreta." };
         renderApp();
@@ -4968,9 +5021,18 @@ async function handleGlobalClick(e) {
       renderApp();
       break;
     case "quick-switch-user": {
-      // Opens the password prompt; the switch itself happens on its submit
+      // Accounts that signed in here before switch straight away; others ask for the password
       closeAllFloatingMenus();
-      uiState.switchAccountPrompt = { userId: btn.getAttribute("data-user-id"), error: "" };
+      const userId = btn.getAttribute("data-user-id");
+      if (userId === store.getState().auth.currentUserId && store.getState().auth.isAuthenticated) break;
+      const res = await store.switchAccount(userId);
+      if (res.ok) {
+        uiState.settingsOverlay = null;
+        showToast(`Conectado como @${res.user.username}`);
+        renderApp();
+        break;
+      }
+      uiState.switchAccountPrompt = { userId, error: res.needsPassword ? "" : res.error || "" };
       renderApp();
       document.getElementById("switch-account-password")?.focus();
       break;
@@ -5744,6 +5806,10 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Escape") {
+    if (store.getState().gifPicker.isOpen) {
+      store.closeGifPicker();
+      return;
+    }
     if (uiState.switchAccountPrompt) {
       uiState.switchAccountPrompt = null;
       renderApp();
@@ -5780,6 +5846,7 @@ document.addEventListener("keydown", (e) => {
 
 // Subscribe to store updates & Electron Tray IPC events
 store.subscribe(() => renderApp());
+store.subscribeGifPicker((state) => syncGifPicker(state));
 
 NativeBridge.subscribeIpc("SYSTEM_TRAY_TOGGLE_MUTE", () => {
   store.toggleMute();

@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-22T21:12:30.501Z",
+  "timestamp": "2026-10-22T21:41:03.835Z",
   "results": [
     {
       "area": "Phase 1: Splash Screen",
@@ -59,13 +59,13 @@
       "area": "Phase 11: Cryptographic Server Invites",
       "feature": "Generate unique tokens, join server via invite, handle idempotent re-join, and reject invalid/revoked codes",
       "status": "APPROVED",
-      "detail": "{\"codesUnique\":true,\"sampleCodes\":[\"38WNOz5MNAftR4E0\",\"UsrG9QuMq0BDU5Ad\",\"IfP821Zit6XNzY9c\"],\"joinInvalidRejected\":true,\"joinRevokedRejected\":true,\"joinValidOk\":true,\"joinIdempotentOk\":true}"
+      "detail": "{\"codesUnique\":true,\"sampleCodes\":[\"YbgvZFMHWmC4Cdrl\",\"6aCM6CzApPj8N5yk\",\"voqA8M87HmYDRTJ0\"],\"joinInvalidRejected\":true,\"joinRevokedRejected\":true,\"joinValidOk\":true,\"joinIdempotentOk\":true}"
     },
     {
       "area": "Domain 1: Searchable Animated GIF Library",
       "feature": "Filter by categories, search keywords, paginate results, and load selected animation into editor",
       "status": "APPROVED",
-      "detail": "{\"totalGifs\":183,\"hasCategories\":true,\"animeMatches\":true,\"searchMatches\":true,\"hasDifferentPages\":true,\"modalVisible\":true,\"stayedOpenOnInputClick\":true,\"firstPageCount\":50,\"afterScrollCount\":100,\"scrollKept\":true,\"cardHeight\":149,\"editorOpen\":true}"
+      "detail": "{\"totalGifs\":182,\"hasCategories\":true,\"animeMatches\":true,\"searchMatches\":true,\"hasDifferentPages\":true,\"modalVisible\":true,\"stayedOpenOnInputClick\":true,\"firstPageCount\":50,\"afterScrollCount\":100,\"scrollKept\":true,\"cardHeight\":160,\"cardsKeptOnLoadMore\":true,\"cardsKeptOnAppRender\":true,\"thumbsAreWebp\":true,\"searchAsYouType\":true,\"reopenInstant\":true,\"editorOpen\":true}"
     },
     {
       "area": "Domain 2: Server Roles (Cargos) & Hierarchy Enforcement",
@@ -125,7 +125,7 @@
       "area": "Domain 11: Sessions & Self-Hosted Invites",
       "feature": "Reject calls without a session, ignore forged user ids, invite links on our own URL with a public landing page, join by full link",
       "status": "APPROVED",
-      "detail": "{\"anonRejected\":true,\"forgedIgnored\":true,\"inviteUrl\":\"http://127.0.0.1:52035/convite/GrsWk549XwIHRMfQ\",\"selfHosted\":true,\"landingOk\":true,\"bogusNotFound\":true,\"joinedByLink\":true}"
+      "detail": "{\"anonRejected\":true,\"forgedIgnored\":true,\"inviteUrl\":\"http://127.0.0.1:60358/convite/eY4zWzXog0tBEnlx\",\"selfHosted\":true,\"landingOk\":true,\"bogusNotFound\":true,\"joinedByLink\":true}"
     },
     {
       "area": "Domain 12: Delete Confirmation, Bigger Buttons & New Logo",
@@ -137,7 +137,13 @@
       "area": "Domain 13: Account Tab (E-mail, Password, Phone)",
       "feature": "Verify e-mail via UI code, change password (wrong current refused, other sessions revoked), verify and remove phone",
       "status": "APPROVED",
-      "detail": "{\"accountTabOpen\":true,\"emailVerified\":true,\"wrongCurrentRejected\":true,\"passwordChanged\":true,\"otherSessionRevoked\":true,\"thisStillWorks\":true,\"oldPasswordRejected\":true,\"newPasswordAccepted\":true,\"badPhoneRejected\":true,\"phoneDevMode\":true,\"wrongCodeRejected\":true,\"phoneVerified\":true,\"phoneRemoved\":true}"
+      "detail": "{\"accountTabOpen\":true,\"emailVerified\":true,\"wrongCurrentRejected\":true,\"passwordChanged\":true,\"otherSessionRevoked\":true,\"thisStillWorks\":true,\"oldPasswordRejected\":true,\"newPasswordAccepted\":true,\"badPhoneRejected\":true,\"phoneDevMode\":true,\"wrongCodeRejected\":true,\"phoneVerified\":true,\"phoneRemoved\":true,\"phoneMaskTyped\":true,\"phoneMaskBackspace\":true,\"phoneMaskedBr\":true}"
+    },
+    {
+      "area": "Domain 15: Saved Sessions & Account Switching",
+      "feature": "Switch between saved accounts without a password, stay signed in after restart, sign-out requires the password again",
+      "status": "APPROVED",
+      "detail": "{\"onMaria\":true,\"onDavis\":true,\"mariaNeedsPw\":true,\"davisDirect\":true,\"stillSignedInAfterRestart\":true}"
     },
     {
       "area": "Domain 14: Verified E-mail Required for Access",
@@ -149,179 +155,179 @@
       "area": "Phase 7: RAM Usage Optimization (< 80 MB)",
       "feature": "Verify total resident Working Set stays under 80 MB across startup, navigation, call, and post-call",
       "status": "APPROVED",
-      "detail": "Max Total Working Set = 33.66 MB (Stages: 1_startup=9.21MB, 2_after_navigation=32.8MB, 3_during_call=21.61MB, 4_after_call=33.66MB)"
+      "detail": "Max Total Working Set = 17.28 MB (Stages: 1_startup=4.72MB, 2_after_navigation=16.85MB, 3_during_call=17.28MB, 4_after_call=10.64MB)"
     }
   ],
   "memoryStages": [
     {
       "stage": "1_startup",
-      "mainWorkingSetMB": 4.64,
-      "rendererWorkingSetMB": 2.25,
-      "totalWorkingSetMB": 9.21,
-      "totalPrivateMB": 255.71,
-      "mainHeapUsedMB": 6.24,
+      "mainWorkingSetMB": 4.65,
+      "rendererWorkingSetMB": 0,
+      "totalWorkingSetMB": 4.72,
+      "totalPrivateMB": 260.96,
+      "mainHeapUsedMB": 6.25,
       "processes": [
         {
           "type": "Browser",
-          "pid": 11776,
-          "workingSetMB": 4.64,
-          "privateMB": 72.98
+          "pid": 8040,
+          "workingSetMB": 4.65,
+          "privateMB": 77.38
         },
         {
           "type": "GPU",
-          "pid": 22632,
-          "workingSetMB": 2.31,
-          "privateMB": 143.02
+          "pid": 22024,
+          "workingSetMB": 0.07,
+          "privateMB": 143.73
         },
         {
           "type": "Utility",
-          "pid": 9476,
+          "pid": 12836,
           "workingSetMB": 0,
-          "privateMB": 13.38
+          "privateMB": 13.45
         },
         {
           "type": "Tab",
-          "pid": 16304,
-          "workingSetMB": 2.25,
-          "privateMB": 26.32
+          "pid": 4116,
+          "workingSetMB": 0,
+          "privateMB": 26.41
         }
       ]
     },
     {
       "stage": "2_after_navigation",
-      "mainWorkingSetMB": 9.88,
-      "rendererWorkingSetMB": 4.42,
-      "totalWorkingSetMB": 32.8,
-      "totalPrivateMB": 445.7,
-      "mainHeapUsedMB": 6.45,
+      "mainWorkingSetMB": 7.91,
+      "rendererWorkingSetMB": 3.29,
+      "totalWorkingSetMB": 16.85,
+      "totalPrivateMB": 436.41,
+      "mainHeapUsedMB": 7.61,
       "processes": [
         {
           "type": "Browser",
-          "pid": 11776,
-          "workingSetMB": 9.88,
-          "privateMB": 77.43
+          "pid": 8040,
+          "workingSetMB": 7.91,
+          "privateMB": 82.95
         },
         {
           "type": "GPU",
-          "pid": 22632,
-          "workingSetMB": 14.59,
-          "privateMB": 235.63
+          "pid": 22024,
+          "workingSetMB": 1.23,
+          "privateMB": 219.87
         },
         {
           "type": "Utility",
-          "pid": 9476,
-          "workingSetMB": 0,
-          "privateMB": 13.67
+          "pid": 12836,
+          "workingSetMB": 0.72,
+          "privateMB": 13.74
         },
         {
           "type": "Tab",
-          "pid": 16304,
-          "workingSetMB": 4.42,
-          "privateMB": 45.1
+          "pid": 4116,
+          "workingSetMB": 3.29,
+          "privateMB": 44.75
         },
         {
           "type": "Utility",
-          "pid": 6480,
-          "workingSetMB": 3.84,
-          "privateMB": 14.35
+          "pid": 20836,
+          "workingSetMB": 3.63,
+          "privateMB": 14.13
         },
         {
           "type": "Utility",
-          "pid": 3488,
+          "pid": 9240,
           "workingSetMB": 0.07,
-          "privateMB": 59.52
+          "privateMB": 60.97
         }
       ]
     },
     {
       "stage": "3_during_call",
-      "mainWorkingSetMB": 4.66,
-      "rendererWorkingSetMB": 11.63,
-      "totalWorkingSetMB": 21.61,
-      "totalPrivateMB": 471.36,
-      "mainHeapUsedMB": 7.1,
+      "mainWorkingSetMB": 5.8,
+      "rendererWorkingSetMB": 7.11,
+      "totalWorkingSetMB": 17.28,
+      "totalPrivateMB": 480.82,
+      "mainHeapUsedMB": 8.32,
       "processes": [
         {
           "type": "Browser",
-          "pid": 11776,
-          "workingSetMB": 4.66,
-          "privateMB": 81.09
+          "pid": 8040,
+          "workingSetMB": 5.8,
+          "privateMB": 87.86
         },
         {
           "type": "GPU",
-          "pid": 22632,
-          "workingSetMB": 2.29,
-          "privateMB": 248.95
+          "pid": 22024,
+          "workingSetMB": 1.17,
+          "privateMB": 247.03
         },
         {
           "type": "Utility",
-          "pid": 9476,
+          "pid": 12836,
           "workingSetMB": 0,
-          "privateMB": 13.67
+          "privateMB": 13.74
         },
         {
           "type": "Tab",
-          "pid": 16304,
-          "workingSetMB": 11.63,
-          "privateMB": 53.75
+          "pid": 4116,
+          "workingSetMB": 7.11,
+          "privateMB": 57.08
         },
         {
           "type": "Utility",
-          "pid": 6480,
-          "workingSetMB": 2.97,
-          "privateMB": 14.36
+          "pid": 20836,
+          "workingSetMB": 3.12,
+          "privateMB": 14.15
         },
         {
           "type": "Utility",
-          "pid": 3488,
+          "pid": 9240,
           "workingSetMB": 0.07,
-          "privateMB": 59.52
+          "privateMB": 60.97
         }
       ]
     },
     {
       "stage": "4_after_call",
-      "mainWorkingSetMB": 5.94,
-      "rendererWorkingSetMB": 18.93,
-      "totalWorkingSetMB": 33.66,
-      "totalPrivateMB": 467.99,
-      "mainHeapUsedMB": 7.43,
+      "mainWorkingSetMB": 4.36,
+      "rendererWorkingSetMB": 1.97,
+      "totalWorkingSetMB": 10.64,
+      "totalPrivateMB": 469.25,
+      "mainHeapUsedMB": 7.11,
       "processes": [
         {
           "type": "Browser",
-          "pid": 11776,
-          "workingSetMB": 5.94,
-          "privateMB": 81.2
+          "pid": 8040,
+          "workingSetMB": 4.36,
+          "privateMB": 82.55
         },
         {
           "type": "GPU",
-          "pid": 22632,
-          "workingSetMB": 4.86,
-          "privateMB": 249.34
+          "pid": 22024,
+          "workingSetMB": 1.17,
+          "privateMB": 247.04
         },
         {
           "type": "Utility",
-          "pid": 9476,
+          "pid": 12836,
           "workingSetMB": 0,
-          "privateMB": 13.68
+          "privateMB": 13.97
         },
         {
           "type": "Tab",
-          "pid": 16304,
-          "workingSetMB": 18.93,
-          "privateMB": 49.82
+          "pid": 4116,
+          "workingSetMB": 1.97,
+          "privateMB": 50.57
         },
         {
           "type": "Utility",
-          "pid": 6480,
-          "workingSetMB": 3.86,
-          "privateMB": 14.43
+          "pid": 20836,
+          "workingSetMB": 3.08,
+          "privateMB": 14.15
         },
         {
           "type": "Utility",
-          "pid": 3488,
+          "pid": 9240,
           "workingSetMB": 0.07,
-          "privateMB": 59.52
+          "privateMB": 60.97
         }
       ]
     }

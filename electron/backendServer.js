@@ -5,7 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
-const { searchGifs, GIF_CATEGORIES } = require("./gifLibrary");
+const { searchGifs, prefetchTrendingGifs, GIF_CATEGORIES } = require("./gifLibrary");
 const { loadAppConfig } = require("./appConfig");
 const { sendEmail, sendSms, verificationEmail } = require("./accountDelivery");
 
@@ -182,6 +182,9 @@ function maskEmail(email) {
 function maskPhone(phone) {
   const p = String(phone || "");
   if (p.length < 8) return p;
+  // Brazil (+55 + DDD + 8/9 digits): (11) •••••-5678
+  const br = p.match(/^\+55(\d{2})(\d{4,5})(\d{4})$/);
+  if (br) return `(${br[1]}) ${"•".repeat(br[2].length)}-${br[3]}`;
   return p.slice(0, 3) + " " + "•".repeat(p.length - 7) + p.slice(-4);
 }
 
@@ -551,9 +554,10 @@ class DiscordBackendServer {
       this.db.exec("PRAGMA foreign_keys = ON;");
     }
 
-    // Ensure the primary owner user account exists without any fictional users
-    const ownerRow = this.db.prepare("SELECT id FROM users WHERE id = 'u_davis'").get();
-    if (!ownerRow) {
+    // Fresh install only: create the starter account and server. Once real
+    // accounts exist (or this one was deleted) nothing is recreated.
+    const anyUser = this.db.prepare("SELECT 1 FROM users LIMIT 1").get();
+    if (!anyUser) {
       const now = Date.now();
       this.db
         .prepare(
@@ -1459,7 +1463,7 @@ class DiscordBackendServer {
           .prepare(`SELECT * FROM users WHERE LOWER(email) = ? OR LOWER(username) = ?`)
           .get(clean, clean);
         if (!row) {
-          return { ok: false, error: "Conta não encontrada. Verifique seu e-mail/@username ou cadastre-se." };
+          return { ok: false, code: "ACCOUNT_NOT_FOUND", error: "Conta não encontrada. Verifique seu e-mail/@username ou cadastre-se." };
         }
         const passwordOk = verifyPassword(password, row.password_hash);
         if (!passwordOk) {
@@ -3462,6 +3466,7 @@ class DiscordBackendServer {
       srv.listen(preferredPort, "127.0.0.1", () => {
         this.server = srv;
         this.port = srv.address().port;
+        prefetchTrendingGifs();
         resolve(this.port);
       });
       srv.on("error", reject);

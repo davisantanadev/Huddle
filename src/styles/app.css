@@ -2163,47 +2163,30 @@ button {
 }
 
 /* ==========================================================================
-   GIF Picker Modal
+   GIF Picker Modal (rendered into #gif-picker-root by syncGifPicker)
    ========================================================================== */
-.gif-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(0, 0, 0, 0.72);
-  z-index: 999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  backdrop-filter: blur(4px);
-}
-
 .gif-modal-box {
-  width: 580px;
+  width: 680px;
   max-width: 95vw;
-  height: 520px;
-  background-color: var(--bg-chat);
-  border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  height: min(600px, 88vh);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.gif-modal-header {
-  padding: 14px 18px;
-  background-color: var(--bg-secondary);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--divider-subtle);
-}
-
-.gif-search-container {
-  padding: 12px 18px;
+.gif-picker-controls {
+  padding: 4px 18px 0 18px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background-color: var(--bg-channels);
+}
+
+.gif-search-row {
+  display: flex;
+  gap: 8px;
+}
+
+.gif-search-row .form-input {
+  flex: 1;
 }
 
 .gif-categories-bar {
@@ -2213,75 +2196,129 @@ button {
   padding-bottom: 4px;
 }
 
-.gif-cat-pill {
-  padding: 4px 10px;
+.gif-cat-chip {
+  height: 28px;
+  padding: 0 12px;
   border-radius: 14px;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   background-color: var(--bg-secondary);
   color: var(--text-muted);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.12s ease;
-  border: 1px solid transparent;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.gif-cat-pill:hover {
+.gif-cat-chip:hover {
   background-color: var(--bg-modifier-hover);
   color: var(--text-normal);
 }
 
-.gif-cat-pill.active {
+.gif-cat-chip.active {
   background-color: var(--brand-purple);
   color: #ffffff;
 }
 
-.gif-grid {
+.gif-results-scroller {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 14px 18px;
+  padding: 12px 18px;
+  overscroll-behavior: contain;
+}
+
+.gif-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
+  transition: opacity 0.15s ease;
 }
 
-.gif-card {
+.gif-grid.is-stale {
+  opacity: 0.5;
+}
+
+.gif-item-card {
   position: relative;
-  height: 110px;
-  border-radius: 6px;
+  aspect-ratio: 1.2;
+  border-radius: 8px;
   overflow: hidden;
-  cursor: pointer;
-  background-color: var(--bg-channels);
+  background-color: var(--bg-secondary);
   border: 2px solid transparent;
-  transition: transform 0.12s ease, border-color 0.12s ease;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.12s ease;
+  /* Off-screen cards skip layout/paint: keeps long result lists smooth */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 170px;
 }
 
-.gif-card:hover {
-  transform: scale(1.02);
+.gif-item-card:hover,
+.gif-item-card:focus-visible {
   border-color: var(--brand-purple);
-  z-index: 2;
 }
 
-.gif-card img {
+.gif-item-card img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-.gif-card-title {
+.gif-item-overlay {
   position: absolute;
-  bottom: 0;
   left: 0;
   right: 0;
-  padding: 4px 6px;
-  background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);
+  bottom: 0;
+  padding: 4px 8px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
   font-size: 11px;
-  font-weight: 600;
-  color: #fff;
+  color: #ffffff;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.gif-skeleton {
+  aspect-ratio: 1.2;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-modifier-hover) 50%, var(--bg-secondary) 75%);
+  background-size: 200% 100%;
+  animation: gif-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes gif-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gif-skeleton {
+    animation: none;
+  }
+}
+
+.gif-status-line {
+  text-align: center;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.gif-empty {
+  height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
+.gif-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 /* ==========================================================================

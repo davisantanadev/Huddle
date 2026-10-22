@@ -13,6 +13,8 @@ const SAVED_ACCOUNTS_KEY = "eco_saved_accounts_v1";
 // GIPHY returns at most 50 GIFs per request and rejects search offsets above 4999.
 const GIF_PAGE_SIZE = 50;
 const GIF_MAX_OFFSET = 5000;
+// Picker results kept per search/category so reopening or switching back is instant
+const GIF_CACHE_TTL_MS = 10 * 60 * 1000;
 // An unanswered DM call stops ringing and hangs up after this long
 const DM_CALL_RING_TIMEOUT_MS = 30000;
 
@@ -165,7 +167,8 @@ function createEmptyState() {
       loadingMore: false,
       hasMore: false,
       total: 0,
-      offset: 0
+      offset: 0,
+      searchId: 0 // bumps whenever results are replaced (not appended)
     },
     mediaEditor: {
       isOpen: false,
@@ -197,6 +200,10 @@ function createEmptyState() {
 class Store {
   constructor() {
     this.gifRequestSeq = 0;
+    // The GIF picker renders outside the main app tree and has its own listeners,
+    // so its updates never trigger a full app re-render
+    this.gifListeners = new Set();
+    this.gifCache = new Map(); // "query|category" -> { results, total, offset, hasMore, at }
     // Purge legacy illustrative localStorage state to free memory and remove fictional data
     try {
       localStorage.removeItem(LEGACY_STORAGE_KEY);
@@ -235,6 +242,7 @@ class Store {
     if (this.state.auth.isAuthenticated) {
       const ok = await this.syncFromBackend();
       if (!ok && !this.state.auth.emailGate) this.handleSessionExpired();
+      if (ok) setTimeout(() => this.prefetchGifs(), 1500);
     }
     this.connectRealtimeEvents();
     this.state.initialized = true;
@@ -468,13 +476,17 @@ class Store {
     }
   }
 
-  rememberAccount(user) {
+  // Each account that signed in on this device keeps its own session token, so
+  // switching back to it does not ask for the password again (like Discord)
+  rememberAccount(user, sessionToken) {
+    const previous = this.getSavedAccounts().find((a) => a.id === user.id);
     const entry = {
       id: user.id,
       username: user.username,
       displayName: user.displayName,
       avatarColor: user.avatarColor,
-      avatarUrl: user.avatarUrl || ""
+      avatarUrl: user.avatarUrl || "",
+      sessionToken: sessionToken !== undefined ? sessionToken : previous?.sessionToken || null
     };
     const list = [entry, ...this.getSavedAccounts().filter((a) => a.id !== user.id)].slice(0, 8);
     try {
@@ -482,12 +494,32 @@ class Store {
     } catch {}
   }
 
+  // Removes an account from "Contas neste dispositivo" (e.g. it was deleted)
+  forgetAccount(userId) {
+    const list = this.getSavedAccounts().filter((a) => a.id !== userId);
+    try {
+      localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(list));
+    } catch {}
+  }
+
+  forgetAccountSession(userId) {
+    const list = this.getSavedAccounts().map((a) => (a.id === userId ? { ...a, sessionToken: null } : a));
+    try {
+      localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(list));
+    } catch {}
+  }
+
+  hasSavedSession(userId) {
+    return Boolean(this.getSavedAccounts().find((a) => a.id === userId)?.sessionToken);
+  }
+
   // Shared tail of login/register/switch: adopt the new session and load its data
   async startSession(res) {
     NativeBridge.setSessionToken(res.sessionToken);
     this.state.auth.isAuthenticated = true;
     this.state.auth.currentUserId = res.user.id;
-    this.rememberAccount(res.user);
+    this.rememberAccount(res.user, res.sessionToken);
+    setTimeout(() => this.prefetchGifs(), 1500);
     if (res.emailVerificationRequired) {
       this.state.auth.emailGate = {
         sentTo: res.verification?.sentTo || "",
@@ -557,6 +589,7 @@ class Store {
   // The backend rejected our token (expired, revoked or password changed elsewhere)
   handleSessionExpired() {
     if (!this.state.auth.isAuthenticated && !NativeBridge.sessionToken) return;
+    this.forgetAccountSession(this.state.auth.currentUserId);
     NativeBridge.setSessionToken(null);
     if (this.unsubscribeEvents) {
       this.unsubscribeEvents();
@@ -568,20 +601,37 @@ class Store {
     this.notify();
   }
 
-  // Switching accounts is a full login: the target account's password is checked by the backend
+  // Without a password, uses the account's saved session; returns
+  // { needsPassword: true } when there is none (or it expired/was revoked).
+  // The account being left keeps its session so you can switch back.
   async switchAccount(userId, password) {
-    const target = this.state.users[userId] || this.getSavedAccounts().find((a) => a.id === userId);
+    const saved = this.getSavedAccounts().find((a) => a.id === userId);
+    const target = saved || this.state.users[userId];
     if (!target) return { ok: false, error: "Usuário não encontrado." };
-    const auth = await NativeBridge.rpc("login", { emailOrUsername: target.username, password });
-    if (!auth.ok) return { ok: false, error: auth.error || "Senha incorreta." };
-    if (auth.user?.id !== userId) return { ok: false, error: "Não foi possível confirmar esta conta." };
-    if (this.state.auth.isAuthenticated) {
-      if (this.state.voice.connectedChannelId) {
-        await this.leaveVoiceChannel();
+
+    let auth;
+    if (!password) {
+      if (!saved?.sessionToken) return { ok: false, needsPassword: true };
+      const probe = await NativeBridge.rpcAs(saved.sessionToken, "getAccountSecurity", {});
+      if (probe?.code === "UNAUTHENTICATED") {
+        this.forgetAccountSession(userId);
+        return { ok: false, needsPassword: true };
       }
-      // End the previous account's session before adopting the new one
-      await NativeBridge.rpc("logout", {});
+      auth = { sessionToken: saved.sessionToken, user: { ...saved } };
+    } else {
+      auth = await NativeBridge.rpc("login", { emailOrUsername: target.username, password });
+      if (!auth.ok && auth.code === "ACCOUNT_NOT_FOUND") {
+        this.forgetAccount(userId);
+        return { ok: false, accountRemoved: true, error: "Esta conta não existe mais e foi removida da lista." };
+      }
+      if (!auth.ok) return { ok: false, error: auth.error || "Senha incorreta." };
+      if (auth.user?.id !== userId) return { ok: false, error: "Não foi possível confirmar esta conta." };
     }
+
+    if (this.state.auth.isAuthenticated && this.state.voice.connectedChannelId) {
+      await this.leaveVoiceChannel();
+    }
+    this.state.auth.emailGate = null;
     return this.startSession(auth);
   }
 
@@ -589,6 +639,8 @@ class Store {
     if (this.state.voice.connectedChannelId) {
       await this.leaveVoiceChannel();
     }
+    // Signing out ends this account's session here; next time it asks for the password
+    this.forgetAccountSession(this.state.auth.currentUserId);
     await NativeBridge.rpc("logout", {});
     NativeBridge.setSessionToken(null);
     if (this.unsubscribeEvents) {
@@ -1559,25 +1611,81 @@ class Store {
   // ==========================================================================
   // Animated GIF Library & Search
   // ==========================================================================
+  subscribeGifPicker(fn) {
+    this.gifListeners.add(fn);
+    return () => this.gifListeners.delete(fn);
+  }
+
+  notifyGifPicker() {
+    for (const fn of this.gifListeners) fn(this.state);
+  }
+
+  gifCacheKey(query, category) {
+    return `${String(query || "").trim().toLowerCase()}|${category || "All"}`;
+  }
+
+  getCachedGifs(query, category) {
+    const hit = this.gifCache.get(this.gifCacheKey(query, category));
+    if (!hit || Date.now() - hit.at > GIF_CACHE_TTL_MS) return null;
+    return hit;
+  }
+
+  cacheGifs(query, category, gp) {
+    this.gifCache.set(this.gifCacheKey(query, category), {
+      results: gp.results,
+      total: gp.total,
+      offset: gp.offset,
+      hasMore: gp.hasMore,
+      at: Date.now()
+    });
+  }
+
+  // Loads the trending feed into the cache in the background, so the first
+  // time the picker opens it shows GIFs immediately
+  async prefetchGifs() {
+    if (this.getCachedGifs("", "All") || !NativeBridge.sessionToken) return;
+    const res = await NativeBridge.rpc("searchGifs", { query: "", category: "All", limit: GIF_PAGE_SIZE, offset: 0 });
+    if (!res?.ok) return;
+    const gifs = res.gifs || [];
+    this.cacheGifs("", "All", {
+      results: gifs,
+      total: res.total || 0,
+      offset: gifs.length,
+      hasMore: gifs.length > 0 && gifs.length < Math.min(res.total || 0, GIF_MAX_OFFSET)
+    });
+  }
+
   async searchGifs({ query = "", category = "All", limit = GIF_PAGE_SIZE, offset = 0 } = {}) {
     const requestId = ++this.gifRequestSeq;
-    this.state.gifPicker.loading = true;
-    this.state.gifPicker.loadingMore = false;
-    this.notify({ skipPersist: true });
+    const gp = this.state.gifPicker;
+    gp.query = query;
+    gp.category = category;
+    gp.loadingMore = false;
+
+    const cached = offset === 0 && limit === GIF_PAGE_SIZE ? this.getCachedGifs(query, category) : null;
+    if (cached) {
+      Object.assign(gp, { results: cached.results, total: cached.total, offset: cached.offset, hasMore: cached.hasMore, loading: false });
+      gp.searchId++;
+      this.notifyGifPicker();
+      return { ok: true, gifs: cached.results, total: cached.total, cached: true };
+    }
+
+    gp.loading = true;
+    this.notifyGifPicker();
     const res = await NativeBridge.rpc("searchGifs", { query, category, limit, offset });
     if (requestId !== this.gifRequestSeq) return res; // a newer search replaced this one
-    this.state.gifPicker.loading = false;
+    gp.loading = false;
     if (res.ok) {
       const gifs = res.gifs || [];
-      this.state.gifPicker.results = gifs;
-      this.state.gifPicker.total = res.total || 0;
-      this.state.gifPicker.offset = offset + gifs.length;
-      this.state.gifPicker.hasMore = gifs.length > 0 && this.state.gifPicker.offset < Math.min(res.total || 0, GIF_MAX_OFFSET);
-      this.state.gifPicker.categories = res.categories || [];
-      this.state.gifPicker.query = query;
-      this.state.gifPicker.category = category;
+      gp.results = gifs;
+      gp.total = res.total || 0;
+      gp.offset = offset + gifs.length;
+      gp.hasMore = gifs.length > 0 && gp.offset < Math.min(res.total || 0, GIF_MAX_OFFSET);
+      gp.categories = res.categories || [];
+      gp.searchId++;
+      if (offset === 0 && limit === GIF_PAGE_SIZE) this.cacheGifs(query, category, gp);
     }
-    this.notify({ skipPersist: true });
+    this.notifyGifPicker();
     return res;
   }
 
@@ -1587,7 +1695,7 @@ class Store {
     if (!gp.isOpen || gp.loading || gp.loadingMore || !gp.hasMore) return;
     const requestId = this.gifRequestSeq;
     gp.loadingMore = true;
-    this.notify({ skipPersist: true });
+    this.notifyGifPicker();
     const res = await NativeBridge.rpc("searchGifs", {
       query: gp.query,
       category: gp.category,
@@ -1603,19 +1711,20 @@ class Store {
       gp.total = res.total || gp.total;
       gp.offset += gifs.length;
       gp.hasMore = gifs.length > 0 && gp.offset < Math.min(gp.total, GIF_MAX_OFFSET);
+      this.cacheGifs(gp.query, gp.category, gp);
     } else {
       gp.hasMore = false;
     }
-    this.notify({ skipPersist: true });
+    this.notifyGifPicker();
   }
 
   openGifPicker(target = "avatar") {
-    this.state.gifPicker.isOpen = true;
-    this.state.gifPicker.target = target;
-    this.state.gifPicker.query = "";
-    this.state.gifPicker.category = "All";
-    this.notify({ skipPersist: true });
-    this.searchGifs({ category: "All" });
+    const gp = this.state.gifPicker;
+    gp.isOpen = true;
+    gp.target = target;
+    gp.results = [];
+    gp.searchId++;
+    this.searchGifs({ query: "", category: "All" });
   }
 
   closeGifPicker() {
@@ -1623,7 +1732,7 @@ class Store {
     this.state.gifPicker.isOpen = false;
     this.state.gifPicker.loading = false;
     this.state.gifPicker.loadingMore = false;
-    this.notify({ skipPersist: true });
+    this.notifyGifPicker();
   }
 
   selectGif(gifUrl) {

@@ -38,18 +38,22 @@ export const NativeBridge = {
     this.sessionToken = token || null;
   },
 
-  async rpc(action, params = {}) {
-    let res;
+  // Raw call with an explicit token and no session side effects (used to probe
+  // saved accounts' sessions without signing the current one out)
+  async rpcAs(token, action, params = {}) {
     if (this.isElectron() && window.DiscordNative.backend?.rpc) {
-      res = await window.DiscordNative.backend.rpc(action, params, this.sessionToken);
-    } else {
-      const info = this.getBackendInfo();
-      const baseUrl = info.httpUrl || info.url || (typeof window !== "undefined" ? window.location.origin : "");
-      const headers = { "Content-Type": "application/json" };
-      if (this.sessionToken) headers.Authorization = `Bearer ${this.sessionToken}`;
-      const httpRes = await fetch(`${baseUrl}/api/rpc`, { method: "POST", headers, body: JSON.stringify({ action, params }) });
-      res = await httpRes.json();
+      return window.DiscordNative.backend.rpc(action, params, token);
     }
+    const info = this.getBackendInfo();
+    const baseUrl = info.httpUrl || info.url || (typeof window !== "undefined" ? window.location.origin : "");
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const httpRes = await fetch(`${baseUrl}/api/rpc`, { method: "POST", headers, body: JSON.stringify({ action, params }) });
+    return httpRes.json();
+  },
+
+  async rpc(action, params = {}) {
+    const res = await this.rpcAs(this.sessionToken, action, params);
     if (res && res.code === "UNAUTHENTICATED" && typeof this.onUnauthenticated === "function") {
       this.onUnauthenticated();
     }

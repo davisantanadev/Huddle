@@ -22,6 +22,9 @@ async function build() {
     asar: false,
     icon: iconPath,
     ignore: [
+      // Secrets stay out of the executable (the app reads them from %APPDATA%\Eco)
+      /^\/app\.config\.local\.json$/,
+      /^\/\.env/,
       /^\/\.git($|\/)/,
       /^\/dist($|\/)/,
       /^\/docs\/screenshots($|\/)/

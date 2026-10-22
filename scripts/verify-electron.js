@@ -903,6 +903,7 @@ async function runVerification() {
     document.getElementById("gif-search-form").requestSubmit();
     await waitFor(() => !store.getState().gifPicker.loading && store.getState().gifPicker.query === "cat");
     const firstPageCount = store.getState().gifPicker.results.length;
+    const firstCard = document.querySelector('[data-testid="gif-card"]');
     const scroller = document.getElementById("gif-results-scroller");
     scroller.scrollTop = scroller.scrollHeight;
     scroller.dispatchEvent(new Event("scroll"));
@@ -910,6 +911,25 @@ async function runVerification() {
     const afterScrollCount = store.getState().gifPicker.results.length;
     const scrollKept = document.getElementById("gif-results-scroller").scrollTop > 0;
     const cardHeight = Math.round(document.querySelector('[data-testid="gif-card"]').getBoundingClientRect().height);
+
+    // Performance: loading more appends instead of rebuilding, and a full app
+    // re-render leaves the picker untouched (no re-download/re-decode of GIFs)
+    const cardsKeptOnLoadMore = firstCard.isConnected && document.querySelector('[data-testid="gif-card"]') === firstCard;
+    store.notify();
+    const cardsKeptOnAppRender = firstCard.isConnected;
+    const thumbsAreWebp = store.getState().gifPicker.results.every((g) => g.previewUrl.split("?")[0].endsWith(".webp"));
+
+    // Search as you type (debounced), no submit needed
+    const typed = document.getElementById("gif-search-input");
+    typed.value = "dog";
+    typed.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() => store.getState().gifPicker.query === "dog" && !store.getState().gifPicker.loading, 5000);
+    const searchAsYouType = store.getState().gifPicker.query === "dog" && store.getState().gifPicker.results.length > 0;
+
+    // Reopening shows cached results in the same tick
+    store.closeGifPicker();
+    store.openGifPicker("avatar");
+    const reopenInstant = document.querySelectorAll('[data-testid="gif-card"]').length > 0 && !store.getState().gifPicker.loading;
 
     store.selectGif(allRes.gifs[0].url);
     await new Promise((r) => setTimeout(r, 100));
@@ -928,6 +948,11 @@ async function runVerification() {
       afterScrollCount,
       scrollKept,
       cardHeight,
+      cardsKeptOnLoadMore,
+      cardsKeptOnAppRender,
+      thumbsAreWebp,
+      searchAsYouType,
+      reopenInstant,
       editorOpen
     };
   })()`);
@@ -944,6 +969,11 @@ async function runVerification() {
       gifSuiteCheck.afterScrollCount > gifSuiteCheck.firstPageCount &&
       gifSuiteCheck.scrollKept &&
       gifSuiteCheck.cardHeight > 80 &&
+      gifSuiteCheck.cardsKeptOnLoadMore &&
+      gifSuiteCheck.cardsKeptOnAppRender &&
+      gifSuiteCheck.thumbsAreWebp &&
+      gifSuiteCheck.searchAsYouType &&
+      gifSuiteCheck.reopenInstant &&
       gifSuiteCheck.editorOpen,
     JSON.stringify(gifSuiteCheck)
   );
@@ -1654,6 +1684,22 @@ async function runVerification() {
     const newPwLogin = await backend.rpc("login", { emailOrUsername: "davis_dev", password: "novaSenha123" });
     await store.changePassword("novaSenha123", "password123");
 
+    // Phone field formats as you type: (DD) NNNNN-NNNN
+    q('[data-testid="change-phone-btn"]').click();
+    await wait(150);
+    const phoneEl = q('[data-testid="account-phone-input"]');
+    for (const ch of "11999998888") {
+      phoneEl.value += ch;
+      phoneEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ch }));
+    }
+    const typedPhone = phoneEl.value;
+    // Backspacing over the "-" removes a digit instead of the mask putting it right back
+    phoneEl.value = "(11) 999998888";
+    phoneEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+    const afterBackspace = phoneEl.value;
+    q('[data-testid="change-phone-btn"]').click();
+    await wait(100);
+
     // Phone: request with password, confirm with the code, then remove
     const badPhone = await store.requestPhoneVerification("123", "password123");
     const phoneReq = await store.requestPhoneVerification("+55 11 99999-8888", "password123");
@@ -1678,7 +1724,10 @@ async function runVerification() {
       phoneDevMode: phoneReq.ok && phoneReq.devMode === true && /^\\d{6}$/.test(phoneReq.devCode || ""),
       wrongCodeRejected: !wrongCode.ok,
       phoneVerified: phoneOk.ok && afterPhone.phoneVerified && afterPhone.phoneMasked.endsWith("88"),
-      phoneRemoved: removed.ok && !afterRemove.phone
+      phoneRemoved: removed.ok && !afterRemove.phone,
+      phoneMaskTyped: typedPhone === "(11) 99999-8888",
+      phoneMaskBackspace: afterBackspace === "(11) 9999-9888",
+      phoneMaskedBr: afterPhone.phoneMasked === "(11) •••••-8888"
     };
   })()`);
 
@@ -1725,6 +1774,50 @@ async function runVerification() {
     return { regOk: reg.ok, gateShown, appHidden, noDataLoaded, wrongShowsError, appAfter, verifiedUserNotGated };
   })()`);
   backendServer.config.requireVerifiedEmail = false;
+
+
+  // =========================================================================
+  // SUITE 27: Saved Sessions — switch accounts without the password, stay
+  // signed in after the app restarts, sign-out forgets the session
+  // =========================================================================
+  const savedSessionCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const davisId = store.getState().auth.currentUserId;
+    const maria = store.getSavedAccounts().find((a) => a.username === "maria_real");
+
+    const toMaria = await store.switchAccount(maria.id);
+    const onMaria = toMaria.ok && store.getState().auth.currentUserId === maria.id;
+    const backToDavis = await store.switchAccount(davisId);
+    const onDavis = backToDavis.ok && store.getState().auth.currentUserId === davisId;
+
+    // Signing out of an account forgets its session: next time it needs the password
+    await store.switchAccount(maria.id);
+    await store.logout();
+    const mariaNeedsPw = (await store.switchAccount(maria.id)).needsPassword === true;
+    const davisDirect = (await store.switchAccount(davisId)).ok && store.getState().auth.currentUserId === davisId;
+    await wait(200);
+    return { onMaria, onDavis, mariaNeedsPw, davisDirect, davisId };
+  })()`);
+
+  // Reload the window: same as reopening the app, it must come back signed in
+  mainWin.webContents.reload();
+  await new Promise((resolve) => mainWin.webContents.once("did-finish-load", resolve));
+  await delay(1500);
+  const afterReload = await mainWin.webContents.executeJavaScript(`(() => {
+    const st = window.__DISCORD_STORE__.getState();
+    return { authenticated: st.auth.isAuthenticated, userId: st.auth.currentUserId, appShown: Boolean(document.querySelector('[data-testid="guilds-rail"]')) };
+  })()`);
+  savedSessionCheck.stillSignedInAfterRestart =
+    afterReload.authenticated && afterReload.appShown && afterReload.userId === savedSessionCheck.davisId;
+  delete savedSessionCheck.davisId;
+
+  recordTest(
+    "Domain 15: Saved Sessions & Account Switching",
+    "Switch between saved accounts without a password, stay signed in after restart, sign-out requires the password again",
+    Object.values(savedSessionCheck).every(Boolean),
+    JSON.stringify(savedSessionCheck)
+  );
 
   await mainWin.webContents.executeJavaScript(`(async () => {
     const b = document.createElement("button");

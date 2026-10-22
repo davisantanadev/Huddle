@@ -9,14 +9,24 @@
 //   MAIL_FROM             sender address, e.g. "Eco <no-reply@seudominio.com>"
 //   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM   enables real SMS delivery
 //   GIPHY_API_KEY         enables the GIF library (otherwise it falls back to offline GIFs)
-// app.config.local.json (git-ignored) is merged over app.config.json, so keys can
-// live there instead of in environment variables.
+// Secrets go in app.config.local.json, which is never committed nor packaged
+// into the .exe. It is read from (later wins):
+//   1. the project root            (development: npm start / npm test)
+//   2. the app's data folder        (%APPDATA%\Eco — set by main.js via ECO_DATA_DIR)
+// so an installed app finds its keys outside the executable.
 
 const fs = require("fs");
 const path = require("path");
 
 const CONFIG_PATH = path.resolve(__dirname, "..", "app.config.json");
-const LOCAL_CONFIG_PATH = path.resolve(__dirname, "..", "app.config.local.json");
+const LOCAL_CONFIG_NAME = "app.config.local.json";
+const LOCAL_CONFIG_PATH = path.resolve(__dirname, "..", LOCAL_CONFIG_NAME);
+
+function localConfigPaths() {
+  const paths = [LOCAL_CONFIG_PATH];
+  if (process.env.ECO_DATA_DIR) paths.push(path.join(process.env.ECO_DATA_DIR, LOCAL_CONFIG_NAME));
+  return paths;
+}
 
 function readJson(filePath) {
   try {
@@ -28,7 +38,14 @@ function readJson(filePath) {
 
 function loadAppConfig() {
   const shared = readJson(CONFIG_PATH);
-  const local = readJson(LOCAL_CONFIG_PATH);
+  const local = {};
+  for (const p of localConfigPaths()) {
+    const data = readJson(p);
+    Object.assign(local, data, {
+      email: { ...local.email, ...data.email },
+      sms: { ...local.sms, ...data.sms }
+    });
+  }
   const file = {
     ...shared,
     ...local,
@@ -60,4 +77,4 @@ function loadAppConfig() {
   };
 }
 
-module.exports = { loadAppConfig, CONFIG_PATH, LOCAL_CONFIG_PATH };
+module.exports = { loadAppConfig, localConfigPaths, CONFIG_PATH, LOCAL_CONFIG_PATH };

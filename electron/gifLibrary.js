@@ -21,10 +21,33 @@ const https = require("https");
 // =============================================================================
 
 const { loadAppConfig } = require("./appConfig");
-const GIPHY_API_KEY = loadAppConfig().giphyApiKey;
+const giphyApiKey = () => loadAppConfig().giphyApiKey;
 
 const GIPHY_HOST = "api.giphy.com";
 const REQUEST_TIMEOUT_MS = 7000;
+
+// Results are cached so reopening the picker or revisiting a category is instant
+const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 200;
+const responseCache = new Map(); // "endpoint?query" -> { at, json }
+
+function getCached(key) {
+  const hit = responseCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > CACHE_TTL_MS) {
+    responseCache.delete(key);
+    return null;
+  }
+  return hit.json;
+}
+
+function setCached(key, json) {
+  responseCache.delete(key);
+  responseCache.set(key, { at: Date.now(), json });
+  if (responseCache.size > CACHE_MAX_ENTRIES) {
+    responseCache.delete(responseCache.keys().next().value); // oldest entry
+  }
+}
 
 const GIF_CATEGORIES = [
   "Todos",
@@ -59,8 +82,16 @@ function normalizeCategory(raw) {
   return clean;
 }
 
-// Perform a GET request against the GIPHY REST API and parse JSON.
-function giphyRequest(pathWithQuery) {
+// Perform a GET request against the GIPHY REST API and parse JSON (cached).
+async function giphyRequest(pathWithQuery) {
+  const cached = getCached(pathWithQuery);
+  if (cached) return cached;
+  const json = await giphyFetch(pathWithQuery);
+  setCached(pathWithQuery, json);
+  return json;
+}
+
+function giphyFetch(pathWithQuery) {
   return new Promise((resolve, reject) => {
     const req = https.get(
       {
@@ -105,6 +136,18 @@ function pickGifUrl(images, keys) {
 }
 
 // Map a raw GIPHY gif object into our normalized shape used by the frontend.
+// Grid thumbnails use the downsampled 200px WebP (~44 KB, still animated) instead
+// of the fixed_height GIF (~800 KB): ~18x less to download and far cheaper to
+// decode, which keeps the grid smooth with dozens of animations on screen.
+function pickPreviewUrl(images) {
+  for (const key of ["fixed_width_downsampled", "preview_webp", "fixed_width_small", "fixed_width"]) {
+    const entry = images[key];
+    if (entry && entry.webp) return entry.webp;
+    if (entry && key === "preview_webp" && entry.url) return entry.url;
+  }
+  return pickGifUrl(images, ["fixed_width", "fixed_height", "preview_gif", "downsized"]);
+}
+
 function mapGiphyGif(g, category) {
   const images = g.images || {};
   const fullUrl = pickGifUrl(images, [
@@ -114,9 +157,8 @@ function mapGiphyGif(g, category) {
     "fixed_height",
     "fixed_width"
   ]);
-  const previewUrl =
-    pickGifUrl(images, ["fixed_height", "fixed_width", "preview_gif", "downsized"]) || fullUrl;
-  const dims = images.fixed_height || images.original || {};
+  const previewUrl = pickPreviewUrl(images) || fullUrl;
+  const dims = images.fixed_width || images.original || {};
   return {
     id: `giphy_${g.id}`,
     title: g.title && g.title.trim() ? g.title.trim() : "GIF",
@@ -325,7 +367,7 @@ async function searchGifs({ query = "", category = "Todos", limit = 16, offset =
     let json;
     if (effectiveQuery) {
       const qs = buildQuery({
-        api_key: GIPHY_API_KEY,
+        api_key: giphyApiKey(),
         q: effectiveQuery,
         limit: safeLimit,
         offset: safeOffset,
@@ -336,7 +378,7 @@ async function searchGifs({ query = "", category = "Todos", limit = 16, offset =
       json = await giphyRequest(`/v1/gifs/search?${qs}`);
     } else {
       const qs = buildQuery({
-        api_key: GIPHY_API_KEY,
+        api_key: giphyApiKey(),
         limit: safeLimit,
         offset: safeOffset,
         rating: "pg-13",
@@ -394,8 +436,14 @@ async function searchGifs({ query = "", category = "Todos", limit = 16, offset =
   }
 }
 
+// Warm the cache with the trending feed so the picker opens instantly
+function prefetchTrendingGifs() {
+  return searchGifs({ category: "Todos", limit: 50, offset: 0 }).catch(() => {});
+}
+
 module.exports = {
   searchGifs,
+  prefetchTrendingGifs,
   GIF_CATEGORIES,
   CATEGORY_SEARCH_TERMS,
   createAnimatedGifBuffer,
