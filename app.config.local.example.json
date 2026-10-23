@@ -1,12 +1,3 @@
 {
-  "giphyApiKey": "",
-  "email": {
-    "resendApiKey": "",
-    "from": "Eco <no-reply@seudominio.com>"
-  },
-  "sms": {
-    "twilioAccountSid": "",
-    "twilioAuthToken": "",
-    "from": "+15550000000"
-  }
+  "giphyApiKey": ""
 }

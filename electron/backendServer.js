@@ -7,10 +7,15 @@ const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { searchGifs, prefetchTrendingGifs, GIF_CATEGORIES } = require("./gifLibrary");
 const { loadAppConfig } = require("./appConfig");
-const { sendEmail, sendSms, verificationEmail } = require("./accountDelivery");
+const { isSupabaseConfigured, sendEmailCode, verifyEmailCode } = require("./accountDelivery");
 
 const VERIFICATION_CODE_TTL_MS = 10 * 60 * 1000;
 const VERIFICATION_MAX_ATTEMPTS = 5;
+// Marks verification rows whose code lives in Supabase (the email-otp Edge
+// Function e-mails and checks it)
+const SUPABASE_CODE = "supabase";
+// Same lifetime as CODE_TTL_MS in supabase/functions/email-otp
+const SUPABASE_CODE_TTL_MS = 10 * 60 * 1000;
 const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
 
 // Login sessions: opaque random tokens, stored only as SHA-256 hashes.
@@ -159,33 +164,11 @@ function isValidEmail(email) {
 
 // Accepts "+55 11 91234-5678", "(11) 91234-5678", etc. Numbers without a
 // country code are assumed to be Brazilian (+55).
-function normalizePhone(raw) {
-  const str = String(raw || "").trim();
-  const digits = str.replace(/\D/g, "");
-  if (!digits) return "";
-  if (str.startsWith("+")) return "+" + digits;
-  if (digits.length === 10 || digits.length === 11) return "+55" + digits;
-  return "+" + digits;
-}
-
-function isValidPhone(phone) {
-  return /^\+[1-9]\d{7,14}$/.test(phone);
-}
-
 function maskEmail(email) {
   const [user, domain] = String(email || "").split("@");
   if (!domain) return email;
   const visible = user.slice(0, Math.min(2, user.length));
   return `${visible}${"•".repeat(Math.max(1, user.length - visible.length))}@${domain}`;
-}
-
-function maskPhone(phone) {
-  const p = String(phone || "");
-  if (p.length < 8) return p;
-  // Brazil (+55 + DDD + 8/9 digits): (11) •••••-5678
-  const br = p.match(/^\+55(\d{2})(\d{4,5})(\d{4})$/);
-  if (br) return `(${br[1]}) ${"•".repeat(br[2].length)}-${br[3]}`;
-  return p.slice(0, 3) + " " + "•".repeat(p.length - 7) + p.slice(-4);
 }
 
 function validateNewPassword(password) {
@@ -503,7 +486,7 @@ class DiscordBackendServer {
 
     addCol("guild_roles", "position", "INTEGER NOT NULL DEFAULT 0");
 
-    // Account security: verified e-mail, phone number and password rotation
+    // Account security: verified e-mail and password rotation (phone columns are legacy, unused)
     addCol("users", "email_verified", "INTEGER NOT NULL DEFAULT 0");
     addCol("users", "phone", "TEXT DEFAULT NULL");
     addCol("users", "phone_verified", "INTEGER NOT NULL DEFAULT 0");
@@ -753,8 +736,6 @@ class DiscordBackendServer {
       createdAt: row.created_at || "Today",
       version: Number(row.version || 1),
       emailVerified: Boolean(row.email_verified),
-      phone: row.phone || "",
-      phoneVerified: Boolean(row.phone_verified),
       isBot: false
     };
   }
@@ -764,8 +745,6 @@ class DiscordBackendServer {
     if (!full) return null;
     delete full.email;
     delete full.emailVerified;
-    delete full.phone;
-    delete full.phoneVerified;
     return full;
   }
 
@@ -1200,7 +1179,11 @@ class DiscordBackendServer {
   }
 
   // ==========================================================================
-  // Account security: verification codes for e-mail and phone
+  // Account security: e-mail verification codes
+  // With Supabase configured, its email-otp Edge Function generates, e-mails
+  // (via Brevo) and checks the code
+  // (rows store code_hash = SUPABASE_CODE). Without it, a local code is shown
+  // on screen (development mode).
   // ==========================================================================
   hashVerificationCode(id, code) {
     return crypto.createHash("sha256").update(`${id}:${code}`).digest("hex");
@@ -1219,58 +1202,51 @@ class DiscordBackendServer {
       return { ok: false, status: 429, error: `Aguarde ${wait}s para solicitar um novo código.` };
     }
 
+    const viaSupabase = isSupabaseConfigured(this.config);
+    if (viaSupabase) {
+      const delivery = await sendEmailCode(this.config, target);
+      if (!delivery.delivered) return { ok: false, status: 502, error: delivery.error };
+    }
+
     // Only the newest code for a purpose stays valid
     this.db
       .prepare(`UPDATE verification_codes SET consumed = 1 WHERE user_id = ? AND purpose = ? AND consumed = 0`)
       .run(userId, purpose);
 
     const id = "vc_" + crypto.randomBytes(8).toString("hex");
-    const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+    const code = viaSupabase ? null : String(crypto.randomInt(0, 1000000)).padStart(6, "0");
     this.db
       .prepare(
         `INSERT INTO verification_codes (id, user_id, purpose, target, code_hash, attempts, created_at, expires_at, consumed)
          VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)`
       )
-      .run(id, userId, purpose, target, this.hashVerificationCode(id, code), now, now + VERIFICATION_CODE_TTL_MS);
+      .run(
+        id,
+        userId,
+        purpose,
+        target,
+        viaSupabase ? SUPABASE_CODE : this.hashVerificationCode(id, code),
+        now,
+        now + (viaSupabase ? SUPABASE_CODE_TTL_MS : VERIFICATION_CODE_TTL_MS)
+      );
 
-    const appName = this.config.appName;
-    let delivery;
-    if (purpose === "phone_verify") {
-      delivery = await sendSms(this.config, {
-        to: target,
-        body: `${appName}: seu código de verificação é ${code}. Expira em 10 minutos.`
-      });
-    } else {
-      const label =
-        purpose === "email_change"
-          ? "Use o código abaixo para confirmar seu novo endereço de e-mail."
-          : "Use o código abaixo para verificar seu endereço de e-mail.";
-      delivery = await sendEmail(this.config, { to: target, ...verificationEmail(appName, code, label) });
-    }
-
-    if (delivery.error) {
-      this.db.prepare(`UPDATE verification_codes SET consumed = 1 WHERE id = ?`).run(id);
-      return { ok: false, status: 502, error: delivery.error };
-    }
-
-    const channel = purpose === "phone_verify" ? "sms" : "email";
     const result = {
       ok: true,
-      channel,
-      sentTo: channel === "sms" ? maskPhone(target) : maskEmail(target),
-      expiresAt: now + VERIFICATION_CODE_TTL_MS,
-      delivered: delivery.delivered
+      channel: "email",
+      sentTo: maskEmail(target),
+      expiresAt: now + (viaSupabase ? SUPABASE_CODE_TTL_MS : VERIFICATION_CODE_TTL_MS),
+      delivered: viaSupabase
     };
-    // No provider configured yet: hand the code back so the flow can be tested locally
-    if (delivery.devMode) {
+    // No e-mail service configured: hand the code back so the flow can be tested locally
+    if (!viaSupabase) {
       result.devMode = true;
       result.devCode = code;
-      console.log(`[account] ${purpose} code for ${target}: ${code} (no ${channel} provider configured)`);
+      console.log(`[account] ${purpose} code for ${target}: ${code} (Supabase not configured)`);
     }
     return result;
   }
 
-  checkVerificationCode(userId, purpose, code) {
+  async checkVerificationCode(userId, purpose, code) {
     const row = this.db
       .prepare(
         `SELECT * FROM verification_codes
@@ -1286,10 +1262,25 @@ class DiscordBackendServer {
       this.db.prepare(`UPDATE verification_codes SET consumed = 1 WHERE id = ?`).run(row.id);
       return { ok: false, error: "Muitas tentativas incorretas. Solicite um novo código." };
     }
+
     const clean = String(code || "").replace(/\D/g, "");
-    const expected = Buffer.from(row.code_hash, "hex");
-    const candidate = Buffer.from(this.hashVerificationCode(row.id, clean), "hex");
-    if (clean.length !== 6 || !crypto.timingSafeEqual(expected, candidate)) {
+    let valid;
+    if (row.code_hash === SUPABASE_CODE) {
+      // Supabase codes are 6–10 digits depending on the project setting
+      if (clean.length < 6 || clean.length > 10) {
+        valid = false;
+      } else {
+        const check = await verifyEmailCode(this.config, row.target, clean);
+        if (check.unavailable) return { ok: false, error: check.error };
+        valid = check.valid;
+      }
+    } else {
+      const expected = Buffer.from(row.code_hash, "hex");
+      const candidate = Buffer.from(this.hashVerificationCode(row.id, clean), "hex");
+      valid = clean.length === 6 && crypto.timingSafeEqual(expected, candidate);
+    }
+
+    if (!valid) {
       this.db.prepare(`UPDATE verification_codes SET attempts = attempts + 1 WHERE id = ?`).run(row.id);
       const left = VERIFICATION_MAX_ATTEMPTS - row.attempts - 1;
       return { ok: false, error: left > 0 ? `Código incorreto. ${left} tentativa(s) restante(s).` : "Código incorreto." };
@@ -1312,24 +1303,17 @@ class DiscordBackendServer {
       if (!p) return null;
       return {
         target: p.target,
-        masked: purpose === "phone_verify" ? maskPhone(p.target) : maskEmail(p.target),
+        masked: maskEmail(p.target),
         expiresAt: p.expires_at
       };
     };
     return {
       email: row.email,
       emailVerified: Boolean(row.email_verified),
-      phone: row.phone || "",
-      phoneMasked: row.phone ? maskPhone(row.phone) : "",
-      phoneVerified: Boolean(row.phone_verified),
       passwordUpdatedAt: row.password_updated_at || null,
       pendingEmailVerify: pendingOf("email_verify"),
       pendingEmailChange: pendingOf("email_change"),
-      pendingPhone: pendingOf("phone_verify"),
-      providers: {
-        email: Boolean(this.config.email.resendApiKey && this.config.email.from),
-        sms: Boolean(this.config.sms.twilioAccountSid && this.config.sms.twilioAuthToken && this.config.sms.from)
-      }
+      providers: { email: isSupabaseConfigured(this.config) }
     };
   }
 
@@ -3151,7 +3135,7 @@ class DiscordBackendServer {
       }
 
       // ======================================================================
-      // Account security (e-mail, password, phone)
+      // Account security (e-mail, password)
       // ======================================================================
       case "GET_ACCOUNT_SECURITY":
       case "getAccountSecurity": {
@@ -3174,7 +3158,7 @@ class DiscordBackendServer {
       case "CONFIRM_EMAIL_VERIFICATION":
       case "confirmEmailVerification": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
-        const check = this.checkVerificationCode(actorId, "email_verify", params.code);
+        const check = await this.checkVerificationCode(actorId, "email_verify", params.code);
         if (!check.ok) return { ...check, security: this.getAccountSecurity(actorId) };
         const now = Date.now();
         this.db
@@ -3203,7 +3187,7 @@ class DiscordBackendServer {
       case "CONFIRM_EMAIL_CHANGE":
       case "confirmEmailChange": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
-        const check = this.checkVerificationCode(actorId, "email_change", params.code);
+        const check = await this.checkVerificationCode(actorId, "email_change", params.code);
         if (!check.ok) return { ...check, security: this.getAccountSecurity(actorId) };
         const taken = this.db
           .prepare(`SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND id != ?`)
@@ -3241,64 +3225,11 @@ class DiscordBackendServer {
         return { ok: true, security: this.getAccountSecurity(actorId) };
       }
 
-      case "REQUEST_PHONE_VERIFICATION":
-      case "requestPhoneVerification": {
-        const actorId = this.resolveUserId(params.actorId || params.userId);
-        const row = this.db.prepare(`SELECT * FROM users WHERE id = ?`).get(actorId);
-        if (!row) return { ok: false, status: 404, error: "Conta não encontrada." };
-        const pwError = this.requireCurrentPassword(row, params.currentPassword);
-        if (pwError) return { ok: false, status: 403, error: pwError };
-        const phone = normalizePhone(params.phone);
-        if (!isValidPhone(phone)) {
-          return { ok: false, error: "Número inválido. Use o formato internacional, ex: +55 11 91234-5678." };
-        }
-        if (phone === row.phone && row.phone_verified) return { ok: false, error: "Este número já está verificado na sua conta." };
-        const taken = this.db
-          .prepare(`SELECT id FROM users WHERE phone = ? AND phone_verified = 1 AND id != ?`)
-          .get(phone, actorId);
-        if (taken) return { ok: false, error: "Este número já está vinculado a outra conta." };
-        const res = await this.issueVerificationCode(actorId, "phone_verify", phone);
-        return res.ok ? { ...res, security: this.getAccountSecurity(actorId) } : res;
-      }
-
-      case "CONFIRM_PHONE_VERIFICATION":
-      case "confirmPhoneVerification": {
-        const actorId = this.resolveUserId(params.actorId || params.userId);
-        const check = this.checkVerificationCode(actorId, "phone_verify", params.code);
-        if (!check.ok) return { ...check, security: this.getAccountSecurity(actorId) };
-        const taken = this.db
-          .prepare(`SELECT id FROM users WHERE phone = ? AND phone_verified = 1 AND id != ?`)
-          .get(check.target, actorId);
-        if (taken) return { ok: false, error: "Este número foi vinculado a outra conta." };
-        const now = Date.now();
-        this.db
-          .prepare(`UPDATE users SET phone = ?, phone_verified = 1, updated_at = ? WHERE id = ?`)
-          .run(check.target, now, actorId);
-        const row = this.db.prepare(`SELECT * FROM users WHERE id = ?`).get(actorId);
-        return { ok: true, user: this.serializeUser(row), security: this.getAccountSecurity(actorId) };
-      }
-
-      case "REMOVE_PHONE":
-      case "removePhone": {
-        const actorId = this.resolveUserId(params.actorId || params.userId);
-        const row = this.db.prepare(`SELECT * FROM users WHERE id = ?`).get(actorId);
-        if (!row) return { ok: false, status: 404, error: "Conta não encontrada." };
-        const pwError = this.requireCurrentPassword(row, params.currentPassword);
-        if (pwError) return { ok: false, status: 403, error: pwError };
-        const now = Date.now();
-        this.db.prepare(`UPDATE users SET phone = NULL, phone_verified = 0, updated_at = ? WHERE id = ?`).run(now, actorId);
-        this.db
-          .prepare(`UPDATE verification_codes SET consumed = 1 WHERE user_id = ? AND purpose = 'phone_verify'`)
-          .run(actorId);
-        const updated = this.db.prepare(`SELECT * FROM users WHERE id = ?`).get(actorId);
-        return { ok: true, user: this.serializeUser(updated), security: this.getAccountSecurity(actorId) };
-      }
-
       case "CANCEL_PENDING_VERIFICATION":
       case "cancelPendingVerification": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const purpose = String(params.purpose || "");
-        if (!["email_verify", "email_change", "phone_verify"].includes(purpose)) {
+        if (!["email_verify", "email_change"].includes(purpose)) {
           return { ok: false, error: "Tipo de verificação inválido." };
         }
         this.db

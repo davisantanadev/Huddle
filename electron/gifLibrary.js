@@ -136,14 +136,13 @@ function pickGifUrl(images, keys) {
 }
 
 // Map a raw GIPHY gif object into our normalized shape used by the frontend.
-// Grid thumbnails use the downsampled 200px WebP (~44 KB, still animated) instead
-// of the fixed_height GIF (~800 KB): ~18x less to download and far cheaper to
-// decode, which keeps the grid smooth with dozens of animations on screen.
+// Grid thumbnails use the 200px-wide WebP: same frames, frame rate and duration
+// as the original GIF, at a fraction of the size. Never use the "downsampled"
+// renditions: they keep only ~6 frames, which makes animations look choppy.
 function pickPreviewUrl(images) {
-  for (const key of ["fixed_width_downsampled", "preview_webp", "fixed_width_small", "fixed_width"]) {
+  for (const key of ["fixed_width", "fixed_width_small"]) {
     const entry = images[key];
     if (entry && entry.webp) return entry.webp;
-    if (entry && key === "preview_webp" && entry.url) return entry.url;
   }
   return pickGifUrl(images, ["fixed_width", "fixed_height", "preview_gif", "downsized"]);
 }

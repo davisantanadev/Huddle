@@ -11,7 +11,7 @@ Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord,
 - Compartilhamento de tela, indicador de quem está falando, escolha de microfone e fone
 - Sons de entrar, sair, chamando e notificação
 - Perfil com foto e banner (inclusive GIF), editor de enquadramento e biblioteca de GIFs (Giphy)
-- Conta com verificação de e-mail e telefone por código, troca de senha e sessões seguras
+- Conta com verificação de e-mail por código (Supabase + Brevo, grátis), troca de senha e sessões seguras
 - Confirmação antes de qualquer exclusão e 10 temas visuais
 
 ---
@@ -60,73 +60,76 @@ Na primeira execução o app cria uma conta de administrador e um servidor de ex
 
 Entre com ela **e troque a senha** em *Configurações → Minha Conta → Senha*. Você também pode criar novas contas pela opção **Cadastrar** na tela de login.
 
-## 4. Configuração (opcional)
+## 4. Configuração
 
-O app funciona sem nenhuma chave. As integrações abaixo ficam desligadas até serem configuradas.
+O app funciona sem nenhuma chave extra. A verificação de e-mail já vem ligada a um projeto Supabase (ver 4.2); a biblioteca de GIFs precisa de uma chave grátis do Giphy.
 
-### 4.1. Arquivo de chaves local
+### 4.1. Chave do Giphy (arquivo local)
 
-As chaves ficam num arquivo `app.config.local.json` que **nunca** vai para o GitHub nem para dentro do `.exe`. O app procura esse arquivo em dois lugares:
+Chaves secretas ficam num arquivo `app.config.local.json` que **nunca** vai para o GitHub nem para dentro do `.exe`. O app procura esse arquivo em dois lugares:
 
 | Onde | Quando usar |
 | --- | --- |
 | `%APPDATA%\Eco\app.config.local.json` | App instalado (`.exe`) — e também funciona com `npm start` |
 | `app.config.local.json` na pasta do projeto | Desenvolvimento (`npm start` / `npm test`) |
 
-Para criar a partir do modelo:
-
 ```powershell
 Copy-Item app.config.local.example.json "$env:APPDATA\Eco\app.config.local.json"
+notepad "$env:APPDATA\Eco\app.config.local.json"
 ```
 
 ```json
-{
-  "giphyApiKey": "SUA_CHAVE_DO_GIPHY",
-  "email": { "resendApiKey": "re_...", "from": "Eco <no-reply@seudominio.com>" },
-  "sms": { "twilioAccountSid": "AC...", "twilioAuthToken": "...", "from": "+15550000000" }
+{ "giphyApiKey": "SUA_CHAVE_DO_GIPHY" }
+```
+
+Chave grátis em [developers.giphy.com](https://developers.giphy.com/) → *Create an App* → *API*. Sem ela, a biblioteca mostra GIFs gerados localmente.
+
+### 4.2. Verificação de e-mail (Supabase + Brevo, grátis)
+
+O código de 6 dígitos é gerado, enviado e conferido pela função **`email-otp`** do Supabase (`supabase/functions/email-otp`), que envia pelo **Brevo** (300 e-mails/dia grátis). O app só chama a função; o código fica guardado no Supabase como hash (tabela `email_otps`, migração em `supabase/migrations`).
+
+No `app.config.json` ficam apenas a URL do projeto e a **chave publicável** (`sb_publishable_...`) — pública por natureza, então o app já sai configurado para todo mundo. A chave do Brevo fica só nos segredos da função.
+
+```json
+"supabase": {
+  "url": "https://SEU-PROJETO.supabase.co",
+  "publishableKey": "sb_publishable_..."
 }
 ```
 
-O `app.config.local.json` está no `.gitignore`: **suas chaves nunca vão para o GitHub**. Todas também podem ser passadas por variáveis de ambiente, que têm prioridade:
+Sem `supabase` configurado, o app entra em *modo desenvolvimento*: o código aparece na própria tela.
 
-| Recurso | Variáveis de ambiente | Onde conseguir |
-| --- | --- | --- |
-| Biblioteca de GIFs | `GIPHY_API_KEY` | [developers.giphy.com](https://developers.giphy.com/) → *Create an App* → *API* (grátis) |
-| Envio de e-mail | `RESEND_API_KEY`, `MAIL_FROM` | [resend.com](https://resend.com/) (plano grátis) |
-| Envio de SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | [twilio.com](https://www.twilio.com/) |
-| Endereço público | `APP_PUBLIC_URL` | o domínio onde o app estiver hospedado |
-| Exigir e-mail verificado | `REQUIRE_VERIFIED_EMAIL=1` | — |
+#### Passo 1 — Conta no Brevo
 
-**Sem chave do Giphy**, a biblioteca de GIFs mostra GIFs gerados localmente.
-**Sem provedor de e-mail ou SMS**, o app entra em *modo desenvolvimento*: o código de verificação aparece na própria tela, com um aviso, em vez de ser enviado.
+1. Crie uma conta grátis em [brevo.com](https://www.brevo.com/) e complete o perfil.
+2. Em **Senders, Domains & Dedicated IPs → Senders → Add a sender**, cadastre o remetente (ex.: nome `Eco`, seu e-mail) e confirme pelo link que o Brevo envia.
+3. Em **SMTP & API → API Keys → Generate a new API key**, crie uma chave (começa com `xkeysib-`) e copie.
 
-> **Por que as chaves não vêm prontas?** Qualquer chave colocada dentro do app ou do repositório pode ser extraída por quem tiver o arquivo — e passaria a enviar e-mails/SMS na sua conta. Quando o app for hospedado, as chaves ficam só no servidor e todos os usuários usam esse servidor já configurado.
+#### Passo 2 — Segredos da função no Supabase
 
-#### Passo a passo: e-mail com Resend
+Em *Supabase → Edge Functions → Secrets* (ou *Project Settings → Edge Functions*), adicione:
 
-1. Crie uma conta em [resend.com](https://resend.com/) (plano grátis: 3.000 e-mails/mês, 100/dia).
-2. Em **Domains → Add Domain**, adicione um domínio seu e cadastre no seu provedor de DNS os registros que o Resend mostrar. Aguarde o status **Verified**.
-   *Sem domínio verificado, o Resend só entrega para o e-mail da sua própria conta (útil para testar, usando `onboarding@resend.dev` como remetente).*
-3. Em **API Keys → Create API Key**, crie uma chave com permissão **Sending access** e copie (começa com `re_`).
-4. No `app.config.local.json`, preencha:
-   ```json
-   "email": { "resendApiKey": "re_...", "from": "Eco <no-reply@seudominio.com>" }
-   ```
+| Nome | Valor |
+| --- | --- |
+| `BREVO_API_KEY` | a chave `xkeysib-...` |
+| `BREVO_SENDER_EMAIL` | o e-mail confirmado como remetente no Brevo |
+| `BREVO_SENDER_NAME` | `Eco` (opcional) |
 
-#### Passo a passo: SMS com Twilio
+Pronto: em *Configurações → Minha Conta → Verificar*, o código chega por e-mail. Limites da função: 1 código por minuto e 5 por hora para cada e-mail, até 250 por dia no total.
 
-1. Crie uma conta em [twilio.com](https://www.twilio.com/try-twilio) e confirme seu e-mail e celular.
-2. No **Console**, copie o **Account SID** (começa com `AC`) e o **Auth Token**.
-3. Em **Phone Numbers → Buy a number**, obtenha um número com capacidade de **SMS** (a conta de teste dá crédito para isso).
-   *Na conta de teste, o Twilio só envia para números verificados em **Verified Caller IDs**. Para enviar para qualquer pessoa, faça o upgrade da conta.*
-4. No `app.config.local.json`, preencha:
-   ```json
-   "sms": { "twilioAccountSid": "AC...", "twilioAuthToken": "...", "from": "+15551234567" }
-   ```
+#### Publicar a função num projeto novo
 
-Reinicie o app. Em *Configurações → Minha Conta* o aviso de modo desenvolvimento some para o que estiver configurado.
+Com a [Supabase CLI](https://supabase.com/docs/guides/cli):
 
-### 4.2. Configurações gerais — `app.config.json`
+```powershell
+supabase link --project-ref SEU-PROJETO
+supabase db push
+supabase functions deploy email-otp --no-verify-jwt
+```
+
+Para exigir e-mail verificado para usar o app, ponha `"requireVerifiedEmail": true` no `app.config.json`.
+
+### 4.3. Configurações gerais — `app.config.json`
 
 | Campo | O que faz |
 | --- | --- |
@@ -134,6 +137,7 @@ Reinicie o app. Em *Configurações → Minha Conta* o aviso de modo desenvolvim
 | `publicUrl` | Endereço público (ex.: `https://eco.seudominio.com`). Vazio = `http://127.0.0.1:<porta>`, que só funciona neste PC |
 | `invitePath` | Caminho dos links de convite (padrão `/convite`) |
 | `requireVerifiedEmail` | `true` = só entra no app quem confirmou o e-mail |
+| `supabase.url` / `supabase.publishableKey` | Projeto Supabase cuja função `email-otp` envia os códigos |
 
 ## 5. Gerar o executável (.exe)
 
@@ -144,7 +148,7 @@ npm run build:exe
 Isso cria:
 
 - `dist\Discord-win32-x64\Discord.exe` — o app completo empacotado
-- `Discord.exe` na sua **Área de Trabalho** — atalho que abre o app acima (use `$env:DESKTOP_DIR="C:\outra\pasta"` para mudar o local)
+- Um atalho na sua **Área de Trabalho** com o nome do `appName` do `app.config.json` (padrão `Eco`) que abre o app acima (use `$env:DESKTOP_DIR="C:\outra\pasta"` para mudar o local)
 
 > Feche o app antes de rodar o build, senão a pasta `dist` fica travada (erro `EBUSY`).
 
@@ -173,7 +177,7 @@ electron/
   main.js              Processo principal (janelas, bandeja, IPC)
   backendServer.js     Backend HTTP + SQLite + eventos em tempo real
   appConfig.js         Leitura do app.config.json / app.config.local.json / variáveis
-  accountDelivery.js   Envio de códigos por e-mail (Resend) e SMS (Twilio)
+  accountDelivery.js   Códigos de verificação por e-mail (função email-otp do Supabase)
   gifLibrary.js        Busca de GIFs no Giphy
 src/
   index.html, app.js   Interface
@@ -182,6 +186,7 @@ src/
   styles/              Temas e estilos
 assets/                Ícone, sons, fontes e tela de carregamento
 scripts/               Build do .exe e testes automatizados
+supabase/              Função email-otp e migração do banco (Supabase)
 docs/                  Relatório técnico e capturas de tela
 ```
 
@@ -192,5 +197,6 @@ docs/                  Relatório técnico e capturas de tela
 | `EBUSY: resource busy or locked` no build | Feche o app (inclusive pelo ícone na bandeja) e rode de novo |
 | GIFs não carregam do Giphy | Confira a `giphyApiKey` no `app.config.local.json` |
 | Link de convite não abre em outro PC | Defina `publicUrl` com o endereço onde o app está hospedado |
-| Não recebo o código por e-mail/SMS | Sem provedor configurado o código aparece na tela (modo desenvolvimento) |
+| Não recebo o código por e-mail | Confira a pasta de spam e os segredos `BREVO_API_KEY` / `BREVO_SENDER_EMAIL` da função (4.2) |
+| "O envio de e-mail ainda não foi configurado no servidor" | Faltam os segredos da função `email-otp` no Supabase (4.2, passo 2) |
 | Esqueci a senha da conta inicial | Feche o app e apague `%APPDATA%\Eco` para recriar a conta padrão (apaga todos os dados) |

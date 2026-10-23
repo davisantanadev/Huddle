@@ -5,6 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { execFileSync } = require("child_process");
+const { loadAppConfig } = require("../electron/appConfig");
 
 async function build() {
   const rootDir = path.resolve(__dirname, "..");
@@ -27,6 +28,7 @@ async function build() {
       /^\/\.env/,
       /^\/\.git($|\/)/,
       /^\/dist($|\/)/,
+      /^\/supabase($|\/)/,
       /^\/docs\/screenshots($|\/)/
     ]
   });
@@ -35,72 +37,41 @@ async function build() {
   const packagedExe = path.join(packagedDir, "Discord.exe");
   console.log("Packaged Electron binary at:", packagedExe);
 
-  // Launcher goes on the current user's Desktop (DESKTOP_DIR overrides it)
+  // Desktop shortcut (.lnk) to the packaged app, named after app.config.json →
+  // appName. DESKTOP_DIR overrides the folder.
+  const appName = loadAppConfig().appName;
   const desktopDir = process.env.DESKTOP_DIR || path.join(os.homedir(), "Desktop");
-  const desktopExe = path.join(desktopDir, "Discord.exe");
-  console.log(`[2/3] Compiling standalone Desktop launcher ${desktopExe}...`);
-  const csSourcePath = path.join(outDir, "DiscordLauncher.cs");
-  const escapedTargetExe = packagedExe.replace(/\\/g, "\\\\");
-  const escapedWorkDir = packagedDir.replace(/\\/g, "\\\\");
+  const shortcutPath = path.join(desktopDir, `${appName}.lnk`);
+  console.log(`[2/3] Creating Desktop shortcut ${shortcutPath}...`);
 
-  const csCode = `
-using System;
-using System.Diagnostics;
-using System.IO;
-using System.Reflection;
+  // Older builds compiled a launcher Discord.exe onto the Desktop instead;
+  // remove it, but only if it really is that launcher (company "Discord Replica")
+  const legacyLauncher = path.join(desktopDir, "Discord.exe");
+  const psQuote = (value) => `'${String(value).replace(/'/g, "''")}'`;
+  const powershell = (script) =>
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" }).trim();
 
-[assembly: AssemblyTitle("Discord")]
-[assembly: AssemblyDescription("Discord Desktop Client (REA Reconstructed v1.0.9262)")]
-[assembly: AssemblyCompany("Discord Replica")]
-[assembly: AssemblyProduct("Discord")]
-[assembly: AssemblyVersion("1.0.9262.0")]
-[assembly: AssemblyFileVersion("1.0.9262.0")]
-
-namespace DiscordLauncher {
-  class Program {
-    [STAThread]
-    static int Main(string[] args) {
-      string targetExe = "${escapedTargetExe}";
-      string workDir = "${escapedWorkDir}";
-      if (!File.Exists(targetExe)) {
-        return 1;
-      }
-      ProcessStartInfo psi = new ProcessStartInfo();
-      psi.FileName = targetExe;
-      psi.WorkingDirectory = workDir;
-      if (args != null && args.Length > 0) {
-        psi.Arguments = string.Join(" ", args);
-      }
-      psi.UseShellExecute = false;
-      Process.Start(psi);
-      return 0;
+  if (fs.existsSync(legacyLauncher)) {
+    const company = powershell(`(Get-Item -LiteralPath ${psQuote(legacyLauncher)}).VersionInfo.CompanyName`);
+    if (company === "Discord Replica") {
+      fs.unlinkSync(legacyLauncher);
+      console.log("Removed the old Desktop launcher:", legacyLauncher);
     }
   }
-}
-`;
 
-  fs.writeFileSync(csSourcePath, csCode, "utf8");
+  powershell(
+    [
+      "$shell = New-Object -ComObject WScript.Shell",
+      `$lnk = $shell.CreateShortcut(${psQuote(shortcutPath)})`,
+      `$lnk.TargetPath = ${psQuote(packagedExe)}`,
+      `$lnk.WorkingDirectory = ${psQuote(packagedDir)}`,
+      `$lnk.IconLocation = ${psQuote(packagedExe + ",0")}`,
+      `$lnk.Description = ${psQuote(appName)}`,
+      "$lnk.Save()"
+    ].join("; ")
+  );
 
-  const cscCandidates = [
-    "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
-    "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe"
-  ];
-  const cscPath = cscCandidates.find((p) => fs.existsSync(p));
-  if (!cscPath) {
-    throw new Error("Could not find csc.exe to compile Desktop stub launcher.");
-  }
-
-  execFileSync(cscPath, [
-    "/nologo",
-    "/target:winexe",
-    "/platform:x64",
-    `/out:${desktopExe}`,
-    `/win32icon:${iconPath}`,
-    "/optimize+",
-    csSourcePath
-  ], { stdio: "inherit" });
-
-  console.log("[3/3] Verified standalone executable created at:", desktopExe);
+  console.log("[3/3] Desktop shortcut created at:", shortcutPath);
 }
 
 build().catch((err) => {

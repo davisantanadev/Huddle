@@ -1,69 +1,69 @@
 "use strict";
 
-// Delivery of verification codes by e-mail (Resend) and SMS (Twilio).
-// When a provider is not configured the code is not sent anywhere: the caller
-// gets { delivered: false, devMode: true } and may surface the code locally so
-// the flow can be exercised during development.
+// E-mail verification codes through the "email-otp" Edge Function of the
+// project's Supabase (source: supabase/functions/email-otp), which sends them
+// with Brevo's free API.
+//
+// The function generates, e-mails and checks the code; this app never sees it.
+// The app only needs the project URL and the *publishable* key, which is public
+// by design and ships in app.config.json. The Brevo API key is a secret of the
+// function and never leaves Supabase.
+//
+// When Supabase is not configured the caller falls back to a local code that
+// is shown on screen (development mode).
 
-async function sendEmail(config, { to, subject, text, html }) {
-  const { resendApiKey, from } = config.email;
-  if (!resendApiKey || !from) {
-    return { delivered: false, devMode: true };
-  }
+const REQUEST_TIMEOUT_MS = 15000;
+const FUNCTION_PATH = "/functions/v1/email-otp";
+
+function isSupabaseConfigured(config) {
+  return Boolean(config.supabase?.url && config.supabase?.publishableKey);
+}
+
+async function callEmailOtp(config, payload) {
+  const { url, publishableKey } = config.supabase;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch("https://api.resend.com/emails", {
+    const res = await fetch(`${url}${FUNCTION_PATH}`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${resendApiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ from, to: [to], subject, text, html })
+      headers: { apikey: publishableKey, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal
     });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      return { delivered: false, devMode: false, error: `Falha no envio de e-mail (${res.status}). ${body.slice(0, 160)}` };
-    }
-    return { delivered: true, devMode: false };
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
   } catch (e) {
-    return { delivered: false, devMode: false, error: `Falha no envio de e-mail: ${e.message}` };
+    return { ok: false, status: 0, data: { error: e.name === "AbortError" ? "timeout" : e.message } };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function sendSms(config, { to, body }) {
-  const { twilioAccountSid, twilioAuthToken, from } = config.sms;
-  if (!twilioAccountSid || !twilioAuthToken || !from) {
-    return { delivered: false, devMode: true };
-  }
-  try {
-    const auth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString("base64");
-    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: new URLSearchParams({ To: to, From: from, Body: body }).toString()
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { delivered: false, devMode: false, error: `Falha no envio de SMS (${res.status}). ${text.slice(0, 160)}` };
-    }
-    return { delivered: true, devMode: false };
-  } catch (e) {
-    return { delivered: false, devMode: false, error: `Falha no envio de SMS: ${e.message}` };
-  }
+function describeError({ status, data }) {
+  if (status === 0) return "Não foi possível conectar ao serviço de e-mail. Verifique sua internet.";
+  // The function already answers with a message for the user
+  if (data?.error) return data.error;
+  return `Falha ao enviar o código por e-mail (${status}).`;
 }
 
-function verificationEmail(appName, code, purposeLabel) {
-  const subject = `${appName}: seu código de verificação é ${code}`;
-  const text = `${purposeLabel}\n\nSeu código: ${code}\n\nEle expira em 10 minutos. Se você não solicitou, ignore este e-mail.`;
-  const html = `<div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:24px;">
-    <h2 style="margin:0 0 8px 0;">${appName}</h2>
-    <p style="color:#444;">${purposeLabel}</p>
-    <div style="font-size:32px;font-weight:700;letter-spacing:8px;padding:16px;background:#f2f3f5;border-radius:8px;text-align:center;">${code}</div>
-    <p style="color:#777;font-size:12px;">O código expira em 10 minutos. Se você não solicitou, ignore este e-mail.</p>
-  </div>`;
-  return { subject, text, html };
+async function sendEmailCode(config, email) {
+  const res = await callEmailOtp(config, { action: "send", email });
+  if (res.ok) return { delivered: true };
+  return { delivered: false, error: describeError(res) };
 }
 
-module.exports = { sendEmail, sendSms, verificationEmail };
+// { valid: true } when the function accepts the code for that address
+async function verifyEmailCode(config, email, code) {
+  const res = await callEmailOtp(config, { action: "verify", email, code });
+  if (res.ok && res.data?.valid) return { valid: true };
+  if (res.status === 0 || res.status >= 500) {
+    return { valid: false, unavailable: true, error: describeError(res) };
+  }
+  // Expired / too many attempts / no pending code: surface the function's message
+  if (res.data?.code && res.data.code !== "invalid_code") {
+    return { valid: false, unavailable: true, error: describeError(res) };
+  }
+  return { valid: false };
+}
+
+module.exports = { isSupabaseConfigured, sendEmailCode, verifyEmailCode };

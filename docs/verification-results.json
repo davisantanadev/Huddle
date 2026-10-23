@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-22T21:41:03.835Z",
+  "timestamp": "2026-10-23T01:15:59.065Z",
   "results": [
     {
       "area": "Phase 1: Splash Screen",
@@ -59,13 +59,13 @@
       "area": "Phase 11: Cryptographic Server Invites",
       "feature": "Generate unique tokens, join server via invite, handle idempotent re-join, and reject invalid/revoked codes",
       "status": "APPROVED",
-      "detail": "{\"codesUnique\":true,\"sampleCodes\":[\"YbgvZFMHWmC4Cdrl\",\"6aCM6CzApPj8N5yk\",\"voqA8M87HmYDRTJ0\"],\"joinInvalidRejected\":true,\"joinRevokedRejected\":true,\"joinValidOk\":true,\"joinIdempotentOk\":true}"
+      "detail": "{\"codesUnique\":true,\"sampleCodes\":[\"cH3lXY9HgKUao4mf\",\"q3oW4HneROM1siAY\",\"0NBZAckYiLBXYxy0\"],\"joinInvalidRejected\":true,\"joinRevokedRejected\":true,\"joinValidOk\":true,\"joinIdempotentOk\":true}"
     },
     {
       "area": "Domain 1: Searchable Animated GIF Library",
       "feature": "Filter by categories, search keywords, paginate results, and load selected animation into editor",
       "status": "APPROVED",
-      "detail": "{\"totalGifs\":182,\"hasCategories\":true,\"animeMatches\":true,\"searchMatches\":true,\"hasDifferentPages\":true,\"modalVisible\":true,\"stayedOpenOnInputClick\":true,\"firstPageCount\":50,\"afterScrollCount\":100,\"scrollKept\":true,\"cardHeight\":160,\"cardsKeptOnLoadMore\":true,\"cardsKeptOnAppRender\":true,\"thumbsAreWebp\":true,\"searchAsYouType\":true,\"reopenInstant\":true,\"editorOpen\":true}"
+      "detail": "{\"totalGifs\":184,\"hasCategories\":true,\"animeMatches\":true,\"searchMatches\":true,\"hasDifferentPages\":true,\"modalVisible\":true,\"stayedOpenOnInputClick\":true,\"firstPageCount\":50,\"afterScrollCount\":100,\"scrollKept\":true,\"cardHeight\":160,\"cardsKeptOnLoadMore\":true,\"cardsKeptOnAppRender\":true,\"thumbsAreWebp\":true,\"thumbsFullFrameRate\":true,\"searchAsYouType\":true,\"reopenInstant\":true,\"editorOpen\":true}"
     },
     {
       "area": "Domain 2: Server Roles (Cargos) & Hierarchy Enforcement",
@@ -107,7 +107,7 @@
       "area": "Domain 8: Media Framing & Zoom Editor",
       "feature": "Open interactive editor with framing viewport, zoom/pan sliders, apply transforms, and persist scale & crop",
       "status": "APPROVED",
-      "detail": "{\"editorRendered\":true,\"transformApplied\":true,\"applyOk\":true,\"persistedScale\":true,\"persistedCropX\":true,\"persistedCropY\":true,\"avatarTransformed\":true}"
+      "detail": "{\"editorRendered\":true,\"transformApplied\":true,\"dragOk\":true,\"dragMovedPreview\":true,\"dragLabel\":true,\"dragState\":true,\"editorThemed\":true,\"applyOk\":true,\"persistedScale\":true,\"persistedCropX\":true,\"persistedCropY\":true,\"avatarTransformed\":true}"
     },
     {
       "area": "Domain 9: Server Customization, No Nitro/Shop & Avatar Lightbox",
@@ -125,7 +125,7 @@
       "area": "Domain 11: Sessions & Self-Hosted Invites",
       "feature": "Reject calls without a session, ignore forged user ids, invite links on our own URL with a public landing page, join by full link",
       "status": "APPROVED",
-      "detail": "{\"anonRejected\":true,\"forgedIgnored\":true,\"inviteUrl\":\"http://127.0.0.1:60358/convite/eY4zWzXog0tBEnlx\",\"selfHosted\":true,\"landingOk\":true,\"bogusNotFound\":true,\"joinedByLink\":true}"
+      "detail": "{\"anonRejected\":true,\"forgedIgnored\":true,\"inviteUrl\":\"http://127.0.0.1:58780/convite/MNfb1gzek5oF-Ymp\",\"selfHosted\":true,\"landingOk\":true,\"bogusNotFound\":true,\"joinedByLink\":true}"
     },
     {
       "area": "Domain 12: Delete Confirmation, Bigger Buttons & New Logo",
@@ -134,10 +134,16 @@
       "detail": "{\"createdOk\":true,\"dialogShown\":true,\"keptOnCancel\":true,\"deletedOnConfirm\":true,\"inviteBtnHeight\":28,\"channelActionSize\":26,\"newLogo\":true}"
     },
     {
-      "area": "Domain 13: Account Tab (E-mail, Password, Phone)",
-      "feature": "Verify e-mail via UI code, change password (wrong current refused, other sessions revoked), verify and remove phone",
+      "area": "Domain 13: Account Tab (E-mail, Password)",
+      "feature": "Verify e-mail via UI code, change password (wrong current refused, other sessions revoked), no phone verification",
       "status": "APPROVED",
-      "detail": "{\"accountTabOpen\":true,\"emailVerified\":true,\"wrongCurrentRejected\":true,\"passwordChanged\":true,\"otherSessionRevoked\":true,\"thisStillWorks\":true,\"oldPasswordRejected\":true,\"newPasswordAccepted\":true,\"badPhoneRejected\":true,\"phoneDevMode\":true,\"wrongCodeRejected\":true,\"phoneVerified\":true,\"phoneRemoved\":true,\"phoneMaskTyped\":true,\"phoneMaskBackspace\":true,\"phoneMaskedBr\":true}"
+      "detail": "{\"accountTabOpen\":true,\"emailVerified\":true,\"wrongCurrentRejected\":true,\"passwordChanged\":true,\"otherSessionRevoked\":true,\"thisStillWorks\":true,\"oldPasswordRejected\":true,\"newPasswordAccepted\":true,\"noPhoneRow\":true,\"phoneActionGone\":true}"
+    },
+    {
+      "area": "Domain 16: E-mail Codes via Supabase Edge Function",
+      "feature": "Send and verify codes through the email-otp function with the publishable key, never show the code on screen, friendly rate-limit error",
+      "status": "APPROVED",
+      "detail": "{\"providerReported\":true,\"codeSentNotShown\":true,\"wrongRejected\":true,\"rightAccepted\":true,\"rateLimitMessage\":true,\"sendRequestShape\":true,\"verifyRequestShape\":true}"
     },
     {
       "area": "Domain 15: Saved Sessions & Account Switching",
@@ -155,179 +161,179 @@
       "area": "Phase 7: RAM Usage Optimization (< 80 MB)",
       "feature": "Verify total resident Working Set stays under 80 MB across startup, navigation, call, and post-call",
       "status": "APPROVED",
-      "detail": "Max Total Working Set = 17.28 MB (Stages: 1_startup=4.72MB, 2_after_navigation=16.85MB, 3_during_call=17.28MB, 4_after_call=10.64MB)"
+      "detail": "Max Total Working Set = 23.85 MB (Stages: 1_startup=5.22MB, 2_after_navigation=14.21MB, 3_during_call=23.85MB, 4_after_call=17.59MB)"
     }
   ],
   "memoryStages": [
     {
       "stage": "1_startup",
-      "mainWorkingSetMB": 4.65,
+      "mainWorkingSetMB": 5.14,
       "rendererWorkingSetMB": 0,
-      "totalWorkingSetMB": 4.72,
-      "totalPrivateMB": 260.96,
-      "mainHeapUsedMB": 6.25,
+      "totalWorkingSetMB": 5.22,
+      "totalPrivateMB": 261.16,
+      "mainHeapUsedMB": 6.24,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8040,
-          "workingSetMB": 4.65,
-          "privateMB": 77.38
+          "pid": 9788,
+          "workingSetMB": 5.14,
+          "privateMB": 77.51
         },
         {
           "type": "GPU",
-          "pid": 22024,
+          "pid": 15648,
           "workingSetMB": 0.07,
-          "privateMB": 143.73
+          "privateMB": 143.63
         },
         {
           "type": "Utility",
-          "pid": 12836,
+          "pid": 1656,
           "workingSetMB": 0,
-          "privateMB": 13.45
+          "privateMB": 13.38
         },
         {
           "type": "Tab",
-          "pid": 4116,
+          "pid": 22936,
           "workingSetMB": 0,
-          "privateMB": 26.41
+          "privateMB": 26.63
         }
       ]
     },
     {
       "stage": "2_after_navigation",
-      "mainWorkingSetMB": 7.91,
-      "rendererWorkingSetMB": 3.29,
-      "totalWorkingSetMB": 16.85,
-      "totalPrivateMB": 436.41,
-      "mainHeapUsedMB": 7.61,
+      "mainWorkingSetMB": 5.34,
+      "rendererWorkingSetMB": 3.33,
+      "totalWorkingSetMB": 14.21,
+      "totalPrivateMB": 458.22,
+      "mainHeapUsedMB": 7.45,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8040,
-          "workingSetMB": 7.91,
-          "privateMB": 82.95
+          "pid": 9788,
+          "workingSetMB": 5.34,
+          "privateMB": 82.77
         },
         {
           "type": "GPU",
-          "pid": 22024,
-          "workingSetMB": 1.23,
-          "privateMB": 219.87
+          "pid": 15648,
+          "workingSetMB": 1.2,
+          "privateMB": 242.3
         },
         {
           "type": "Utility",
-          "pid": 12836,
-          "workingSetMB": 0.72,
-          "privateMB": 13.74
+          "pid": 1656,
+          "workingSetMB": 0.71,
+          "privateMB": 13.68
         },
         {
           "type": "Tab",
-          "pid": 4116,
-          "workingSetMB": 3.29,
-          "privateMB": 44.75
+          "pid": 22936,
+          "workingSetMB": 3.33,
+          "privateMB": 44.61
         },
         {
           "type": "Utility",
-          "pid": 20836,
-          "workingSetMB": 3.63,
-          "privateMB": 14.13
+          "pid": 9452,
+          "workingSetMB": 3.55,
+          "privateMB": 14.37
         },
         {
           "type": "Utility",
-          "pid": 9240,
+          "pid": 7556,
           "workingSetMB": 0.07,
-          "privateMB": 60.97
+          "privateMB": 60.48
         }
       ]
     },
     {
       "stage": "3_during_call",
-      "mainWorkingSetMB": 5.8,
-      "rendererWorkingSetMB": 7.11,
-      "totalWorkingSetMB": 17.28,
-      "totalPrivateMB": 480.82,
-      "mainHeapUsedMB": 8.32,
+      "mainWorkingSetMB": 4.92,
+      "rendererWorkingSetMB": 11.34,
+      "totalWorkingSetMB": 23.85,
+      "totalPrivateMB": 481.99,
+      "mainHeapUsedMB": 8.12,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8040,
-          "workingSetMB": 5.8,
-          "privateMB": 87.86
+          "pid": 9788,
+          "workingSetMB": 4.92,
+          "privateMB": 87.18
         },
         {
           "type": "GPU",
-          "pid": 22024,
-          "workingSetMB": 1.17,
-          "privateMB": 247.03
+          "pid": 15648,
+          "workingSetMB": 3.75,
+          "privateMB": 252.58
         },
         {
           "type": "Utility",
-          "pid": 12836,
+          "pid": 1656,
           "workingSetMB": 0,
-          "privateMB": 13.74
+          "privateMB": 13.68
         },
         {
           "type": "Tab",
-          "pid": 4116,
-          "workingSetMB": 7.11,
-          "privateMB": 57.08
+          "pid": 22936,
+          "workingSetMB": 11.34,
+          "privateMB": 53.68
         },
         {
           "type": "Utility",
-          "pid": 20836,
-          "workingSetMB": 3.12,
-          "privateMB": 14.15
+          "pid": 9452,
+          "workingSetMB": 3.78,
+          "privateMB": 14.38
         },
         {
           "type": "Utility",
-          "pid": 9240,
+          "pid": 7556,
           "workingSetMB": 0.07,
-          "privateMB": 60.97
+          "privateMB": 60.48
         }
       ]
     },
     {
       "stage": "4_after_call",
-      "mainWorkingSetMB": 4.36,
-      "rendererWorkingSetMB": 1.97,
-      "totalWorkingSetMB": 10.64,
-      "totalPrivateMB": 469.25,
-      "mainHeapUsedMB": 7.11,
+      "mainWorkingSetMB": 6.98,
+      "rendererWorkingSetMB": 2.1,
+      "totalWorkingSetMB": 17.59,
+      "totalPrivateMB": 472.54,
+      "mainHeapUsedMB": 6.94,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8040,
-          "workingSetMB": 4.36,
-          "privateMB": 82.55
+          "pid": 9788,
+          "workingSetMB": 6.98,
+          "privateMB": 81.09
         },
         {
           "type": "GPU",
-          "pid": 22024,
-          "workingSetMB": 1.17,
-          "privateMB": 247.04
+          "pid": 15648,
+          "workingSetMB": 1.2,
+          "privateMB": 252.97
         },
         {
           "type": "Utility",
-          "pid": 12836,
-          "workingSetMB": 0,
-          "privateMB": 13.97
+          "pid": 1656,
+          "workingSetMB": 4.26,
+          "privateMB": 13.9
         },
         {
           "type": "Tab",
-          "pid": 4116,
-          "workingSetMB": 1.97,
-          "privateMB": 50.57
+          "pid": 22936,
+          "workingSetMB": 2.1,
+          "privateMB": 49.7
         },
         {
           "type": "Utility",
-          "pid": 20836,
-          "workingSetMB": 3.08,
-          "privateMB": 14.15
+          "pid": 9452,
+          "workingSetMB": 2.97,
+          "privateMB": 14.39
         },
         {
           "type": "Utility",
-          "pid": 9240,
+          "pid": 7556,
           "workingSetMB": 0.07,
-          "privateMB": 60.97
+          "privateMB": 60.48
         }
       ]
     }

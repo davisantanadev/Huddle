@@ -6,6 +6,8 @@ const fs = require("fs");
 const os = require("os");
 const { execFile } = require("child_process");
 const { DiscordBackendServer } = require("../electron/backendServer");
+const { loadAppConfig } = require("../electron/appConfig");
+const http = require("http");
 
 // Apply the exact same memory optimization flags as electron/main.js
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=64 --initial-old-space-size=4 --OptimizeForSize --expose-gc");
@@ -159,7 +161,12 @@ let backendServer = null;
 let selectedDesktopSourceId = null;
 
 async function setupTestEnvironment() {
-  backendServer = new DiscordBackendServer({ userDataDir: verifyDataDir });
+  // Supabase is switched off so no test ever sends a real e-mail; SUITE 28
+  // exercises the Supabase flow against a local fake of its Auth API
+  backendServer = new DiscordBackendServer({
+    userDataDir: verifyDataDir,
+    config: { ...loadAppConfig(), supabase: { url: "", publishableKey: "" } }
+  });
   await backendServer.start();
 
   ipcMain.on("DISCORD_APP_GET_RELEASE_CHANNEL_SYNC", (e) => { e.returnValue = "stable"; });
@@ -918,6 +925,8 @@ async function runVerification() {
     store.notify();
     const cardsKeptOnAppRender = firstCard.isConnected;
     const thumbsAreWebp = store.getState().gifPicker.results.every((g) => g.previewUrl.split("?")[0].endsWith(".webp"));
+    // "_d" renditions (downsampled) keep ~6 frames and look choppy
+    const thumbsFullFrameRate = store.getState().gifPicker.results.every((g) => !g.previewUrl.split("?")[0].endsWith("_d.webp"));
 
     // Search as you type (debounced), no submit needed
     const typed = document.getElementById("gif-search-input");
@@ -951,6 +960,7 @@ async function runVerification() {
       cardsKeptOnLoadMore,
       cardsKeptOnAppRender,
       thumbsAreWebp,
+      thumbsFullFrameRate,
       searchAsYouType,
       reopenInstant,
       editorOpen
@@ -972,6 +982,7 @@ async function runVerification() {
       gifSuiteCheck.cardsKeptOnLoadMore &&
       gifSuiteCheck.cardsKeptOnAppRender &&
       gifSuiteCheck.thumbsAreWebp &&
+      gifSuiteCheck.thumbsFullFrameRate &&
       gifSuiteCheck.searchAsYouType &&
       gifSuiteCheck.reopenInstant &&
       gifSuiteCheck.editorOpen,
@@ -1261,6 +1272,27 @@ async function runVerification() {
     const imgEl = document.getElementById("media-editor-preview-img");
     const transformApplied = imgEl ? imgEl.style.transform.includes("1.8") : false;
 
+    // Continuous drag on the X slider, with the app re-rendering mid-drag
+    // (e.g. a message arriving): the slider must stay the same live element
+    const panX = q("#media-editor-panx-slider");
+    let dragOk = true;
+    for (const v of [20, 26, 32, 38, 44]) {
+      panX.value = v;
+      panX.dispatchEvent(new Event("input", { bubbles: true }));
+      if (v === 32) store.notify();
+      if (document.getElementById("media-editor-panx-slider") !== panX || !panX.isConnected) dragOk = false;
+    }
+    const dragMovedPreview = imgEl.style.transform.includes("translate(44px");
+    const dragLabel = q("#editor-panx-label").textContent === "44px";
+    const dragState = store.getState().mediaEditor.cropX === 44;
+    panX.value = 14;
+    panX.dispatchEvent(new Event("input", { bubbles: true }));
+
+    // The editor follows the selected theme even though it lives outside #app
+    const appBg = getComputedStyle(q(".app-root:not(.theme-layer)")).getPropertyValue("--bg-chat").trim();
+    const editorBg = getComputedStyle(editorEl).getPropertyValue("--bg-chat").trim();
+    const editorThemed = Boolean(appBg) && appBg === editorBg;
+
     const applyRes = await store.applyMediaEditor();
     const u = store.getCurrentUser();
     const avatarImg = document.querySelector('.account-bar img.avatar-img');
@@ -1269,6 +1301,11 @@ async function runVerification() {
     return {
       editorRendered: Boolean(editorEl),
       transformApplied,
+      dragOk,
+      dragMovedPreview,
+      dragLabel,
+      dragState,
+      editorThemed,
       applyOk: applyRes.ok,
       persistedScale: u.avatarScale === 1.8,
       persistedCropX: u.avatarCropX === 14,
@@ -1282,6 +1319,11 @@ async function runVerification() {
     "Open interactive editor with framing viewport, zoom/pan sliders, apply transforms, and persist scale & crop",
     mediaEditorCheck.editorRendered &&
       mediaEditorCheck.transformApplied &&
+      mediaEditorCheck.dragOk &&
+      mediaEditorCheck.dragMovedPreview &&
+      mediaEditorCheck.dragLabel &&
+      mediaEditorCheck.dragState &&
+      mediaEditorCheck.editorThemed &&
       mediaEditorCheck.applyOk &&
       mediaEditorCheck.persistedScale &&
       mediaEditorCheck.persistedCropX &&
@@ -1684,30 +1726,9 @@ async function runVerification() {
     const newPwLogin = await backend.rpc("login", { emailOrUsername: "davis_dev", password: "novaSenha123" });
     await store.changePassword("novaSenha123", "password123");
 
-    // Phone field formats as you type: (DD) NNNNN-NNNN
-    q('[data-testid="change-phone-btn"]').click();
-    await wait(150);
-    const phoneEl = q('[data-testid="account-phone-input"]');
-    for (const ch of "11999998888") {
-      phoneEl.value += ch;
-      phoneEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ch }));
-    }
-    const typedPhone = phoneEl.value;
-    // Backspacing over the "-" removes a digit instead of the mask putting it right back
-    phoneEl.value = "(11) 999998888";
-    phoneEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
-    const afterBackspace = phoneEl.value;
-    q('[data-testid="change-phone-btn"]').click();
-    await wait(100);
-
-    // Phone: request with password, confirm with the code, then remove
-    const badPhone = await store.requestPhoneVerification("123", "password123");
-    const phoneReq = await store.requestPhoneVerification("+55 11 99999-8888", "password123");
-    const wrongCode = await store.confirmPhoneVerification("000000");
-    const phoneOk = await store.confirmPhoneVerification(phoneReq.devCode);
-    const afterPhone = await security();
-    const removed = await store.removePhone("password123");
-    const afterRemove = await security();
+    // Phone verification was removed: no phone row, no phone actions
+    const noPhoneRow = !document.querySelector('[data-testid="account-phone-row"]');
+    const phoneActionGone = (await backend.rpc("requestPhoneVerification", { phone: "+5511999998888", currentPassword: "password123" }, (await import("./services/gatewayAdapter.js")).NativeBridge.sessionToken)).ok === false;
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
@@ -1720,22 +1741,86 @@ async function runVerification() {
       thisStillWorks,
       oldPasswordRejected: !oldPwLogin.ok,
       newPasswordAccepted: newPwLogin.ok,
-      badPhoneRejected: !badPhone.ok,
-      phoneDevMode: phoneReq.ok && phoneReq.devMode === true && /^\\d{6}$/.test(phoneReq.devCode || ""),
-      wrongCodeRejected: !wrongCode.ok,
-      phoneVerified: phoneOk.ok && afterPhone.phoneVerified && afterPhone.phoneMasked.endsWith("88"),
-      phoneRemoved: removed.ok && !afterRemove.phone,
-      phoneMaskTyped: typedPhone === "(11) 99999-8888",
-      phoneMaskBackspace: afterBackspace === "(11) 9999-9888",
-      phoneMaskedBr: afterPhone.phoneMasked === "(11) •••••-8888"
+      noPhoneRow,
+      phoneActionGone
     };
   })()`);
 
   recordTest(
-    "Domain 13: Account Tab (E-mail, Password, Phone)",
-    "Verify e-mail via UI code, change password (wrong current refused, other sessions revoked), verify and remove phone",
+    "Domain 13: Account Tab (E-mail, Password)",
+    "Verify e-mail via UI code, change password (wrong current refused, other sessions revoked), no phone verification",
     Object.values(accountCheck).every(Boolean),
     JSON.stringify(accountCheck)
+  );
+
+
+  // =========================================================================
+  // SUITE 28: E-mail codes through the email-otp Edge Function (fake Supabase, no real e-mail)
+  // =========================================================================
+  const fakeSupabaseCalls = [];
+  const FAKE_CODE = "482139";
+  const fakeSupabase = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const json = JSON.parse(body || "{}");
+      fakeSupabaseCalls.push({ path: req.url, apikey: req.headers.apikey, body: json });
+      res.setHeader("Content-Type", "application/json");
+      if (req.url === "/functions/v1/email-otp" && json.action === "send") {
+        if (json.email === "limite@exemplo.com") {
+          res.statusCode = 429;
+          return res.end(JSON.stringify({ ok: false, code: "rate_limited", error: "Aguarde um minuto para pedir outro código." }));
+        }
+        return res.end(JSON.stringify({ ok: true }));
+      }
+      if (req.url === "/functions/v1/email-otp" && json.action === "verify") {
+        if (json.code === FAKE_CODE) return res.end(JSON.stringify({ ok: true, valid: true }));
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ ok: false, valid: false, code: "invalid_code", attemptsLeft: 4 }));
+      }
+      res.statusCode = 404;
+      res.end("{}");
+    });
+  });
+  await new Promise((r) => fakeSupabase.listen(0, "127.0.0.1", r));
+  const savedSupabase = backendServer.config.supabase;
+  backendServer.config.supabase = { url: `http://127.0.0.1:${fakeSupabase.address().port}`, publishableKey: "sb_publishable_teste" };
+
+  const supabaseCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const sec0 = (await store.getAccountSecurity()).security;
+    const req = await store.requestEmailChange("novo.email@exemplo.com", "password123");
+    const wrong = await store.confirmEmailChange("111111");
+    const right = await store.confirmEmailChange("${FAKE_CODE}");
+    const sec1 = (await store.getAccountSecurity()).security;
+    // put the e-mail back for the suites that follow (the cooldown is per purpose)
+    await new Promise((r) => setTimeout(r, 50));
+    const rate = await store.requestEmailChange("limite@exemplo.com", "password123");
+    return {
+      providerReported: sec0.providers.email === true,
+      codeSentNotShown: req.ok && req.delivered === true && !req.devCode && !req.devMode,
+      wrongRejected: !wrong.ok,
+      rightAccepted: right.ok && sec1.email === "novo.email@exemplo.com" && sec1.emailVerified,
+      rateLimitMessage: !rate.ok && /aguarde|minutos/i.test(rate.error || "")
+    };
+  })()`);
+
+  const fnCalls = fakeSupabaseCalls.filter((c) => c.path === "/functions/v1/email-otp");
+  const sendCall = fnCalls.find((c) => c.body.action === "send");
+  const verifyCall = fnCalls.find((c) => c.body.action === "verify" && c.body.code === FAKE_CODE);
+  supabaseCheck.sendRequestShape = Boolean(sendCall && sendCall.apikey === "sb_publishable_teste" && sendCall.body.email === "novo.email@exemplo.com");
+  supabaseCheck.verifyRequestShape = Boolean(verifyCall && verifyCall.body.email === "novo.email@exemplo.com");
+
+  backendServer.config.supabase = savedSupabase;
+  fakeSupabase.close();
+  // restore the seeded e-mail directly (a second change would hit the cooldown)
+  backendServer.db.prepare("UPDATE users SET email = 'davis@discord.local' WHERE id = 'u_davis'").run();
+
+  recordTest(
+    "Domain 16: E-mail Codes via Supabase Edge Function",
+    "Send and verify codes through the email-otp function with the publishable key, never show the code on screen, friendly rate-limit error",
+    Object.values(supabaseCheck).every(Boolean),
+    JSON.stringify(supabaseCheck)
   );
 
   // =========================================================================

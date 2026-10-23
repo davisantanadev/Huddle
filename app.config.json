@@ -3,12 +3,8 @@
   "publicUrl": "",
   "invitePath": "/convite",
   "requireVerifiedEmail": false,
-  "email": {
-    "provider": "resend",
-    "from": ""
-  },
-  "sms": {
-    "provider": "twilio",
-    "from": ""
+  "supabase": {
+    "url": "https://lvgulsugrjfiaywzcvbh.supabase.co",
+    "publishableKey": "sb_publishable_cS6P5Jd4eLpEBJc9SiPwWw_GGAiKQGN"
   }
 }

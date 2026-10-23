@@ -682,7 +682,7 @@ class Store {
   }
 
   // ==========================================================================
-  // Account security: e-mail, password and phone (codes delivered by the backend)
+  // Account security: e-mail and password (codes delivered by the backend)
   // ==========================================================================
   async accountRpc(action, params = {}) {
     const me = this.getCurrentUser();
@@ -716,18 +716,6 @@ class Store {
 
   changePassword(currentPassword, newPassword) {
     return this.accountRpc("changePassword", { currentPassword, newPassword });
-  }
-
-  requestPhoneVerification(phone, currentPassword) {
-    return this.accountRpc("requestPhoneVerification", { phone, currentPassword });
-  }
-
-  confirmPhoneVerification(code) {
-    return this.accountRpc("confirmPhoneVerification", { code });
-  }
-
-  removePhone(currentPassword) {
-    return this.accountRpc("removePhone", { currentPassword });
   }
 
   cancelPendingVerification(purpose) {
@@ -1753,6 +1741,7 @@ class Store {
   openMediaEditor({ target = "avatar", mediaUrl, scale = 1.0, cropX = 0, cropY = 0, bannerPositionY = 50 }) {
     this.state.mediaEditor = {
       isOpen: true,
+      sessionId: (this.state.mediaEditor.sessionId || 0) + 1, // new editor DOM per opening
       target,
       mediaUrl,
       scale: Math.max(1, Math.min(3, Number(scale) || 1)),
@@ -1768,7 +1757,8 @@ class Store {
     if (coords.cropX !== undefined) this.state.mediaEditor.cropX = Number(coords.cropX) || 0;
     if (coords.cropY !== undefined) this.state.mediaEditor.cropY = Number(coords.cropY) || 0;
     if (coords.bannerPositionY !== undefined) this.state.mediaEditor.bannerPositionY = Math.max(0, Math.min(100, Number(coords.bannerPositionY) || 50));
-    this.notify({ skipPersist: true });
+    // No notify(): the editor updates its own preview while a slider is being
+    // dragged, and a re-render here would replace the slider mid-drag
   }
 
   closeMediaEditor() {

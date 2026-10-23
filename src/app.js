@@ -102,9 +102,9 @@ const uiState = {
 
   // Account security tab
   accountSecurity: null, // snapshot from getAccountSecurity
-  accountPanel: null, // null | "email" | "password" | "phone" (which editor is expanded)
+  accountPanel: null, // null | "email" | "password" (which editor is expanded)
   accountFeedback: null, // null | { scope, ok, msg }
-  accountDevCode: null, // null | { scope, code } when no e-mail/SMS provider is configured
+  accountDevCode: null, // null | { scope, code } when no e-mail service is configured
   accountBusy: false,
 
   // Password prompt for the quick account switch
@@ -462,7 +462,7 @@ function renderEmailGateScreen(state) {
             <form id="email-gate-form" style="display:flex;flex-direction:column;gap:12px;">
               <div class="form-group">
                 <label class="form-label" for="email-gate-code">Código de verificação</label>
-                <input class="form-input code-input" id="email-gate-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000000" required data-testid="email-gate-code" />
+                <input class="form-input code-input" id="email-gate-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="000000" required data-testid="email-gate-code" />
               </div>
               <div id="email-gate-error" class="form-error">${escapeHtml(gate.error || "")}</div>
               <button type="submit" class="btn btn-primary" style="width:100%;" data-testid="email-gate-submit">Confirmar e entrar</button>
@@ -2537,6 +2537,7 @@ function gifCardHtml(gif) {
 function mountGifPicker(gp) {
   const root = document.createElement("div");
   root.id = "gif-picker-root";
+  root.className = "app-root theme-layer";
   root.innerHTML = `
     <div class="modal-backdrop" data-action="close-gif-picker-backdrop">
       <div class="modal-card wide gif-modal-box" data-testid="gif-picker-modal" role="dialog" aria-labelledby="gif-picker-title">
@@ -2616,6 +2617,7 @@ function syncGifPicker(state) {
   }
   if (!gifView.root) mountGifPicker(gp);
   const root = gifView.root;
+  root.setAttribute("data-theme", state.settings.theme);
   const grid = root.querySelector(".gif-grid");
   const results = gp.results || [];
 
@@ -3251,19 +3253,6 @@ function renderProfileSettingsPanel(me) {
   `;
 }
 
-// Brazilian numbers: (DD) NNNN-NNNN (landline) or (DD) NNNNN-NNNN (mobile)
-function formatPhoneInput(rawDigits, international = false) {
-  if (international) return "+" + rawDigits.slice(0, 15);
-  const d = rawDigits.slice(0, 11);
-  if (!d) return "";
-  if (d.length <= 2) return `(${d}`;
-  const ddd = d.slice(0, 2);
-  const rest = d.slice(2);
-  if (rest.length <= 4) return `(${ddd}) ${rest}`;
-  const split = rest.length === 9 ? 5 : 4;
-  return `(${ddd}) ${rest.slice(0, split)}-${rest.slice(split)}`;
-}
-
 function formatDateTime(ts) {
   if (!ts) return "";
   return new Date(ts).toLocaleString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -3279,7 +3268,7 @@ function renderAccountFeedback(scope) {
   if (dev && dev.scope === scope) {
     parts.push(`
       <div class="dev-code-note" data-testid="account-dev-code">
-        <strong>Modo desenvolvimento:</strong> nenhum provedor de ${dev.channel === "sms" ? "SMS" : "e-mail"} configurado, então o código não foi enviado.
+        <strong>Modo desenvolvimento:</strong> envio de e-mail não configurado, então o código não foi enviado.
         Use <code>${escapeHtml(dev.code)}</code> para testar.
       </div>
     `);
@@ -3292,7 +3281,7 @@ function renderCodeForm({ purpose, sentTo, scope, allowResend, changeLabel }) {
     <form class="account-editor" data-account-form="code" data-purpose="${purpose}" data-scope="${scope}">
       <div class="setting-desc">Digite o código de 6 dígitos enviado para <strong>${escapeHtml(sentTo)}</strong>. Ele expira em 10 minutos.</div>
       <div class="code-input-row">
-        <input class="form-input code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000000" aria-label="Código de verificação" required />
+        <input class="form-input code-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="000000" aria-label="Código de verificação" required />
         <button type="submit" class="btn btn-primary" ${uiState.accountBusy ? "disabled" : ""}>Confirmar</button>
       </div>
       <div class="btn-row">
@@ -3357,7 +3346,7 @@ function renderAccountSettingsPanel(me) {
     return `
       <div class="settings-page-head">
         <h2>Minha Conta</h2>
-        <p>E-mail, senha e telefone usados para entrar e proteger sua conta.</p>
+        <p>E-mail e senha usados para entrar e proteger sua conta.</p>
       </div>
       <section class="settings-card account-list">${usernameRow}</section>
       <section class="settings-card"><div class="setting-desc">Carregando dados de segurança da conta...</div></section>
@@ -3409,53 +3398,6 @@ function renderAccountSettingsPanel(me) {
     </div>
   `;
 
-  // Phone
-  let phoneEditor = "";
-  if (sec.pendingPhone) {
-    phoneEditor = renderCodeForm({ purpose: "phone_verify", sentTo: sec.pendingPhone.masked, scope: "phone", allowResend: false, changeLabel: "Usar outro número" });
-  } else if (panel === "phone") {
-    phoneEditor = `
-      <form class="account-editor" data-account-form="phone">
-        <div class="form-group">
-          <label class="form-label" for="account-phone">Número de celular</label>
-          <input class="form-input" id="account-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel-national" maxlength="20" placeholder="(11) 91234-5678" required data-testid="account-phone-input" />
-          <div class="setting-desc">Número do Brasil com DDD. Para outro país, comece com + e o código do país.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="account-phone-password">Senha atual</label>
-          <input class="form-input" id="account-phone-password" name="currentPassword" type="password" autocomplete="current-password" required />
-        </div>
-        <div class="btn-row end">
-          <button type="submit" class="btn btn-primary btn-sm" ${uiState.accountBusy ? "disabled" : ""}>Enviar código por SMS</button>
-        </div>
-        ${renderAccountFeedback("phone")}
-      </form>
-    `;
-  } else {
-    phoneEditor = renderAccountFeedback("phone");
-  }
-  const phoneRow = `
-    <div class="account-row" data-testid="account-phone-row">
-      <div class="account-row-icon">${Icons.smartphone}</div>
-      <div class="account-row-body">
-        <div class="setting-title">
-          Telefone
-          ${sec.phone ? `<span class="status-pill ${sec.phoneVerified ? "ok" : "warn"}">${sec.phoneVerified ? "Verificado" : "Não verificado"}</span>` : ""}
-        </div>
-        <div class="account-row-value ${sec.phone ? "" : "muted"}">${sec.phone ? escapeHtml(sec.phoneMasked) : "Nenhum número adicionado"}</div>
-        ${phoneEditor}
-      </div>
-      <div class="btn-row">
-        ${
-          !sec.pendingPhone
-            ? `<button type="button" class="btn btn-secondary btn-sm" data-action="account-toggle-panel" data-panel="phone" data-testid="change-phone-btn">${panel === "phone" ? "Fechar" : sec.phone ? "Alterar" : "Adicionar"}</button>`
-            : ""
-        }
-        ${sec.phone && !sec.pendingPhone ? `<button type="button" class="icon-square-btn danger" data-action="remove-account-phone" data-testid="remove-phone-btn" title="Remover número" aria-label="Remover número">${Icons.trash}</button>` : ""}
-      </div>
-    </div>
-  `;
-
   // Password
   const passwordRow = `
     <div class="account-row" data-testid="account-password-row">
@@ -3493,31 +3435,21 @@ function renderAccountSettingsPanel(me) {
     </div>
   `;
 
-  const providerNote =
-    !sec.providers.email || !sec.providers.sms
-      ? `<div class="provider-note">
-          ${Icons.alert}
-          <div>
-            <strong>${
-              !sec.providers.email && !sec.providers.sms
-                ? "Envio de e-mail e SMS ainda não configurado."
-                : !sec.providers.email
-                  ? "Envio de e-mail ainda não configurado."
-                  : "Envio de SMS ainda não configurado."
-            }</strong>
-            Os códigos de verificação aparecem aqui na tela em vez de serem enviados.
-            Para ativar o envio, coloque as chaves do ${[!sec.providers.email && "Resend", !sec.providers.sms && "Twilio"].filter(Boolean).join(" e do ")}
-            em <code>%APPDATA%\\Eco\\app.config.local.json</code> e reinicie o app (passo a passo no README).
-          </div>
-        </div>`
-      : "";
-
-  const verifiedCount = [sec.emailVerified, sec.phoneVerified].filter(Boolean).length;
+  const providerNote = !sec.providers.email
+    ? `<div class="provider-note">
+        ${Icons.alert}
+        <div>
+          <strong>Envio de e-mail não configurado.</strong>
+          Os códigos de verificação aparecem aqui na tela em vez de serem enviados.
+          Para enviar por e-mail, preencha <code>supabase</code> no <code>app.config.json</code> (passo a passo no README).
+        </div>
+      </div>`
+    : "";
 
   return `
     <div class="settings-page-head">
       <h2>Minha Conta</h2>
-      <p>E-mail, senha e telefone usados para entrar e proteger sua conta.</p>
+      <p>E-mail e senha usados para entrar e proteger sua conta.</p>
     </div>
 
     <section class="account-summary">
@@ -3526,9 +3458,9 @@ function renderAccountSettingsPanel(me) {
         <div class="account-summary-name">${escapeHtml(me.displayName)}</div>
         <div class="account-summary-sub">@${escapeHtml(me.username)}</div>
       </div>
-      <div class="account-summary-security ${verifiedCount === 2 ? "ok" : ""}">
+      <div class="account-summary-security ${sec.emailVerified ? "ok" : ""}" data-testid="account-security-badge">
         ${Icons.shieldCheck}
-        <span>${verifiedCount === 2 ? "Conta protegida" : `${verifiedCount}/2 verificações`}</span>
+        <span>${sec.emailVerified ? "E-mail verificado" : "E-mail não verificado"}</span>
       </div>
     </section>
 
@@ -3537,7 +3469,6 @@ function renderAccountSettingsPanel(me) {
     <section class="settings-card account-list">
       ${usernameRow}
       ${emailRow}
-      ${phoneRow}
       ${passwordRow}
     </section>
   `;
@@ -3774,7 +3705,6 @@ export function renderApp() {
       ${renderUserPopout(state)}
       ${renderEmojiPickerPopover()}
       ${renderActiveModal(state)}
-      ${renderMediaEditorModal(state)}
       ${renderSettingsOverlay(state)}
       ${renderContextMenu()}
       ${renderIncomingCall(state)}
@@ -3787,6 +3717,61 @@ export function renderApp() {
 
   bindFormEvents();
   attachLiveScreenShareVideo();
+  syncMediaEditor(state);
+}
+
+// The framing editor lives outside #app: re-rendering the app (a message
+// arriving, a toast...) must never replace its sliders, which would cancel a
+// drag in progress. It is only rebuilt when a new editing session opens.
+const mediaEditorView = { root: null, sessionId: null };
+
+function syncMediaEditor(state) {
+  const me = state.mediaEditor;
+  if (!me?.isOpen) {
+    mediaEditorView.root?.remove();
+    mediaEditorView.root = null;
+    mediaEditorView.sessionId = null;
+    return;
+  }
+  if (mediaEditorView.root && mediaEditorView.sessionId === me.sessionId) {
+    mediaEditorView.root.setAttribute("data-theme", state.settings.theme);
+    return;
+  }
+  mediaEditorView.root?.remove();
+  const root = document.createElement("div");
+  root.id = "media-editor-root";
+  root.className = "app-root theme-layer";
+  root.setAttribute("data-theme", state.settings.theme);
+  root.innerHTML = renderMediaEditorModal(state);
+  document.body.appendChild(root);
+  mediaEditorView.root = root;
+  mediaEditorView.sessionId = me.sessionId;
+  bindMediaEditorSliders(root);
+}
+
+function bindMediaEditorSliders(root) {
+  const zoomSlider = root.querySelector("#media-editor-zoom-slider");
+  const panXSlider = root.querySelector("#media-editor-panx-slider");
+  const panYSlider = root.querySelector("#media-editor-pany-slider");
+  const previewImg = root.querySelector("#media-editor-preview-img");
+
+  const syncEditorTransform = () => {
+    const s = zoomSlider ? Number(zoomSlider.value) : 1;
+    const x = panXSlider ? Number(panXSlider.value) : 0;
+    const y = panYSlider ? Number(panYSlider.value) : 0;
+    if (previewImg) previewImg.style.transform = `scale(${s}) translate(${x}px, ${y}px)`;
+    const zLbl = root.querySelector("#editor-zoom-label");
+    if (zLbl) zLbl.textContent = `${s.toFixed(2)}x`;
+    const xLbl = root.querySelector("#editor-panx-label");
+    if (xLbl) xLbl.textContent = `${x}px`;
+    const yLbl = root.querySelector("#editor-pany-label");
+    if (yLbl) yLbl.textContent = `${y}px`;
+    store.updateMediaEditorCoords({ scale: s, cropX: x, cropY: y });
+  };
+
+  for (const slider of [zoomSlider, panXSlider, panYSlider]) {
+    if (slider) slider.addEventListener("input", syncEditorTransform);
+  }
 }
 
 function attachLiveScreenShareVideo() {
@@ -4298,32 +4283,6 @@ function bindFormEvents() {
     });
   }
 
-  // Phase 8: Media Framing & Crop Sliders
-  const zoomSlider = document.getElementById("media-editor-zoom-slider");
-  const panXSlider = document.getElementById("media-editor-panx-slider");
-  const panYSlider = document.getElementById("media-editor-pany-slider");
-  const previewImg = document.getElementById("media-editor-preview-img");
-
-  const syncEditorTransform = () => {
-    const s = zoomSlider ? Number(zoomSlider.value) : 1;
-    const x = panXSlider ? Number(panXSlider.value) : 0;
-    const y = panYSlider ? Number(panYSlider.value) : 0;
-    if (previewImg) {
-      previewImg.style.transform = `scale(${s}) translate(${x}px, ${y}px)`;
-    }
-    const zLbl = document.getElementById("editor-zoom-label");
-    if (zLbl) zLbl.textContent = `${s.toFixed(2)}x`;
-    const xLbl = document.getElementById("editor-panx-label");
-    if (xLbl) xLbl.textContent = `${x}px`;
-    const yLbl = document.getElementById("editor-pany-label");
-    if (yLbl) yLbl.textContent = `${y}px`;
-    store.updateMediaEditorCoords({ scale: s, cropX: x, cropY: y });
-  };
-
-  if (zoomSlider) zoomSlider.addEventListener("input", syncEditorTransform);
-  if (panXSlider) panXSlider.addEventListener("input", syncEditorTransform);
-  if (panYSlider) panYSlider.addEventListener("input", syncEditorTransform);
-
   // Phase 2: Role Editor Form & Color Sync
   const roleForm = document.getElementById("edit-role-form");
   if (roleForm) {
@@ -4558,21 +4517,7 @@ function bindFormEvents() {
     });
   });
 
-  // Account security forms (e-mail change, password, phone, verification codes)
-  // Phone field: format as you type — (11) 91234-5678, or free "+<country> ..." for other countries
-  const phoneInput = document.getElementById("account-phone");
-  if (phoneInput) {
-    phoneInput.addEventListener("input", (e) => {
-      const prevDigits = phoneInput.dataset.digits || "";
-      let digits = phoneInput.value.replace(/\D/g, "");
-      // Backspace over "-", ")" or a space removes the digit before it instead of getting stuck
-      if (e.inputType === "deleteContentBackward" && digits === prevDigits) digits = digits.slice(0, -1);
-      const international = phoneInput.value.trim().startsWith("+");
-      phoneInput.value = formatPhoneInput(digits, international);
-      phoneInput.dataset.digits = digits;
-    });
-  }
-
+  // Account security forms (e-mail change, password, verification codes)
   document.querySelectorAll("[data-account-form]").forEach((form) => {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -4584,13 +4529,6 @@ function bindFormEvents() {
           "email",
           () => store.requestEmailChange(fd.get("newEmail"), fd.get("currentPassword")),
           (res) => `Código enviado para ${res.sentTo}.`
-        );
-        if (ok) document.querySelector('[data-account-form="code"] input[name="code"]')?.focus();
-      } else if (kind === "phone") {
-        const ok = await runAccountAction(
-          "phone",
-          () => store.requestPhoneVerification(fd.get("phone"), fd.get("currentPassword")),
-          (res) => `Código enviado por SMS para ${res.sentTo}.`
         );
         if (ok) document.querySelector('[data-account-form="code"] input[name="code"]')?.focus();
       } else if (kind === "password") {
@@ -4613,13 +4551,11 @@ function bindFormEvents() {
         const code = fd.get("code");
         const confirmFn = {
           email_verify: () => store.confirmEmailVerification(code),
-          email_change: () => store.confirmEmailChange(code),
-          phone_verify: () => store.confirmPhoneVerification(code)
+          email_change: () => store.confirmEmailChange(code)
         }[purpose];
         const successMsg = {
           email_verify: "E-mail verificado!",
-          email_change: "E-mail alterado e verificado!",
-          phone_verify: "Telefone verificado e vinculado à sua conta!"
+          email_change: "E-mail alterado e verificado!"
         }[purpose];
         const ok = await runAccountAction(scope, confirmFn, successMsg);
         if (ok) {
@@ -4787,12 +4723,6 @@ const DESTRUCTIVE_ACTIONS = {
     title: "Remover banner do servidor",
     message: "O banner deixará de aparecer no topo da lista de canais.",
     confirmLabel: "Remover Banner"
-  }),
-  "remove-account-phone": () => ({
-    title: "Remover número de telefone",
-    message: "O número verificado será desvinculado da sua conta. Confirme com sua senha atual.",
-    confirmLabel: "Remover Número",
-    requirePassword: true
   })
 };
 
@@ -4981,7 +4911,7 @@ async function handleGlobalClick(e) {
       break;
     case "account-cancel-pending": {
       const purpose = btn.getAttribute("data-purpose");
-      const scope = purpose === "phone_verify" ? "phone" : "email";
+      const scope = "email";
       const reopen = purpose !== "email_verify";
       await runAccountAction(scope, () => store.cancelPendingVerification(purpose));
       uiState.accountDevCode = null;
@@ -4989,9 +4919,6 @@ async function handleGlobalClick(e) {
       renderApp();
       break;
     }
-    case "remove-account-phone":
-      await runAccountAction("phone", () => store.removePhone(btn.getAttribute("data-password") || ""), "Número removido da sua conta.");
-      break;
     case "confirm-dialog-cancel":
       uiState.confirmDialog = null;
       renderApp();
