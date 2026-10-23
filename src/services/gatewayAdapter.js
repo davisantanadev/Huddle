@@ -22,8 +22,11 @@ export const NativeBridge = {
   },
 
   getBackendInfo() {
+    // Fixed for the app's lifetime: ask the main process once
+    if (this.backendInfo) return this.backendInfo;
     if (this.isElectron() && window.DiscordNative.backend?.getInfoSync) {
-      return window.DiscordNative.backend.getInfoSync() || {};
+      this.backendInfo = window.DiscordNative.backend.getInfoSync() || {};
+      return this.backendInfo;
     }
     if (typeof window !== "undefined" && window.__DISCORD_BACKEND_URL__) {
       return { httpUrl: window.__DISCORD_BACKEND_URL__ };
@@ -62,7 +65,8 @@ export const NativeBridge = {
   // Raw call with an explicit token and no session side effects (used to probe
   // saved accounts' sessions without signing the current one out)
   async rpcAs(token, action, params = {}) {
-    if (this.isElectron() && window.DiscordNative.backend?.rpc) {
+    // Local backend: Electron IPC. Hosted server (remote): HTTPS below.
+    if (this.isElectron() && window.DiscordNative.backend?.rpc && !this.getBackendInfo().remote) {
       return window.DiscordNative.backend.rpc(action, params, token);
     }
     const info = this.getBackendInfo();
@@ -212,7 +216,7 @@ export const NativeBridge = {
 export const AUDIO_ASSETS = {
   join: "../assets/audio/entrar-na-call.mp3", // discord-join: server voice join & answered DM call
   leave: "../assets/audio/discord-leave-noise.mp3", // played when you or someone else leaves the call
-  ringtone: "../assets/audio/chamando.mp3", // SomEntrarNaCall: looping while a DM call rings
+  ringtone: "../assets/audio/ligando.mp3", // SomLigandoPraAlguemDiscord: loops while a DM call rings (DMs only)
   notification: "../assets/audio/notificacao.mp3"
 };
 
@@ -779,6 +783,219 @@ class VoiceActivityDetector {
 }
 
 export const VAD = new VoiceActivityDetector();
+
+// ==========================================================================
+// Voice: WebRTC mesh
+// ==========================================================================
+// Every pair of people in a call holds one RTCPeerConnection carrying audio
+// straight between their PCs (encrypted, DTLS-SRTP). The Eco server only
+// relays the setup messages (RTC_SIGNAL, delivered to the target user alone);
+// STUN finds a direct path, and the TURN relay (when the server provides one)
+// covers networks where a direct path is impossible.
+//
+// To avoid both sides offering at once, the user with the smaller id always
+// makes the offer; the other answers. Each connection has exactly one audio
+// transceiver (created by the offerer, adopted by the answerer from the offer),
+// so a microphone that arrives later or a device switch is attached with
+// replaceTrack, without renegotiating.
+class VoiceMesh {
+  constructor() {
+    this.channelId = null;
+    this.meId = null;
+    this.iceServers = [];
+    this.localTrack = null;
+    this.peers = new Map(); // userId -> { pc, audio, pendingCandidates, initiator, restartTimer }
+    this.muted = false;
+    this.deafened = false;
+    this.outputDeviceId = "default";
+    this.outputVolume = 1;
+    this.sendSignal = null; // (targetUserId, signalType, signalData) => Promise
+  }
+
+  isActive() {
+    return Boolean(this.channelId);
+  }
+
+  start({ channelId, meId, iceServers, sendSignal }) {
+    this.stop();
+    this.channelId = channelId;
+    this.meId = meId;
+    this.iceServers = iceServers || [];
+    this.sendSignal = sendSignal;
+  }
+
+  // Microphone track to send (null = nothing yet)
+  setLocalStream(stream) {
+    this.localTrack = stream?.getAudioTracks()[0] || null;
+    if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
+    for (const peer of this.peers.values()) {
+      const sender = peer.pc.getTransceivers()[0]?.sender;
+      if (sender) sender.replaceTrack(this.localTrack).catch(() => {});
+    }
+  }
+
+  // Connect to people who joined, drop people who left
+  syncParticipants(userIds) {
+    if (!this.channelId) return;
+    const others = new Set(userIds.filter((id) => id && id !== this.meId));
+    for (const id of [...this.peers.keys()]) {
+      if (!others.has(id)) this.closePeer(id);
+    }
+    for (const id of others) {
+      if (!this.peers.has(id) && this.meId < id) this.createPeer(id, true);
+    }
+  }
+
+  createPeer(userId, initiator) {
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers, bundlePolicy: "max-bundle" });
+    // The answerer must not add its own transceiver: the offer creates one, and
+    // a second, unmatched transceiver would leave our microphone unsent
+    if (initiator) {
+      const transceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+      if (this.localTrack) transceiver.sender.replaceTrack(this.localTrack).catch(() => {});
+    }
+
+    const audio = new Audio();
+    audio.autoplay = true;
+    audio.muted = this.deafened;
+    audio.volume = this.outputVolume;
+    this.applySink(audio);
+
+    const peer = { pc, audio, pendingCandidates: [], initiator, restartTimer: null };
+    this.peers.set(userId, peer);
+
+    pc.ontrack = (e) => {
+      audio.srcObject = e.streams[0] || new MediaStream([e.track]);
+      audio.play().catch(() => {});
+    };
+    pc.onicecandidate = (e) => {
+      if (e.candidate) this.signal(userId, "ice", e.candidate.toJSON());
+    };
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      if (state === "failed" && peer.initiator) this.restartIce(userId);
+      // A brief network hiccup: try an ICE restart if it does not recover alone
+      if (state === "disconnected" && peer.initiator) {
+        clearTimeout(peer.restartTimer);
+        peer.restartTimer = setTimeout(() => {
+          if (pc.connectionState === "disconnected") this.restartIce(userId);
+        }, 4000);
+      }
+    };
+
+    if (initiator) this.makeOffer(userId);
+    return peer;
+  }
+
+  async makeOffer(userId, { iceRestart = false } = {}) {
+    const peer = this.peers.get(userId);
+    if (!peer) return;
+    try {
+      const offer = await peer.pc.createOffer({ iceRestart });
+      await peer.pc.setLocalDescription(offer);
+      this.signal(userId, "offer", { type: offer.type, sdp: offer.sdp });
+    } catch (_) {}
+  }
+
+  restartIce(userId) {
+    this.makeOffer(userId, { iceRestart: true });
+  }
+
+  async handleSignal({ fromUserId, signalType, signalData }) {
+    if (!this.channelId || !fromUserId || fromUserId === this.meId) return;
+    let peer = this.peers.get(fromUserId);
+    try {
+      if (signalType === "offer") {
+        if (!peer) peer = this.createPeer(fromUserId, false);
+        await peer.pc.setRemoteDescription(signalData);
+        // Send our microphone on the audio transceiver the offer created
+        const transceiver = peer.pc.getTransceivers()[0];
+        if (transceiver) {
+          transceiver.direction = "sendrecv";
+          if (this.localTrack) await transceiver.sender.replaceTrack(this.localTrack).catch(() => {});
+        }
+        const answer = await peer.pc.createAnswer();
+        await peer.pc.setLocalDescription(answer);
+        this.signal(fromUserId, "answer", { type: answer.type, sdp: answer.sdp });
+        await this.flushCandidates(peer);
+      } else if (signalType === "answer" && peer) {
+        await peer.pc.setRemoteDescription(signalData);
+        await this.flushCandidates(peer);
+      } else if (signalType === "ice" && peer) {
+        if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(signalData).catch(() => {});
+        else peer.pendingCandidates.push(signalData);
+      }
+    } catch (_) {}
+  }
+
+  async flushCandidates(peer) {
+    const queued = peer.pendingCandidates.splice(0);
+    for (const c of queued) await peer.pc.addIceCandidate(c).catch(() => {});
+  }
+
+  signal(targetUserId, signalType, signalData) {
+    if (typeof this.sendSignal === "function") this.sendSignal(targetUserId, signalType, signalData);
+  }
+
+  setMuted(muted) {
+    this.muted = Boolean(muted);
+    if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
+  }
+
+  // Deafened: hear nobody and send nothing (like Discord)
+  setDeafened(deafened) {
+    this.deafened = Boolean(deafened);
+    for (const peer of this.peers.values()) peer.audio.muted = this.deafened;
+    if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
+  }
+
+  setOutputDevice(deviceId) {
+    this.outputDeviceId = deviceId || "default";
+    for (const peer of this.peers.values()) this.applySink(peer.audio);
+  }
+
+  // 0–100 from the settings slider
+  setOutputVolume(percent) {
+    this.outputVolume = Math.max(0, Math.min(1, (Number(percent) || 0) / 100));
+    for (const peer of this.peers.values()) peer.audio.volume = this.outputVolume;
+  }
+
+  applySink(audio) {
+    if (typeof audio.setSinkId === "function") {
+      audio.setSinkId(this.outputDeviceId === "default" ? "" : this.outputDeviceId).catch(() => {});
+    }
+  }
+
+  // For diagnostics/tests: per-peer connection state and remote stream
+  getPeerInfo() {
+    return [...this.peers.entries()].map(([userId, peer]) => ({
+      userId,
+      state: peer.pc.connectionState,
+      stream: peer.audio.srcObject || null
+    }));
+  }
+
+  closePeer(userId) {
+    const peer = this.peers.get(userId);
+    if (!peer) return;
+    clearTimeout(peer.restartTimer);
+    try {
+      peer.pc.close();
+    } catch (_) {}
+    peer.audio.pause();
+    peer.audio.srcObject = null;
+    this.peers.delete(userId);
+  }
+
+  stop() {
+    for (const id of [...this.peers.keys()]) this.closePeer(id);
+    this.channelId = null;
+    this.localTrack = null;
+    this.sendSignal = null;
+  }
+}
+
+export const Voice = new VoiceMesh();
 
 // ==========================================================================
 // Phase 9: Screen Share

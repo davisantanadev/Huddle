@@ -16,6 +16,20 @@ Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord,
 
 ---
 
+## Só quero usar o app
+
+No **PowerShell** (tecla Windows → digite `powershell` → Enter), cole:
+
+```powershell
+irm https://129-159-51-96.sslip.io/download/install.ps1 | iex
+```
+
+Isso baixa o Eco do servidor, confere o arquivo, instala em `%LOCALAPPDATA%\Eco`, cria o atalho **Eco** na Área de Trabalho e no Menu Iniciar e abre o app. Rodar o mesmo comando de novo **atualiza** o app (suas contas não são apagadas). Não precisa de administrador nem de Node.js.
+
+As seções abaixo são para quem vai **desenvolver** o app.
+
+---
+
 ## 1. Requisitos
 
 | Item | Versão |
@@ -139,6 +153,35 @@ Para exigir e-mail verificado para usar o app, ponha `"requireVerifiedEmail": tr
 | `requireVerifiedEmail` | `true` = só entra no app quem confirmou o e-mail |
 | `supabase.url` / `supabase.publishableKey` | Projeto Supabase cuja função `email-otp` envia os códigos |
 
+### 4.4. Hospedar o servidor (para usar com amigos)
+
+Com `serverUrl` preenchido no `app.config.json`, o app **não** abre um servidor local: todos se conectam ao mesmo servidor.
+
+O servidor é o próprio backend rodando sozinho (`npm run server`, sem Electron). A instalação atual:
+
+| Item | Valor |
+| --- | --- |
+| Máquina | Oracle Cloud Always Free (Ubuntu 24.04), São Paulo |
+| Endereço | `https://<IP-com-hífens>.sslip.io` (HTTPS automático pelo Caddy + Let's Encrypt) |
+| Código | `/opt/eco` (dono `root`) |
+| Dados | `/var/lib/eco` — banco, uploads e `app.config.local.json` (chave do Giphy) |
+| Serviço | `systemctl status eco` (usuário `eco`, reinicia sozinho) |
+| Logs | `journalctl -u eco -f` |
+
+Variáveis do serviço: `APP_PUBLIC_URL`, `REQUIRE_VERIFIED_EMAIL=1`, `TRUST_PROXY=1`, `ECO_DATA_DIR=/var/lib/eco`. No servidor a conta de exemplo **não** é criada, e logins/cadastros têm limite de tentativas.
+
+Na Oracle, a *Security List* da sub-rede precisa liberar **TCP 80 e 443** (entrada de `0.0.0.0/0`), e o firewall do Ubuntu também (regras `iptables` antes do `REJECT`, salvas com `netfilter-persistent`).
+
+**Voz nas calls (WebRTC):** o áudio vai direto entre os PCs (criptografado); o servidor só repassa as mensagens de conexão, e apenas para o destinatário. Para redes que não permitem conexão direta (CGNAT), o mesmo servidor roda um relay **TURN** (`coturn`, `/etc/turnserver.conf`) com credenciais temporárias de 12 h assinadas pelo Eco a partir de `turn.secret` em `/var/lib/eco/app.config.local.json` — o segredo nunca vai para o app. Portas extras a liberar na Security List e no `iptables`: **UDP 3478, TCP 3478 e UDP 49160–49200**.
+
+Para publicar uma nova versão do app para download (depois de `npm run build:exe`), envie o zip de `dist\Discord-win32-x64` como `/var/www/eco-download/Eco.zip` e regenere o checksum com `sha256sum Eco.zip > Eco.zip.sha256` na mesma pasta. O instalador fica em `scripts/install.ps1` (servido em `/download/install.ps1`).
+
+Para atualizar o código no servidor:
+
+```bash
+tar czf - electron scripts/server.js assets/audio app.config.json package.json | ssh -i ~/.ssh/eco-server.key ubuntu@SEU-IP "sudo tar xzf - -C /opt/eco && sudo systemctl restart eco"
+```
+
 ## 5. Gerar o executável (.exe)
 
 ```powershell
@@ -156,9 +199,10 @@ Isso cria:
 
 ```powershell
 npm test
+$env:VERIFY_REMOTE = "1"; npm test   # mesma suíte falando com o servidor por HTTP, como no modo hospedado
 ```
 
-Roda 25 suítes de ponta a ponta dentro do Electron (login, servidores, chamadas, sons, convites, conta etc.) usando um banco temporário — seus dados não são tocados. O resultado fica em `docs/verification-results.json`.
+Roda as suítes de ponta a ponta dentro do Electron (login, servidores, chamadas, sons, convites, conta etc.) usando um banco temporário — seus dados não são tocados. O resultado fica em `docs/verification-results.json`.
 
 ## 7. Onde ficam os dados
 

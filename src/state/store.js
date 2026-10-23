@@ -4,7 +4,7 @@
 // guilds, channels, messages, invites, and preferences are persisted in SQLite.
 // ==========================================================================
 
-import { NativeBridge, CallSounds, ScreenShare, VoiceDevices, VAD } from "../services/gatewayAdapter.js";
+import { NativeBridge, CallSounds, ScreenShare, VoiceDevices, VAD, Voice } from "../services/gatewayAdapter.js";
 
 const LEGACY_STORAGE_KEY = "discord_desktop_replica_state_v1";
 const SESSION_STORAGE_KEY = "discord_session_user_v2";
@@ -13,6 +13,8 @@ const SAVED_ACCOUNTS_KEY = "eco_saved_accounts_v1";
 // GIPHY returns at most 50 GIFs per request and rejects search offsets above 4999.
 const GIF_PAGE_SIZE = 50;
 const GIF_MAX_OFFSET = 5000;
+// TURN credentials from the server are short-lived; refresh them before reuse
+const ICE_SERVERS_REFRESH_MS = 6 * 60 * 60 * 1000;
 // Picker results kept per search/category so reopening or switching back is instant
 const GIF_CACHE_TTL_MS = 10 * 60 * 1000;
 // An unanswered DM call stops ringing and hangs up after this long
@@ -201,6 +203,9 @@ function createEmptyState() {
 class Store {
   constructor() {
     this.gifRequestSeq = 0;
+    // Preference changes not yet confirmed by the backend (see syncFromBackend)
+    this.unsavedSettings = {};
+    this.settingsWriteSeq = 0;
     // The GIF picker renders outside the main app tree and has its own listeners,
     // so its updates never trigger a full app re-render
     this.gifListeners = new Set();
@@ -322,6 +327,16 @@ class Store {
         return;
       }
 
+      // WebRTC setup messages for our call; never worth a full state reload
+      if (event === "RTC_SIGNAL") {
+        if (payload?.channelId === this.state.voice.connectedChannelId) Voice.handleSignal(payload);
+        return;
+      }
+
+      if (event === "RTC_ROOM_UPDATED" && payload?.channelId === this.state.voice.connectedChannelId) {
+        Voice.syncParticipants((payload.participants || []).map((p) => p.userId));
+      }
+
       if (event === "RTC_ROOM_UPDATED" && payload?.channelId) {
         this.handleVoiceRoomPresence(payload.channelId, payload.participants || []);
         this.handleDmCallRoomUpdate(payload.channelId, payload.participants || []);
@@ -355,7 +370,9 @@ class Store {
     this.state.messages = snap.messages || {};
     this.state.settings = {
       ...this.state.settings,
-      ...(snap.settings || {})
+      ...(snap.settings || {}),
+      // A snapshot may predate preference changes still being saved: keep them
+      ...this.unsavedSettings
     };
 
     // Map active screen shares by channelId
@@ -838,17 +855,27 @@ class Store {
       ...this.state.settings,
       ...partial
     };
+    if (partial.voiceOutputDeviceId !== undefined) Voice.setOutputDevice(partial.voiceOutputDeviceId);
+    // New microphone mid-call: reopen it and swap it into the call
+    if (partial.voiceInputDeviceId !== undefined && this.state.voice.connectedChannelId) {
+      this.restartMicrophone();
+    }
+    if (partial.voiceOutputVolume !== undefined) Voice.setOutputVolume(partial.voiceOutputVolume);
     if (partial.minimizeToTray !== undefined) {
       NativeBridge.setSetting("MINIMIZE_TO_TRAY", Boolean(partial.minimizeToTray));
     }
     if (partial.hardwareAcceleration !== undefined) {
       NativeBridge.setSetting("enableHardwareAcceleration", Boolean(partial.hardwareAcceleration));
     }
+    const writeId = ++this.settingsWriteSeq;
+    Object.assign(this.unsavedSettings, partial);
     this.notify();
     await NativeBridge.rpc("updatePreferences", {
       userId: me.id,
       preferences: partial
     });
+    // Saved; later writes keep their own keys pending
+    if (writeId === this.settingsWriteSeq) this.unsavedSettings = {};
     return { ok: true, settings: this.state.settings };
   }
 
@@ -979,24 +1006,64 @@ class Store {
 
     // Play Join Sound once per transition
     await CallSounds.play("join", this.state.settings, sessionKey);
-    await NativeBridge.rpc("joinVoiceChannel", { userId: meId, guildId, channelId });
+    const joined = await NativeBridge.rpc("joinVoiceChannel", { userId: meId, guildId, channelId });
+    await this.startVoiceMesh(channelId, joined?.participants);
     this.startLocalVoiceActivity();
     return { ok: true };
+  }
+
+  restartMicrophone() {
+    VAD.stop();
+    if (this.localAudioStream) {
+      this.localAudioStream.getTracks().forEach((t) => t.stop());
+      this.localAudioStream = null;
+    }
+    this.startLocalVoiceActivity();
+  }
+
+  // Audio between the people in the call (WebRTC); STUN/TURN come from the server
+  async startVoiceMesh(channelId, participants = []) {
+    if (!this.iceServersCache || Date.now() - this.iceServersCache.at > ICE_SERVERS_REFRESH_MS) {
+      const res = await NativeBridge.rpc("getIceServers", {});
+      this.iceServersCache = { at: Date.now(), servers: res?.iceServers || [] };
+    }
+    Voice.start({
+      channelId,
+      meId: this.state.auth.currentUserId,
+      iceServers: this.iceServersCache.servers,
+      sendSignal: (targetUserId, signalType, signalData) =>
+        NativeBridge.rpc("RTC_SIGNAL", { channelId, targetUserId, signalType, signalData })
+    });
+    Voice.setMuted(this.state.voice.muted);
+    Voice.setDeafened(this.state.voice.deafened);
+    Voice.setOutputDevice(this.state.settings.voiceOutputDeviceId);
+    Voice.setOutputVolume(this.state.settings.voiceOutputVolume ?? 100);
+    if (this.localAudioStream) Voice.setLocalStream(this.localAudioStream);
+    Voice.syncParticipants((participants || []).map((p) => p.userId));
   }
 
   // Wire up real-time VAD if audio input is available
   startLocalVoiceActivity() {
     NativeBridge.setMediaSessionActive(true);
     if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+      const inputId = this.state.settings.voiceInputDeviceId;
       navigator.mediaDevices
         .getUserMedia({
-          audio:
-            this.state.settings.voiceInputDeviceId && this.state.settings.voiceInputDeviceId !== "default"
-              ? { deviceId: { exact: this.state.settings.voiceInputDeviceId } }
-              : true
+          audio: {
+            ...(inputId && inputId !== "default" ? { deviceId: { exact: inputId } } : {}),
+            echoCancellation: true,
+            noiseSuppression: this.state.voice.noiseSuppression !== false,
+            autoGainControl: true
+          }
         })
         .then((st) => {
+          // Left the call while the browser was still opening the microphone
+          if (!this.state.voice.connectedChannelId) {
+            st.getTracks().forEach((t) => t.stop());
+            return;
+          }
           this.localAudioStream = st;
+          Voice.setLocalStream(st);
           VAD.start(st, (speaking) => {
             this.setVoiceSpeaking(speaking);
           });
@@ -1038,6 +1105,7 @@ class Store {
     }
 
     const res = await NativeBridge.rpc("joinVoiceChannel", { userId: meId, guildId: null, channelId: dmChannelId });
+    await this.startVoiceMesh(dmChannelId, res?.participants);
     // The other person may already be waiting in the call (they called us first)
     if ((res?.participants || []).some((p) => p.userId === dm.userId)) {
       await this.markDmCallConnected();
@@ -1133,6 +1201,7 @@ class Store {
 
   async leaveVoiceChannel() {
     NativeBridge.setMediaSessionActive(false);
+    Voice.stop();
     if (!this.state.voice.connectedChannelId) return { ok: true };
     this.state.navigation.callViewChannelId = null;
     const meId = this.state.auth.currentUserId;
@@ -1180,10 +1249,8 @@ class Store {
   }
 
   async setVoiceSpeaking(speaking) {
-    if (speaking && this.state.voice.muted) {
-      this.state.voice.muted = false;
-    }
-    const isSpk = Boolean(speaking) && !this.state.voice.deafened;
+    // While muted nothing is sent, so nobody should see us "speaking"
+    const isSpk = Boolean(speaking) && !this.state.voice.muted && !this.state.voice.deafened;
     this.state.voice.isSpeaking = isSpk;
     const meId = this.state.auth.currentUserId;
     if (!this.state.voice.speakingUsers) this.state.voice.speakingUsers = {};
@@ -1205,6 +1272,8 @@ class Store {
     }
     const soundType = this.state.voice.muted ? "mute" : "unmute";
     CallSounds.play(soundType, this.state.settings);
+    Voice.setMuted(this.state.voice.muted);
+    Voice.setDeafened(this.state.voice.deafened);
     if (this.state.voice.muted && this.state.voice.isSpeaking) {
       this.setVoiceSpeaking(false);
     }
@@ -1221,6 +1290,7 @@ class Store {
 
   toggleDeafen() {
     this.state.voice.deafened = !this.state.voice.deafened;
+    Voice.setDeafened(this.state.voice.deafened);
     if (this.state.voice.deafened) {
       this.state.voice.muted = true;
       CallSounds.play("mute", this.state.settings);
@@ -1230,6 +1300,7 @@ class Store {
     } else {
       CallSounds.play("unmute", this.state.settings);
     }
+    Voice.setMuted(this.state.voice.muted);
     this.notify();
     if (this.state.voice.connectedChannelId) {
       NativeBridge.rpc("updateVoiceState", {

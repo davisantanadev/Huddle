@@ -3,10 +3,13 @@
 // Deployment configuration shared by the backend.
 // Values come from app.config.json at the project root (committed, ships with
 // the app); environment variables override them:
+//   ECO_SERVER_URL           hosted Eco server the app connects to (empty = run a local backend)
 //   APP_PUBLIC_URL           public base URL once the app is hosted (e.g. https://eco.seudominio.com)
 //   REQUIRE_VERIFIED_EMAIL   "1" to block login until the e-mail is confirmed
 //   SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY   Supabase project used to e-mail verification codes
 //   GIPHY_API_KEY            enables the GIF library (otherwise it falls back to offline GIFs)
+//   TURN_URLS / TURN_SECRET  TURN relay for calls behind strict NATs (comma-separated
+//                            turn: URLs + coturn's static-auth-secret; server side only)
 // The Supabase publishable key is public by design and lives in app.config.json.
 // Real secrets go in app.config.local.json, which is never committed nor
 // packaged into the .exe. It is read from (later wins):
@@ -47,12 +50,19 @@ function loadAppConfig() {
   const publicUrl = String(env.APP_PUBLIC_URL || file.publicUrl || "").trim().replace(/\/+$/, "");
   const invitePath = "/" + String(file.invitePath || "/convite").replace(/^\/+|\/+$/g, "");
 
+  const serverUrl = String(env.ECO_SERVER_URL ?? file.serverUrl ?? "").trim().replace(/\/+$/, "");
+
   return {
     appName: file.appName || "Eco",
+    serverUrl,
     publicUrl,
     invitePath,
     giphyApiKey: env.GIPHY_API_KEY || file.giphyApiKey || "",
     requireVerifiedEmail: env.REQUIRE_VERIFIED_EMAIL ? env.REQUIRE_VERIFIED_EMAIL === "1" : Boolean(file.requireVerifiedEmail),
+    turn: {
+      urls: env.TURN_URLS ? env.TURN_URLS.split(",").map((u) => u.trim()).filter(Boolean) : file.turn?.urls || [],
+      secret: env.TURN_SECRET || file.turn?.secret || ""
+    },
     supabase: {
       url: String(env.SUPABASE_URL || file.supabase.url || "").trim().replace(/\/+$/, ""),
       publishableKey: env.SUPABASE_PUBLISHABLE_KEY || file.supabase.publishableKey || ""

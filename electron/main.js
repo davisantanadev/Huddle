@@ -19,6 +19,7 @@ const fs = require("fs");
 const { execFile } = require("child_process");
 const { DiscordBackendServer } = require("./backendServer");
 const { registerScreenCaptureHandlers } = require("./screenCapture");
+const { loadAppConfig } = require("./appConfig");
 const { startGameDetector } = require("./gameDetector");
 const { prepareHelper, trimProcesses, isLightTrimAvailable } = require("./memTrimmer");
 
@@ -116,6 +117,7 @@ let isQuitting = false;
 // Set when Windows starts the app at login (see applyOpenOnStartup)
 let startHidden = process.argv.includes("--start-minimized");
 let backendServer = null;
+let remoteServerUrl = null;
 // True while the user is in a call or sharing the screen (reported by the
 // renderer). Then only the compiled helper is used (no PowerShell CPU spike,
 // which made the stream and audio stutter) and the main-process GC is skipped.
@@ -417,11 +419,6 @@ function setupSystemTray() {
   }
 }
 
-function setupDisplayMediaHandler() {
-  // Using Chromium's GPU compositor capture (webContents.capturePage) via IPC
-  // instead of legacy Win32 GDI ScreenCapturerWinGdi to avoid SetThreadDesktop (Error 170)
-}
-
 function launchMainWindow(showImmediately = false) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show();
@@ -564,11 +561,16 @@ function registerIpcHandlers(backend) {
   });
 
   ipcMain.on("DISCORD_BACKEND_GET_INFO_SYNC", (event) => {
+    // Hosted server: the renderer talks to it over HTTPS directly
+    if (!backend) {
+      event.returnValue = { httpUrl: remoteServerUrl, remote: true, port: 0, dbPath: null, uploadsDir: null };
+      return;
+    }
     event.returnValue = {
-      httpUrl: backend && backend.port ? `http://127.0.0.1:${backend.port}` : null,
-      port: backend ? backend.port : 0,
-      dbPath: backend ? backend.dbPath : null,
-      uploadsDir: backend ? backend.uploadsDir : null
+      httpUrl: backend.port ? `http://127.0.0.1:${backend.port}` : null,
+      port: backend.port,
+      dbPath: backend.dbPath,
+      uploadsDir: backend.uploadsDir
     };
   });
 
@@ -859,10 +861,14 @@ if (!gotSingleInstanceLock) {
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
   appSettings = loadSettings();
-  backendServer = new DiscordBackendServer({ dataDir: app.getPath("userData") });
-  await backendServer.startHttpServer(0);
+  // app.config.json → serverUrl set: everyone shares that hosted server, so no
+  // local backend is started. Empty: the app runs its own backend on this PC.
+  remoteServerUrl = loadAppConfig().serverUrl || null;
+  if (!remoteServerUrl) {
+    backendServer = new DiscordBackendServer({ dataDir: app.getPath("userData") });
+    await backendServer.startHttpServer(0);
+  }
 
-  setupDisplayMediaHandler();
   registerIpcHandlers(backendServer);
   setupSystemTray();
   // Compiles the tiny memory helper the first time (a second or two, in the background)

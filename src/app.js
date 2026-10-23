@@ -3305,13 +3305,13 @@ function renderVoiceSettingsPanel(state) {
         <div class="form-group">
           <label class="form-label" for="audio-input-device-select">Entrada (microfone)</label>
           <select class="form-input" id="audio-input-device-select" data-testid="audio-input-device-select">
-            ${inputs.map((d) => `<option value="${d.deviceId}" ${s.audioInputDeviceId === d.deviceId || uiState.selectedAudioInput === d.deviceId ? "selected" : ""}>${escapeHtml(d.label)}</option>`).join("")}
+            ${inputs.map((d) => `<option value="${d.deviceId}" ${s.voiceInputDeviceId === d.deviceId || uiState.selectedAudioInput === d.deviceId ? "selected" : ""}>${escapeHtml(d.label)}</option>`).join("")}
           </select>
         </div>
         <div class="form-group">
           <label class="form-label" for="audio-output-device-select">Saída (alto-falantes / fones)</label>
           <select class="form-input" id="audio-output-device-select" data-testid="audio-output-device-select">
-            ${outputs.map((d) => `<option value="${d.deviceId}" ${s.audioOutputDeviceId === d.deviceId || uiState.selectedAudioOutput === d.deviceId ? "selected" : ""}>${escapeHtml(d.label)}</option>`).join("")}
+            ${outputs.map((d) => `<option value="${d.deviceId}" ${s.voiceOutputDeviceId === d.deviceId || uiState.selectedAudioOutput === d.deviceId ? "selected" : ""}>${escapeHtml(d.label)}</option>`).join("")}
           </select>
         </div>
       </div>
@@ -4228,8 +4228,8 @@ function renderAudioDeviceMenu(state) {
   const isInput = kind === "input";
   const devices = isInput ? uiState.audioInputDevices : uiState.audioOutputDevices;
   const selected = isInput
-    ? state.settings.audioInputDeviceId || uiState.selectedAudioInput || "default"
-    : state.settings.audioOutputDeviceId || uiState.selectedAudioOutput || "default";
+    ? state.settings.voiceInputDeviceId || uiState.selectedAudioInput || "default"
+    : state.settings.voiceOutputDeviceId || uiState.selectedAudioOutput || "default";
   const list = devices.length ? devices : [{ deviceId: "default", label: isInput ? "Microfone padrão do sistema" : "Saída padrão do sistema" }];
   return `
     <div class="floating-popout audio-device-menu ${isInput ? "input" : "output"}" data-testid="audio-device-menu">
@@ -4861,7 +4861,7 @@ function bindFormEvents() {
   if (audioInputSel) {
     audioInputSel.addEventListener("change", async () => {
       uiState.selectedAudioInput = audioInputSel.value;
-      await store.updatePreferences({ audioInputDeviceId: audioInputSel.value });
+      await store.updateSettings({ voiceInputDeviceId: audioInputSel.value });
       showToast("Dispositivo de entrada de microfone atualizado!");
     });
   }
@@ -4870,7 +4870,7 @@ function bindFormEvents() {
   if (audioOutputSel) {
     audioOutputSel.addEventListener("change", async () => {
       uiState.selectedAudioOutput = audioOutputSel.value;
-      await store.updatePreferences({ audioOutputDeviceId: audioOutputSel.value });
+      await store.updateSettings({ voiceOutputDeviceId: audioOutputSel.value });
       showToast("Dispositivo de saída de áudio atualizado!");
     });
   }
@@ -5791,10 +5791,10 @@ async function handleGlobalClick(e) {
       uiState.audioMenu = null;
       if (kind === "input") {
         uiState.selectedAudioInput = deviceId;
-        await store.updatePreferences({ audioInputDeviceId: deviceId });
+        await store.updateSettings({ voiceInputDeviceId: deviceId });
       } else {
         uiState.selectedAudioOutput = deviceId;
-        await store.updatePreferences({ audioOutputDeviceId: deviceId });
+        await store.updateSettings({ voiceOutputDeviceId: deviceId });
       }
       const label = (kind === "input" ? uiState.audioInputDevices : uiState.audioOutputDevices).find((d) => d.deviceId === deviceId)?.label;
       showToast(`${kind === "input" ? "Entrada" : "Saída"}: ${label || "dispositivo padrão"}`);

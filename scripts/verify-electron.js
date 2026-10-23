@@ -166,17 +166,21 @@ async function setupTestEnvironment() {
   // exercises the Supabase flow against a local fake of its Auth API
   backendServer = new DiscordBackendServer({
     userDataDir: verifyDataDir,
-    config: { ...loadAppConfig(), supabase: { url: "", publishableKey: "" } }
+    // ...and never point at the production server configured in app.config.json
+    config: { ...loadAppConfig(), serverUrl: "", publicUrl: "", supabase: { url: "", publishableKey: "" } }
   });
   await backendServer.start();
 
   ipcMain.on("DISCORD_APP_GET_RELEASE_CHANNEL_SYNC", (e) => { e.returnValue = "stable"; });
   ipcMain.on("DISCORD_APP_GET_HOST_VERSION_SYNC", (e) => { e.returnValue = "1.0.9262"; });
+  // VERIFY_REMOTE=1 runs the whole suite the way a hosted server is used: the
+  // renderer reaches the backend over HTTP (CORS, Bearer token, SSE) instead of IPC
   ipcMain.on("DISCORD_BACKEND_GET_INFO_SYNC", (e) => {
     e.returnValue = {
       httpUrl: `http://127.0.0.1:${backendServer.port}`,
       url: `http://127.0.0.1:${backendServer.port}`,
-      port: backendServer.port
+      port: backendServer.port,
+      remote: process.env.VERIFY_REMOTE === "1"
     };
   });
   // Same entry point as electron/main.js, so sessions are enforced in the tests too
@@ -1191,7 +1195,9 @@ async function runVerification() {
       trackFps,
       captureFps,
       resolution: stats.resolution,
-      statsReported: Boolean(stats.resolution) && captureFps >= 40,
+      // Windows Graphics Capture only delivers frames when the screen changes,
+      // so a still desktop gives fewer than requested; >= 15 proves a live capture
+      statsReported: Boolean(stats.resolution) && captureFps >= 15,
       overlayRendered: Boolean(statsOverlay),
       stopOk: stopRes.ok
     };
@@ -1229,8 +1235,8 @@ async function runVerification() {
     const all200 = Object.values(checks).every((c) => c.status === 200);
 
     // Byte sizes of the user's files: discord-join, discord-leave-noise,
-    // SomEntrarNaCall (DM ringing) and NotificacaoDiscord
-    const expectedBytes = { join: 21243, leave: 18048, ringtone: 90625, notification: 8301 };
+    // SomLigandoPraAlguemDiscord (DM ringing) and NotificacaoDiscord
+    const expectedBytes = { join: 21243, leave: 18048, ringtone: 21243, notification: 8301 };
     const sizes = {};
     for (const [key, relPath] of Object.entries(AUDIO_ASSETS)) {
       const buf = await (await fetch(baseUrl + "/" + relPath)).arrayBuffer();
@@ -1568,6 +1574,8 @@ async function runVerification() {
     CallSounds.lastPlayedEvent = null;
     await store.joinVoiceChannel(voiceGuild.id, voiceCh.id);
     const serverJoinFile = CallSounds.lastPlayedEvent?.file;
+    // Server calls never ring (the ringtone is for DM calls only)
+    const noRingOnServer = !CallSounds.isRinging();
     await store.leaveVoiceChannel();
     const serverLeaveFile = CallSounds.lastPlayedEvent?.file;
 
@@ -1596,15 +1604,16 @@ async function runVerification() {
       notificationFile,
       noSelfNotification,
       serverJoinFile,
-      serverLeaveFile
+      serverLeaveFile,
+      noRingOnServer
     };
   })()`);
 
   recordTest(
     "Domain 10: DM Calls & Notification Sounds",
-    "Ring with SomEntrarNaCall until answered, play discord-join/discord-leave-noise, show and decline incoming call, notify on messages from others",
+    "Ring with SomLigandoPraAlguemDiscord until answered, play discord-join/discord-leave-noise, show and decline incoming call, notify on messages from others",
     dmCallCheck.ringing &&
-      dmCallCheck.ringFile === "../assets/audio/chamando.mp3" &&
+      dmCallCheck.ringFile === "../assets/audio/ligando.mp3" &&
       dmCallCheck.panelSaysCalling &&
       dmCallCheck.connected &&
       dmCallCheck.ringStoppedOnAnswer &&
@@ -1615,7 +1624,8 @@ async function runVerification() {
       dmCallCheck.notificationFile === "../assets/audio/notificacao.mp3" &&
       dmCallCheck.noSelfNotification &&
       dmCallCheck.serverJoinFile === "../assets/audio/entrar-na-call.mp3" &&
-      dmCallCheck.serverLeaveFile === "../assets/audio/discord-leave-noise.mp3",
+      dmCallCheck.serverLeaveFile === "../assets/audio/discord-leave-noise.mp3" &&
+      dmCallCheck.noRingOnServer,
     JSON.stringify(dmCallCheck)
   );
 
@@ -1900,6 +1910,144 @@ async function runVerification() {
     "Share a screen at 1080p/30 FPS for 15 s: private memory must not keep growing (< 25 MB between 3 s and 15 s)",
     memGrowthMB < 25,
     JSON.stringify({ memEarlyMB: memEarly, memLateMB: memLate, memGrowthMB, capturedFpsAtEnd: shareFpsLate })
+  );
+
+
+  // =========================================================================
+  // SUITE 30: Real voice between two people (WebRTC), in two app windows
+  // =========================================================================
+  // Each window gets a synthetic "microphone" (a 440 Hz tone) so we can measure
+  // whether one person's audio really reaches the other.
+  const fakeMicScript = `(() => {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    osc.frequency.value = 440;
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(dest);
+    osc.start();
+    window.__fakeMicCtx = ctx;
+    navigator.mediaDevices.getUserMedia = async () => new MediaStream(dest.stream.getAudioTracks().map((t) => t.clone()));
+    return true;
+  })()`;
+  // RMS level of the audio we receive from the other person, over ~1.5 s
+  const remoteLevelScript = `(async () => {
+    const { Voice } = await import("./services/gatewayAdapter.js");
+    const info = Voice.getPeerInfo()[0];
+    if (!info || !info.stream) return { state: info?.state || "none", level: 0 };
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(info.stream);
+    const an = ctx.createAnalyser();
+    an.fftSize = 2048;
+    src.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    let peak = 0;
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      an.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const v of buf) sum += v * v;
+      peak = Math.max(peak, Math.sqrt(sum / buf.length));
+    }
+    ctx.close();
+    return { state: info.state, level: Number(peak.toFixed(4)) };
+  })()`;
+
+  const peerWin = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      partition: "voice-peer", // its own localStorage: a second person on another PC
+      preload: path.join(rootDir, "electron", "mainScreenPreload.js")
+    }
+  });
+  await peerWin.loadFile(path.join(rootDir, "src", "index.html"));
+  await delay(1200);
+  await peerWin.webContents.executeJavaScript(fakeMicScript);
+  await mainWin.webContents.executeJavaScript(fakeMicScript);
+
+  const peerLogin = await peerWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const res = await store.login("maria_real", "password123");
+    return { ok: res.ok, user: store.getState().auth.currentUserId };
+  })()`);
+
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    if (store.getState().voice.connectedChannelId) await store.leaveVoiceChannel();
+    store.selectGuild("g_rea", "c_general");
+    await store.joinVoiceChannel("g_rea", "c_voice_lounge");
+  })()`);
+  await peerWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    await store.joinVoiceChannel("g_rea", "c_voice_lounge");
+  })()`);
+
+  // Wait for the peer connection to come up
+  let peerConnected = false;
+  for (let i = 0; i < 40 && !peerConnected; i++) {
+    await delay(250);
+    const states = await Promise.all(
+      [mainWin, peerWin].map((w) =>
+        w.webContents.executeJavaScript(`import("./services/gatewayAdapter.js").then(({ Voice }) => Voice.getPeerInfo().map((p) => p.state))`)
+      )
+    );
+    peerConnected = states.every((list) => list.length === 1 && list[0] === "connected");
+  }
+
+  const mariaHearsDavis = await peerWin.webContents.executeJavaScript(remoteLevelScript);
+  const davisHearsMaria = await mainWin.webContents.executeJavaScript(remoteLevelScript);
+
+  // Davis mutes: Maria must stop hearing him; unmuting brings him back
+  await mainWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.toggleMute()`);
+  await delay(400);
+  const whileMuted = await peerWin.webContents.executeJavaScript(remoteLevelScript);
+  await mainWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.toggleMute()`);
+  await delay(400);
+  const afterUnmute = await peerWin.webContents.executeJavaScript(remoteLevelScript);
+
+  // Signaling stays private: a third party cannot send setup messages into the call
+  const outsiderBlocked = await mainWin.webContents.executeJavaScript(`(async () => {
+    const backend = window.DiscordNative.backend;
+    await backend.rpc("register", { email: "intruso@exemplo.com", username: "intruso", displayName: "Intruso", password: "senha12345" });
+    const login = await backend.rpc("login", { emailOrUsername: "intruso", password: "senha12345" });
+    const res = await backend.rpc("RTC_SIGNAL", { channelId: "c_voice_lounge", targetUserId: "u_davis", signalType: "offer", signalData: {} }, login.sessionToken);
+    return res.ok === false;
+  })()`);
+
+  // Leaving closes the connection on both sides
+  await peerWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.leaveVoiceChannel()`);
+  await delay(800);
+  const closedAfterLeave = await mainWin.webContents.executeJavaScript(
+    `import("./services/gatewayAdapter.js").then(({ Voice }) => Voice.getPeerInfo().length === 0)`
+  );
+  await mainWin.webContents.executeJavaScript(`window.__DISCORD_STORE__.leaveVoiceChannel()`);
+  peerWin.destroy();
+
+  const voiceCheck = {
+    peerLoggedIn: peerLogin.ok,
+    peerConnected,
+    mariaHearsDavis: mariaHearsDavis.level,
+    davisHearsMaria: davisHearsMaria.level,
+    levelWhileMuted: whileMuted.level,
+    levelAfterUnmute: afterUnmute.level,
+    outsiderBlocked,
+    closedAfterLeave
+  };
+  recordTest(
+    "Domain 18: Real Voice Between Two People (WebRTC)",
+    "Two app windows join the same call: each hears the other's microphone, mute silences it, outsiders cannot signal, leaving closes the connection",
+    voiceCheck.peerLoggedIn &&
+      voiceCheck.peerConnected &&
+      voiceCheck.mariaHearsDavis > 0.05 &&
+      voiceCheck.davisHearsMaria > 0.05 &&
+      voiceCheck.levelWhileMuted < 0.01 &&
+      voiceCheck.levelAfterUnmute > 0.05 &&
+      voiceCheck.outsiderBlocked &&
+      voiceCheck.closedAfterLeave,
+    JSON.stringify(voiceCheck)
   );
 
   // =========================================================================

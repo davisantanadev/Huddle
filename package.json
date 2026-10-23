@@ -8,7 +8,8 @@
   "scripts": {
     "start": "electron .",
     "test": "electron scripts/verify-electron.js",
-    "build:exe": "node scripts/build-exe.js"
+    "build:exe": "node scripts/build-exe.js",
+    "server": "node scripts/server.js"
   },
   "author": "Discord Replica (REA Engineering)",
   "license": "UNLICENSED",

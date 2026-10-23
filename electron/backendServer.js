@@ -12,6 +12,13 @@ const { isSupabaseConfigured, sendEmailCode, verifyEmailCode } = require("./acco
 
 const VERIFICATION_CODE_TTL_MS = 10 * 60 * 1000;
 const VERIFICATION_MAX_ATTEMPTS = 5;
+// Lifetime of the TURN relay credentials handed to a client
+const TURN_CREDENTIAL_TTL_S = 12 * 60 * 60;
+// Login/sign-up abuse limits (per 15-minute window)
+const AUTH_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 8; // per address + account
+const LOGIN_MAX_FAILURES_PER_IP = 30;
+const REGISTER_MAX_PER_IP = 5;
 // Marks verification rows whose code lives in Supabase (the email-otp Edge
 // Function e-mails and checks it)
 const SUPABASE_CODE = "supabase";
@@ -297,6 +304,11 @@ function detectFileSignature(buffer, declaredMime, purpose, declaredName = "") {
 class DiscordBackendServer {
   constructor(options = {}) {
     this.rootDir = path.resolve(__dirname, "..");
+    // A public server must not ship the demo account (its password is in the README)
+    this.seedDemoData = options.seedDemoData !== false;
+    // Behind Caddy the client address comes in X-Forwarded-For
+    this.trustProxy = Boolean(options.trustProxy);
+    this.authAttempts = new Map(); // "kind|key" -> { count, first }
     const dataDir = options.dataDir || options.userDataDir;
     this.dataDir = dataDir;
     this.uploadsDir = path.join(dataDir, "uploads");
@@ -577,7 +589,7 @@ class DiscordBackendServer {
     // Fresh install only: create the starter account and server. Once real
     // accounts exist (or this one was deleted) nothing is recreated.
     const anyUser = this.db.prepare("SELECT 1 FROM users LIMIT 1").get();
-    if (!anyUser) {
+    if (!anyUser && this.seedDemoData) {
       const now = Date.now();
       this.db
         .prepare(
@@ -734,12 +746,13 @@ class DiscordBackendServer {
   resolveMediaUrl(u) {
     if (!u) return "";
     if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("data:")) return u;
-    return this.port ? `http://127.0.0.1:${this.port}${u}` : u;
+    const base = this.getPublicBaseUrl();
+    return base ? `${base}${u}` : u;
   }
 
   serializeUser(row, includeBaseUrl = true) {
     if (!row) return null;
-    const base = includeBaseUrl && this.port ? `http://127.0.0.1:${this.port}` : "";
+    const base = includeBaseUrl ? this.getPublicBaseUrl() : "";
     const resolveUrl = (u) => {
       if (!u) return "";
       if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("data:")) return u;
@@ -796,7 +809,7 @@ class DiscordBackendServer {
     const now = Date.now();
     this.db.prepare(`INSERT OR IGNORE INTO user_preferences (user_id, updated_at) VALUES (?, ?)`).run(uid, now);
     const row = this.db.prepare(`SELECT * FROM user_preferences WHERE user_id = ?`).get(uid);
-    const base = this.port ? `http://127.0.0.1:${this.port}` : "";
+    const base = this.getPublicBaseUrl();
     const resolveUrl = (u) => {
       if (!u) return "";
       if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("data:")) return u;
@@ -959,6 +972,7 @@ class DiscordBackendServer {
 
     const activeScreenShares = [];
     for (const [chId, share] of this.screenShares.entries()) {
+      if (!this.channelAudience(chId).includes(activeUserId)) continue;
       activeScreenShares.push({
         channelId: chId,
         guildId: share.guildId || "g_rea",
@@ -1162,7 +1176,7 @@ class DiscordBackendServer {
   }
 
   getChannelMessages(channelId, limit = 50) {
-    const base = this.port ? `http://127.0.0.1:${this.port}` : "";
+    const base = this.getPublicBaseUrl();
     const rows = this.db
       .prepare(
         `SELECT * FROM (
@@ -1190,6 +1204,45 @@ class DiscordBackendServer {
         poll: m.poll_json ? JSON.parse(m.poll_json) : null
       };
     });
+  }
+
+  // Events carrying private data (screen images, WebRTC addresses) go only to
+  // these users' connections, never to everyone on the server
+  sendEventToUsers(userIds, type, payload) {
+    const allowed = new Set(userIds);
+    const frame = `data: ${JSON.stringify({ event: type, type, payload, timestamp: Date.now() })}\n\n`;
+    for (const res of this.sseClients) {
+      if (!allowed.has(res.ecoUserId)) continue;
+      try {
+        res.write(frame);
+      } catch (_) {
+        this.sseClients.delete(res);
+      }
+    }
+  }
+
+  // Who may see what happens in a channel: the server's members, or the two
+  // people of a DM
+  channelAudience(channelId) {
+    const ch = this.db.prepare(`SELECT guild_id FROM channels WHERE id = ?`).get(channelId);
+    if (ch) {
+      return this.db.prepare(`SELECT user_id FROM guild_members WHERE guild_id = ?`).all(ch.guild_id).map((r) => r.user_id);
+    }
+    const dm = this.db.prepare(`SELECT user1_id, user2_id FROM dm_channels WHERE id = ?`).get(channelId);
+    return dm ? [dm.user1_id, dm.user2_id] : [];
+  }
+
+  // STUN for direct connections, plus our TURN relay (short-lived credentials,
+  // TURN REST API scheme) when config.turn is set
+  getIceServers(userId) {
+    const servers = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+    const turn = this.config.turn;
+    if (turn && turn.secret && Array.isArray(turn.urls) && turn.urls.length) {
+      const username = `${Math.floor(Date.now() / 1000) + TURN_CREDENTIAL_TTL_S}:${userId}`;
+      const credential = crypto.createHmac("sha1", turn.secret).update(username).digest("base64");
+      servers.push({ urls: turn.urls, username, credential });
+    }
+    return servers;
   }
 
   broadcastEvent(type, payload) {
@@ -1410,12 +1463,48 @@ class DiscordBackendServer {
   // Entry point for every request coming from a client (HTTP or Electron IPC).
   // Public actions run without identity; everything else runs as the session's
   // user, whatever ids the client put in the params.
-  async handleClientRequest(action, params = {}, token = null) {
+  // Sliding-window counters for login failures and sign-ups
+  isAuthLimited(kind, key, max) {
+    const entry = this.authAttempts.get(`${kind}|${key}`);
+    if (!entry) return false;
+    if (Date.now() - entry.first > AUTH_WINDOW_MS) {
+      this.authAttempts.delete(`${kind}|${key}`);
+      return false;
+    }
+    return entry.count >= max;
+  }
+
+  countAuthAttempt(kind, key) {
+    const id = `${kind}|${key}`;
+    const entry = this.authAttempts.get(id);
+    if (!entry || Date.now() - entry.first > AUTH_WINDOW_MS) this.authAttempts.set(id, { count: 1, first: Date.now() });
+    else entry.count++;
+    if (this.authAttempts.size > 10000) this.authAttempts.clear(); // bound memory under abuse
+  }
+
+  async handleClientRequest(action, params = {}, token = null, meta = {}) {
     const clean = { ...(params || {}) };
     for (const key of ACTOR_PARAM_KEYS) delete clean[key];
+    const ip = meta.ip || "local";
+
+    const isLogin = action === "login" || action === "AUTH_LOGIN";
+    const isRegister = action === "register" || action === "AUTH_REGISTER";
+    const loginKey = `${ip}|${String(clean.emailOrUsername || clean.email || "").trim().toLowerCase()}`;
+    if (isLogin && (this.isAuthLimited("login", loginKey, LOGIN_MAX_FAILURES) || this.isAuthLimited("login-ip", ip, LOGIN_MAX_FAILURES_PER_IP))) {
+      return { ok: false, status: 429, code: "RATE_LIMITED", error: "Muitas tentativas de login. Aguarde 15 minutos e tente de novo." };
+    }
+    if (isRegister && this.isAuthLimited("register", ip, REGISTER_MAX_PER_IP)) {
+      return { ok: false, status: 429, code: "RATE_LIMITED", error: "Muitas contas criadas a partir desta rede. Tente de novo mais tarde." };
+    }
 
     if (PUBLIC_ACTIONS.has(action)) {
       const res = await this.handleAction(action, clean);
+      if (isLogin && !res.ok) {
+        this.countAuthAttempt("login", loginKey);
+        this.countAuthAttempt("login-ip", ip);
+      }
+      if (isLogin && res.ok) this.authAttempts.delete(`login|${loginKey}`);
+      if (isRegister && res.ok) this.countAuthAttempt("register", ip);
       if (res.ok && res.user && (action === "login" || action === "AUTH_LOGIN" || action === "register" || action === "AUTH_REGISTER")) {
         res.sessionToken = this.createSession(res.user.id);
         if (this.isEmailGateActive(res.user.id)) {
@@ -1690,7 +1779,7 @@ class DiscordBackendServer {
         fs.writeFileSync(fullPath, buffer);
 
         const relativeUrl = `/uploads/${storedFileName}`;
-        const absoluteUrl = this.port ? `http://127.0.0.1:${this.port}${relativeUrl}` : relativeUrl;
+        const absoluteUrl = `${this.getPublicBaseUrl()}${relativeUrl}`;
         return {
           ok: true,
           relativeUrl,
@@ -3006,7 +3095,7 @@ class DiscordBackendServer {
         if (frameDataUrl) {
           share.frameDataUrl = frameDataUrl;
         }
-        this.broadcastEvent("SCREEN_SHARE_FRAME", {
+        this.sendEventToUsers(this.channelAudience(channelId), "SCREEN_SHARE_FRAME", {
           channelId,
           userId: actorId,
           sharerId: actorId,
@@ -3041,17 +3130,22 @@ class DiscordBackendServer {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const { targetUserId, channelId, signalType, signalData } = params;
         const room = this.voiceRooms.get(channelId);
-        if (!room || !room.has(actorId)) {
+        if (!room || !room.has(actorId) || !room.has(targetUserId)) {
           return { ok: false, error: "Não autorizado neste canal de voz." };
         }
-        this.broadcastEvent("RTC_SIGNAL", {
+        this.sendEventToUsers([targetUserId], "RTC_SIGNAL", {
           fromUserId: actorId,
-          targetUserId: targetUserId || null,
+          targetUserId,
           channelId,
           signalType,
           signalData
         });
         return { ok: true };
+      }
+
+      case "getIceServers": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        return { ok: true, iceServers: this.getIceServers(actorId) };
       }
 
       case "SET_VOICE_SPEAKING":
@@ -3448,17 +3542,25 @@ class DiscordBackendServer {
       </style></head><body><div class="card"><div class="brand">${appName}</div>${body}</div></body></html>`;
   }
 
-  start(preferredPort = 0) {
-    return this.startHttpServer(preferredPort);
+  start(preferredPort = 0, host = "127.0.0.1") {
+    return this.startHttpServer(preferredPort, host);
   }
 
-  startHttpServer(preferredPort = 0) {
+  clientIp(req) {
+    if (this.trustProxy) {
+      const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+      if (forwarded) return forwarded;
+    }
+    return req.socket.remoteAddress || "unknown";
+  }
+
+  startHttpServer(preferredPort = 0, host = "127.0.0.1") {
     if (this.server) return Promise.resolve(this.port);
     return new Promise((resolve, reject) => {
       const srv = http.createServer((req, res) => {
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
         if (req.method === "OPTIONS") {
           res.writeHead(204);
@@ -3487,6 +3589,7 @@ class DiscordBackendServer {
             Connection: "keep-alive"
           });
           res.write(`data: ${JSON.stringify({ event: "CONNECTED", type: "CONNECTED", timestamp: Date.now() })}\n\n`);
+          res.ecoUserId = streamUserId;
           this.sseClients.add(res);
           req.on("close", () => this.sseClients.delete(res));
           return;
@@ -3562,8 +3665,10 @@ class DiscordBackendServer {
               const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
               const authHeader = String(req.headers.authorization || "");
               const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
-              const result = await this.handleClientRequest(body.action, body.params || body.payload || {}, token);
-              res.writeHead(result.status || 200, { "Content-Type": "application/json" });
+              const result = await this.handleClientRequest(body.action, body.params || body.payload || {}, token, { ip: this.clientIp(req) });
+              // Some actions use "status" for domain data (e.g. a friendship's state), not HTTP
+              const httpStatus = Number.isInteger(result?.status) && result.status >= 100 && result.status < 600 ? result.status : 200;
+              res.writeHead(httpStatus, { "Content-Type": "application/json" });
               res.end(JSON.stringify(result));
             } catch (e) {
               res.writeHead(400, { "Content-Type": "application/json" });
@@ -3577,7 +3682,7 @@ class DiscordBackendServer {
         res.end(JSON.stringify({ ok: false, error: "Route not found" }));
       });
 
-      srv.listen(preferredPort, "127.0.0.1", () => {
+      srv.listen(preferredPort, host, () => {
         this.server = srv;
         this.port = srv.address().port;
         prefetchTrendingGifs();
