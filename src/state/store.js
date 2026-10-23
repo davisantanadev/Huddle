@@ -289,6 +289,8 @@ class Store {
       const { event, payload } = packet;
 
       if (event === "SCREEN_SHARE_FRAME" && payload?.channelId) {
+        // Our own snapshots come back too; we already show the live video
+        if (payload.sharerId === this.state.auth.currentUserId) return;
         if (this.state.screenShares[payload.channelId]) {
           this.state.screenShares[payload.channelId].frameDataUrl = payload.frameDataUrl;
           this.state.screenShares[payload.channelId].updatedAt = payload.updatedAt;
@@ -984,6 +986,7 @@ class Store {
 
   // Wire up real-time VAD if audio input is available
   startLocalVoiceActivity() {
+    NativeBridge.setMediaSessionActive(true);
     if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
       navigator.mediaDevices
         .getUserMedia({
@@ -1129,6 +1132,7 @@ class Store {
   }
 
   async leaveVoiceChannel() {
+    NativeBridge.setMediaSessionActive(false);
     if (!this.state.voice.connectedChannelId) return { ok: true };
     this.state.navigation.callViewChannelId = null;
     const meId = this.state.auth.currentUserId;
@@ -1241,7 +1245,7 @@ class Store {
     return await ScreenShare.getSources();
   }
 
-  async startScreenShare(sourceId, { sourceName = "Screen", resolution = "720p", fps = 15 } = {}) {
+  async startScreenShare(sourceId, { sourceName = "Screen", resolution = "720p", fps = 30 } = {}) {
     if (!this.state.voice.connectedChannelId) {
       return { ok: false, error: "Conecte-se a um canal de voz antes de compartilhar a tela." };
     }
@@ -1293,7 +1297,7 @@ class Store {
       this.state.screenShares[channelId] = res.share;
     }
     this.notify();
-    return { ok: true, stream: cap.stream, trackCount: ScreenShare.getActiveTrackCount(), fps: Number(fps) || 15, resolution };
+    return { ok: true, stream: cap.stream, trackCount: ScreenShare.getActiveTrackCount(), fps: Number(fps) || 30, resolution };
   }
 
   async stopScreenShare() {
@@ -1317,7 +1321,7 @@ class Store {
   // ==========================================================================
   async sendMessage(channelId, rawContent, options = {}) {
     const text = String(rawContent || "").trim();
-    if (!text && !options.attachment) return null;
+    if (!text && !options.attachment && !options.poll) return null;
 
     let finalContent = text;
     if (text === "/shrug") finalContent = "¯\\_(ツ)_/¯";
@@ -1331,9 +1335,11 @@ class Store {
       authorId: meId,
       content: finalContent,
       replyToId: options.replyToId || null,
-      attachment: options.attachment || null
+      attachment: options.attachment || null,
+      poll: options.poll || null
     });
 
+    if (!res.ok) return { error: res.error };
     if (res.ok && res.message) {
       if (!this.state.messages[channelId]) this.state.messages[channelId] = [];
       const exists = this.state.messages[channelId].some((m) => m.id === res.message.id);
@@ -1344,6 +1350,16 @@ class Store {
       return res.message;
     }
     return null;
+  }
+
+  async votePoll(channelId, messageId, optionId) {
+    const res = await NativeBridge.rpc("votePoll", { messageId, optionId });
+    if (res.ok) {
+      const msg = (this.state.messages[channelId] || []).find((m) => m.id === messageId);
+      if (msg) msg.poll = res.poll;
+      this.notify({ skipPersist: true });
+    }
+    return res;
   }
 
   async editMessage(channelId, messageId, newContent) {

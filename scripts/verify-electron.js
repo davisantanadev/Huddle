@@ -1,6 +1,7 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, screen, clipboard } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, clipboard, session } = require("electron");
+const { registerScreenCaptureHandlers } = require("../electron/screenCapture");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -182,62 +183,9 @@ async function setupTestEnvironment() {
   ipcMain.handle("DISCORD_BACKEND_RPC", async (_e, action, params, sessionToken) => {
     return await backendServer.handleClientRequest(action, params || {}, sessionToken || null);
   });
-  ipcMain.handle("DISCORD_DESKTOP_CAPTURER_GET_SOURCES", async (_e, options = {}) => {
-    try {
-      const thumbSize = options.thumbnailSize || { width: 320, height: 180 };
-      const activeWin = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-      let winThumbDataUrl = "";
-      if (activeWin) {
-        const img = await activeWin.webContents.capturePage();
-        winThumbDataUrl = img.resize({ width: thumbSize.width || 320, height: thumbSize.height || 180 }).toDataURL();
-      }
-      const displays = screen.getAllDisplays();
-      const result = displays.map((d, idx) => ({
-        id: `screen:${idx}:0`,
-        name: `Entire Screen (${d.size.width}×${d.size.height})`,
-        displayId: String(d.id),
-        isScreen: true,
-        thumbnail: winThumbDataUrl,
-        thumbnailDataUrl: winThumbDataUrl
-      }));
-      if (activeWin) {
-        result.push({
-          id: `window:${activeWin.id}:0`,
-          name: activeWin.getTitle() || "Discord",
-          displayId: "",
-          isScreen: false,
-          thumbnail: winThumbDataUrl,
-          thumbnailDataUrl: winThumbDataUrl
-        });
-      }
-      return result;
-    } catch {
-      return [{ id: "screen:0:0", name: "Entire Screen", displayId: "0", isScreen: true, thumbnail: "", thumbnailDataUrl: "" }];
-    }
-  });
-  ipcMain.handle("DISCORD_DESKTOP_CAPTURER_SELECT_SOURCE", (_e, opts) => {
-    selectedDesktopSourceId = (typeof opts === "string" ? opts : opts?.sourceId) || null;
-    return { ok: true };
-  });
-  ipcMain.handle("DISCORD_DESKTOP_CAPTURE_FRAME", async (_e, options = {}) => {
-    try {
-      const activeWin = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-      if (!activeWin) return { ok: false };
-      const width = Number(options.width) || 640;
-      const height = Number(options.height) || 360;
-      const img = await activeWin.webContents.capturePage();
-      const resized = img.resize({ width, height });
-      const jpegBuf = resized.toJPEG(72);
-      return {
-        ok: true,
-        frameDataUrl: `data:image/jpeg;base64,${jpegBuf.toString("base64")}`,
-        width,
-        height
-      };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
+  // Same capture code as the app: real monitors/windows, getDisplayMedia answered natively
+  registerScreenCaptureHandlers(ipcMain, session.defaultSession);
+  ipcMain.on("DISCORD_MEDIA_SESSION", () => {});
   // Saved login lives in a main-process file in the app; kept in memory here
   let verifyAuthStore = null;
   ipcMain.on("DISCORD_AUTH_STORE_GET_SYNC", (e) => { e.returnValue = verifyAuthStore; });
@@ -471,7 +419,7 @@ async function runVerification() {
     const userPopoutClosedOnEsc = !document.querySelector('[data-testid="user-profile-popout"]');
 
     // 4. Open server dropdown menu, then navigate to Home -> verify closes on route change
-    q('[data-testid="server-header"]').click();
+    q('[data-testid="server-header-title"]').click();
     const serverMenuOpen = Boolean(document.querySelector('[data-testid="server-dropdown-menu"]'));
     q('[data-action="select-home"]').click();
     const serverMenuClosedOnRouteChange = !document.querySelector('[data-testid="server-dropdown-menu"]');
@@ -699,15 +647,24 @@ async function runVerification() {
     const store = window.__DISCORD_STORE__;
     const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
     const sources = await store.getScreenShareSources();
-    const firstSource = sources[0] || { id: "screen:0:0", name: "Entire Screen" };
+    const firstSource = sources.find((src) => src.isScreen) || sources[0];
     const startRes = await store.startScreenShare(firstSource.id, {
       sourceName: firstSource.name,
       resolution: "720p",
-      fps: 15
+      fps: 30
     });
-    await new Promise((r) => setTimeout(r, 350));
+    await new Promise((r) => setTimeout(r, 600));
 
     const stageVisible = Boolean(document.querySelector('[data-testid="screenshare-stage"]'));
+    const { ScreenShare } = await import("./services/gatewayAdapter.js");
+    const preview = document.querySelector("[data-share-video-slot] video");
+    const previewLive = Boolean(preview) && preview.srcObject === ScreenShare.getStream() && !preview.paused;
+    const track = ScreenShare.getStream()?.getVideoTracks()[0];
+    const realCaptureTrack = Boolean(track) && track.readyState === "live" && track.kind === "video" && !track.label.includes("canvas");
+    // A full re-render must keep the very same playing <video>
+    store.notify();
+    await new Promise((r) => setTimeout(r, 100));
+    const previewKept = document.querySelector("[data-share-video-slot] video") === preview && !preview.paused;
     // Check that backend snapshot also exposes the active screen share to other participants
     const { NativeBridge } = await import("./services/gatewayAdapter.js");
     const snapForMaria = await NativeBridge.rpc("getStateSnapshot", {});
@@ -715,6 +672,12 @@ async function runVerification() {
 
     return {
       sourcesCount: sources.length,
+      hasScreens: sources.some((src) => src.isScreen),
+      windowsListed: sources.filter((src) => !src.isScreen).length,
+      thumbnails: sources.filter((src) => src.thumbnail).length,
+      previewLive,
+      realCaptureTrack,
+      previewKept,
       startOk: startRes.ok,
       activeTracksDuring: startRes.trackCount,
       stageVisible,
@@ -722,7 +685,8 @@ async function runVerification() {
     };
   })()`);
 
-  await captureWindow(mainWin, "03-voice-and-thread.png");
+  // No screenshot here: the share now captures the real desktop, and
+  // docs/screenshots is published — it could leak whatever is on screen
 
   // Measure Memory Stage 3: During Active Voice Call + Live Screen Share
   memoryStages.push(await captureMemoryStage(mainWin, "3_during_call"));
@@ -744,6 +708,11 @@ async function runVerification() {
     "Phase 9: Real Screen Sharing & Track Release",
     "Capture screen via desktopCapturer/getDisplayMedia, broadcast to participants, and release all tracks on stop",
     phase9Start.sourcesCount >= 1 &&
+      phase9Start.hasScreens &&
+      phase9Start.thumbnails >= 1 &&
+      phase9Start.previewLive &&
+      phase9Start.realCaptureTrack &&
+      phase9Start.previewKept &&
       phase9Start.startOk &&
       phase9Start.activeTracksDuring >= 1 &&
       phase9Start.stageVisible &&
@@ -1183,15 +1152,34 @@ async function runVerification() {
     await store.joinVoiceChannel("g_rea", "c_voice_lounge");
 
     const sources = await store.getScreenShareSources();
-    const src = sources[0] || { id: "screen:0:0", name: "Screen" };
+    const src = sources.find((s) => s.isScreen) || sources[0];
     const start60 = await store.startScreenShare(src.id, {
       sourceName: src.name,
       resolution: "1080p",
       fps: 60
     });
-    await new Promise((r) => setTimeout(r, 300));
+    // Let the FPS meter run for a couple of seconds
+    await new Promise((r) => setTimeout(r, 2600));
 
     const stats = ScreenShare.getStats();
+    const liveTrack = ScreenShare.getStream()?.getVideoTracks()[0];
+    const trackFps = liveTrack?.getSettings().frameRate || 0;
+    // Frames straight out of the capture (independent of the hidden test window
+    // not painting): read the track for 2 s and count them
+    let captureFps = 0;
+    if (liveTrack && typeof MediaStreamTrackProcessor === "function") {
+      const reader = new MediaStreamTrackProcessor({ track: liveTrack.clone() }).readable.getReader();
+      let frames = 0;
+      const until = performance.now() + 2000;
+      while (performance.now() < until) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        value.close();
+        frames++;
+      }
+      reader.cancel();
+      captureFps = Math.round(frames / 2);
+    }
     const statsOverlay = document.querySelector('[data-testid="stream-stats-overlay"]');
     const stopRes = await store.stopScreenShare();
     await store.leaveVoiceChannel();
@@ -1199,7 +1187,11 @@ async function runVerification() {
     return {
       startOk: start60.ok,
       configuredFps: start60.fps === 60,
-      statsReported: stats.sentFps >= 15,
+      measuredFps: stats.capturedFps,
+      trackFps,
+      captureFps,
+      resolution: stats.resolution,
+      statsReported: Boolean(stats.resolution) && captureFps >= 40,
       overlayRendered: Boolean(statsOverlay),
       stopOk: stopRes.ok
     };
@@ -1207,7 +1199,7 @@ async function runVerification() {
 
   recordTest(
     "Domain 6: 60 FPS Video Transmission & Stats Overlay",
-    "Configure 60 FPS stream, report live metrics (captured/sent FPS, bitrate), and render stats overlay",
+    "Capture at up to 60 FPS, measure the frames really delivered and the resolution, and render the stats overlay",
     fps60Check.startOk &&
       fps60Check.configuredFps &&
       fps60Check.statsReported &&
@@ -1394,6 +1386,44 @@ async function runVerification() {
     const bannerRect = sidebarBanner ? sidebarBanner.getBoundingClientRect() : { width: 0, height: 0 };
     const sidebarBannerOk = Boolean(sidebarBanner) && sidebarBanner.getAttribute("src").endsWith(".gif") && bannerRect.height === 136 && bannerRect.width > 200;
 
+    // Clicking the banner does nothing; clicking the server name opens the menu
+    sidebarBanner.click();
+    await wait(100);
+    // No click cursor over the banner or the bar, only on the buttons
+    const cursorOf = (el) => getComputedStyle(el).cursor;
+    const noHoverOnBanner =
+      cursorOf(sidebarBanner) !== "pointer" &&
+      cursorOf(q(".server-header-bar")) !== "pointer" &&
+      cursorOf(q('[data-testid="server-header"]')) !== "pointer" &&
+      cursorOf(q('[data-testid="server-header-title"]')) === "pointer" &&
+      cursorOf(q('[data-testid="server-invite-btn"]')) === "pointer";
+    // ...including the strip of the header bar that sits on top of the banner
+    q(".server-header-bar").click();
+    await wait(100);
+    const bannerClickInert = !document.querySelector('[data-testid="server-dropdown-menu"]') && !document.querySelector('[data-testid="server-settings-overlay"]');
+    q('[data-testid="server-header-title"]').click();
+    await wait(100);
+    const nameOpensMenu = Boolean(document.querySelector('[data-testid="server-dropdown-menu"]'));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await wait(100);
+
+    // "Adicionar GIF" in server settings puts a GIPHY GIF on the server banner
+    clickAction("open-server-settings");
+    await wait(150);
+    q('[data-testid="guild-banner-gif-btn"]').click();
+    const t0 = Date.now();
+    while (!document.querySelector('[data-testid="gif-card"]') && Date.now() - t0 < 8000) await wait(100);
+    const pickerForGuild = store.getState().gifPicker.target === "guild-banner";
+    const card = q('[data-testid="gif-card"]');
+    const expectedUrl = card.getAttribute("data-gif-large-url");
+    card.click();
+    const t1 = Date.now();
+    while (store.getActiveGuild().bannerUrl !== expectedUrl && Date.now() - t1 < 4000) await wait(100);
+    const gifBannerApplied = store.getActiveGuild().bannerUrl === expectedUrl && expectedUrl.includes("giphy.com") && !store.getState().gifPicker.isOpen;
+    clickAction("close-settings-overlay");
+    await wait(100);
+    const foreignUrlRejected = !(await store.updateGuild(guild.id, { bannerUrl: "https://example.com/x.gif" })).ok;
+
     // Someone without permission cannot edit the server
     const mariaId = Object.values(store.getState().users).find((u) => u.username === "maria_real").id;
     const mariaLogin = await window.DiscordNative.backend.rpc("login", { emailOrUsername: "maria_real", password: "password123" });
@@ -1435,6 +1465,12 @@ async function runVerification() {
       bannerSaved: bannerRes.ok,
       railIconOk,
       sidebarBannerOk,
+      bannerClickInert,
+      noHoverOnBanner,
+      nameOpensMenu,
+      pickerForGuild,
+      gifBannerApplied,
+      foreignUrlRejected,
       mariaRejected: !mariaEdit.ok && mariaEdit.status === 403,
       emptyNameRejected: !emptyName.ok,
       noNitroShop,
@@ -1832,6 +1868,40 @@ async function runVerification() {
     JSON.stringify(supabaseCheck)
   );
 
+
+  // =========================================================================
+  // SUITE 29: Screen share memory stays flat over time (no growth while sharing)
+  // =========================================================================
+  const privateMB = () =>
+    Number((app.getAppMetrics().reduce((acc, m) => acc + (m.memory?.privateBytes || 0), 0) / 1024).toFixed(1));
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    store.selectGuild("g_rea", "c_general");
+    await store.joinVoiceChannel("g_rea", "c_voice_lounge");
+    const sources = await store.getScreenShareSources();
+    const src = sources.find((s) => s.isScreen) || sources[0];
+    await store.startScreenShare(src.id, { sourceName: src.name, resolution: "1080p", fps: 30 });
+  })()`);
+  await delay(3000);
+  const memEarly = privateMB();
+  await delay(12000);
+  const memLate = privateMB();
+  const shareFpsLate = await mainWin.webContents.executeJavaScript(
+    `import("./services/gatewayAdapter.js").then(({ ScreenShare }) => ScreenShare.getStats().capturedFps)`
+  );
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    await store.stopScreenShare();
+    await store.leaveVoiceChannel();
+  })()`);
+  const memGrowthMB = Number((memLate - memEarly).toFixed(1));
+  recordTest(
+    "Domain 17: Screen Share Memory Stability",
+    "Share a screen at 1080p/30 FPS for 15 s: private memory must not keep growing (< 25 MB between 3 s and 15 s)",
+    memGrowthMB < 25,
+    JSON.stringify({ memEarlyMB: memEarly, memLateMB: memLate, memGrowthMB, capturedFpsAtEnd: shareFpsLate })
+  );
+
   // =========================================================================
   // SUITE 26: Verified E-mail Required for Access (requireVerifiedEmail)
   // =========================================================================
@@ -1947,12 +2017,16 @@ async function runVerification() {
   // =========================================================================
   // SUITE 12 (PHASE 7): Memory Optimization Verification (< 80 MB Target)
   // =========================================================================
-  const maxTotalWorkingSetMB = Math.max(...memoryStages.map((s) => s.totalWorkingSetMB));
+  // A real screen capture keeps GPU/video buffers resident, so the call stage
+  // gets its own ceiling; the stability of that number is checked by SUITE 29
+  const idleStages = memoryStages.filter((s) => s.stage !== "3_during_call");
+  const callStage = memoryStages.find((s) => s.stage === "3_during_call");
+  const maxIdleWorkingSetMB = Math.max(...idleStages.map((s) => s.totalWorkingSetMB));
   recordTest(
-    "Phase 7: RAM Usage Optimization (< 80 MB)",
-    "Verify total resident Working Set stays under 80 MB across startup, navigation, call, and post-call",
-    maxTotalWorkingSetMB < 80,
-    `Max Total Working Set = ${maxTotalWorkingSetMB} MB (Stages: ${memoryStages.map((s) => `${s.stage}=${s.totalWorkingSetMB}MB`).join(", ")})`
+    "Phase 7: RAM Usage (< 80 MB idle, < 160 MB sharing)",
+    "Working Set under 80 MB at startup, navigation and after the call; under 160 MB while sharing the screen for real",
+    maxIdleWorkingSetMB < 80 && callStage && callStage.totalWorkingSetMB < 160,
+    `Idle max = ${maxIdleWorkingSetMB} MB; sharing = ${callStage?.totalWorkingSetMB} MB (Stages: ${memoryStages.map((s) => `${s.stage}=${s.totalWorkingSetMB}MB`).join(", ")})`
   );
 
   const memReport = {

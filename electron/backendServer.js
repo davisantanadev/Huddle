@@ -182,7 +182,7 @@ function validateNewPassword(password) {
   return null;
 }
 
-function detectFileSignature(buffer, declaredMime, purpose) {
+function detectFileSignature(buffer, declaredMime, purpose, declaredName = "") {
   if (!Buffer.isBuffer(buffer) || buffer.length < 8) {
     return { ok: false, error: "Arquivo vazio ou corrompido." };
   }
@@ -240,6 +240,16 @@ function detectFileSignature(buffer, declaredMime, purpose) {
       ok: false,
       error: "Formato de imagem inválido. Formatos aceitos: PNG, JPEG, WEBP, GIF."
     };
+  }
+
+  // Any file attached in chat: executables/HTML were already rejected above
+  if (purpose === "file") {
+    const maxFileBytes = 10 * 1024 * 1024;
+    if (buffer.length > maxFileBytes) return { ok: false, error: "O arquivo excede o limite de 10 MB." };
+    const ext = String(path.extname(String(declaredName || "")).slice(1) || "bin").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "bin";
+    const blocked = new Set(["exe", "dll", "bat", "cmd", "com", "msi", "scr", "ps1", "vbs", "js", "jar", "lnk", "hta", "html", "htm", "svg"]);
+    if (blocked.has(ext)) return { ok: false, error: "Este tipo de arquivo não pode ser enviado." };
+    return { ok: true, mime: declaredMime || "application/octet-stream", ext };
   }
 
   if (purpose === "audio" || purpose === "sound") {
@@ -498,6 +508,13 @@ class DiscordBackendServer {
     addCol("users", "profile_theme_enabled", "INTEGER NOT NULL DEFAULT 0");
     addCol("users", "profile_theme_primary", "TEXT NOT NULL DEFAULT '#5865f2'");
     addCol("users", "profile_theme_accent", "TEXT NOT NULL DEFAULT '#eb459e'");
+    // Thin line around the profile card and avatar (on/off + colour), and the
+    // background colour of the user's tile in calls (NULL = default)
+    addCol("users", "profile_border_enabled", "INTEGER NOT NULL DEFAULT 1");
+    addCol("users", "profile_border_color", "TEXT NOT NULL DEFAULT '#3f4147'");
+    addCol("users", "call_tile_color", "TEXT DEFAULT NULL");
+    // Polls posted in chat: { question, options: [{ id, text }], votes: { optionId: [userIds] } }
+    addCol("messages", "poll_json", "TEXT DEFAULT NULL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS verification_codes (
         id TEXT PRIMARY KEY,
@@ -759,6 +776,9 @@ class DiscordBackendServer {
       profileThemeEnabled: Boolean(row.profile_theme_enabled),
       profileThemePrimary: row.profile_theme_primary || "#5865f2",
       profileThemeAccent: row.profile_theme_accent || "#eb459e",
+      profileBorderEnabled: row.profile_border_enabled === undefined ? true : Boolean(row.profile_border_enabled),
+      profileBorderColor: row.profile_border_color || "#3f4147",
+      callTileColor: row.call_tile_color || "",
       isBot: false
     };
   }
@@ -1166,7 +1186,8 @@ class DiscordBackendServer {
         pinned: Boolean(m.pinned),
         edited: Boolean(m.edited),
         reactions: JSON.parse(m.reactions_json || "[]"),
-        replies: JSON.parse(m.replies_json || "[]")
+        replies: JSON.parse(m.replies_json || "[]"),
+        poll: m.poll_json ? JSON.parse(m.poll_json) : null
       };
     });
   }
@@ -1658,7 +1679,7 @@ class DiscordBackendServer {
         const cleanBase64 = base64Data.includes(",") ? base64Data.split(",")[1] : base64Data;
         const buffer = Buffer.from(cleanBase64, "base64");
 
-        const sig = detectFileSignature(buffer, mimeType, purpose);
+        const sig = detectFileSignature(buffer, mimeType, purpose, fileName);
         if (!sig.ok) {
           return { ok: false, error: sig.error };
         }
@@ -1746,6 +1767,22 @@ class DiscordBackendServer {
 
         // Optional profile theme: gradient between two colours on the profile card
         const isHex = (c) => typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c);
+        if (params.profileBorderEnabled !== undefined || params.profileBorderColor !== undefined) {
+          if (params.profileBorderColor !== undefined && !isHex(params.profileBorderColor)) {
+            return { ok: false, error: "Cor da borda inválida." };
+          }
+          this.db
+            .prepare(`UPDATE users SET profile_border_enabled = ?, profile_border_color = ? WHERE id = ?`)
+            .run(
+              params.profileBorderEnabled !== undefined ? (params.profileBorderEnabled ? 1 : 0) : current.profile_border_enabled,
+              params.profileBorderColor !== undefined ? params.profileBorderColor : current.profile_border_color,
+              actorId
+            );
+        }
+        if (params.callTileColor !== undefined) {
+          if (params.callTileColor !== "" && !isHex(params.callTileColor)) return { ok: false, error: "Cor do cartão inválida." };
+          this.db.prepare(`UPDATE users SET call_tile_color = ? WHERE id = ?`).run(params.callTileColor || null, actorId);
+        }
         if (params.profileThemeEnabled !== undefined || params.profileThemePrimary !== undefined || params.profileThemeAccent !== undefined) {
           if (params.profileThemePrimary !== undefined && !isHex(params.profileThemePrimary)) {
             return { ok: false, error: "Cor principal do tema inválida." };
@@ -2234,7 +2271,18 @@ class DiscordBackendServer {
         const { channelId, content, replyToId, attachment } = params;
         if (!actorId || !channelId) return { ok: false, error: "Canal ou autor ausente." };
         const text = String(content || "").trim();
-        if (!text && !attachment) return { ok: false, error: "A mensagem não pode ficar vazia." };
+        let poll = null;
+        if (params.poll) {
+          const question = String(params.poll.question || "").trim().slice(0, 300);
+          const options = (Array.isArray(params.poll.options) ? params.poll.options : [])
+            .map((o) => String(o || "").trim().slice(0, 80))
+            .filter(Boolean)
+            .slice(0, 10);
+          if (!question) return { ok: false, error: "Escreva a pergunta da enquete." };
+          if (options.length < 2) return { ok: false, error: "A enquete precisa de pelo menos 2 opções." };
+          poll = { question, options: options.map((t, i) => ({ id: `o${i + 1}`, text: t })), votes: {} };
+        }
+        if (!text && !attachment && !poll) return { ok: false, error: "A mensagem não pode ficar vazia." };
 
         const now = Date.now();
         const msgId = "m_" + crypto.randomBytes(6).toString("hex");
@@ -2244,6 +2292,7 @@ class DiscordBackendServer {
               name: attachment.name,
               size: attachment.size,
               isImage: Boolean(attachment.isImage),
+              mimeType: attachment.mimeType || "",
               url: attachment.relativeUrl || attachment.url || attachment.dataUrl
             })
           : null;
@@ -2252,10 +2301,10 @@ class DiscordBackendServer {
           .prepare(
             `INSERT INTO messages (
               id, channel_id, author_id, content, reply_to_id, attachment_json,
-              pinned, edited, reactions_json, replies_json, created_at, timestamp_label
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, '[]', '[]', ?, ?)`
+              pinned, edited, reactions_json, replies_json, created_at, timestamp_label, poll_json
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, '[]', '[]', ?, ?, ?)`
           )
-          .run(msgId, channelId, actorId, text, replyToId || null, storedAtt, now, tsLabel);
+          .run(msgId, channelId, actorId, text, replyToId || null, storedAtt, now, tsLabel, poll ? JSON.stringify(poll) : null);
 
         const messageObj = {
           id: msgId,
@@ -2267,11 +2316,28 @@ class DiscordBackendServer {
           pinned: false,
           edited: false,
           reactions: [],
-          replies: []
+          replies: [],
+          poll
         };
 
         this.broadcastEvent("MESSAGE_CREATED", { channelId, messageId: msgId });
         return { ok: true, messageId: msgId, message: messageObj };
+      }
+
+      // One vote per person; voting the same option again removes the vote
+      case "VOTE_POLL":
+      case "votePoll": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(params.messageId);
+        if (!msg || !msg.poll_json) return { ok: false, error: "Enquete não encontrada." };
+        const poll = JSON.parse(msg.poll_json);
+        if (!poll.options.some((o) => o.id === params.optionId)) return { ok: false, error: "Opção inválida." };
+        const already = (poll.votes[params.optionId] || []).includes(actorId);
+        for (const id of Object.keys(poll.votes)) poll.votes[id] = poll.votes[id].filter((u) => u !== actorId);
+        if (!already) poll.votes[params.optionId] = [...(poll.votes[params.optionId] || []), actorId];
+        this.db.prepare(`UPDATE messages SET poll_json = ? WHERE id = ?`).run(JSON.stringify(poll), msg.id);
+        this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId: msg.id });
+        return { ok: true, poll };
       }
 
       case "EDIT_MESSAGE":
@@ -2380,6 +2446,11 @@ class DiscordBackendServer {
         }
         const iconUrl = params.iconUrl !== undefined ? normalizeStoredUrl(params.iconUrl) : guild.icon_url;
         const bannerUrl = params.bannerUrl !== undefined ? normalizeStoredUrl(params.bannerUrl) : guild.banner_url;
+        // Server images must be our own uploads or GIPHY media, never arbitrary URLs
+        const allowedImage = (u) => !u || u.startsWith("/uploads/") || /^https:\/\/media\d*\.giphy\.com\//.test(u);
+        if (!allowedImage(iconUrl) || !allowedImage(bannerUrl)) {
+          return { ok: false, status: 400, error: "Use uma imagem enviada pelo app ou um GIF da biblioteca." };
+        }
 
         this.db
           .prepare(`UPDATE guilds SET name = ?, short_name = ?, icon_url = ?, banner_url = ? WHERE id = ?`)
@@ -3441,10 +3512,14 @@ class DiscordBackendServer {
             ".ogg": "audio/ogg",
             ".webm": "audio/webm"
           };
-          res.writeHead(200, {
+          // Anything that is not known media is served as a download, never rendered
+          const headers = {
             "Content-Type": mimeMap[ext] || "application/octet-stream",
-            "Cache-Control": "public, max-age=31536000"
-          });
+            "Cache-Control": "public, max-age=31536000",
+            "X-Content-Type-Options": "nosniff"
+          };
+          if (!mimeMap[ext]) headers["Content-Disposition"] = "attachment";
+          res.writeHead(200, headers);
           fs.createReadStream(filePath).pipe(res);
           return;
         }

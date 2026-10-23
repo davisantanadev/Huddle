@@ -73,7 +73,7 @@ const uiState = {
   selectedScreenSourceId: null,
   selectedScreenSourceName: "",
   screenShareResolution: "720p",
-  screenShareFps: 15,
+  screenShareFps: 30,
   loadingScreenSources: false,
 
   // Phase 10: Real user search results
@@ -98,7 +98,7 @@ const uiState = {
   micTestLevel: 0,
 
   // Call panel
-  callFocusUserId: null, // tile shown large
+  callFocusUserId: undefined, // undefined = automatic (a share fills the stage), null = grid, id = that tile
   callChatOpen: false,
   callChatWidth: (() => {
     try {
@@ -108,6 +108,8 @@ const uiState = {
     }
   })(),
   stoppedWatching: {}, // channelId -> true when the viewer chose "Parar de assistir"
+  callStagedAttachment: null, // file waiting to be sent in the call chat
+  composerMenu: null, // null | "chat" | "call" — the "+" menu next to a message box
 
   // Confirmation dialog for destructive actions
   confirmDialog: null, // null | { title, message, quote?, confirmLabel, requirePassword?, attrs }
@@ -168,6 +170,10 @@ export function closeAllFloatingMenus(except = null) {
     uiState.audioMenu = null;
     changed = true;
   }
+  if (except !== "composerMenu" && uiState.composerMenu !== null) {
+    uiState.composerMenu = null;
+    changed = true;
+  }
   return changed;
 }
 
@@ -179,7 +185,8 @@ function hasAnyOpenFloatingMenu() {
       uiState.emojiPickerForMessageId ||
       uiState.pinnedPopoverOpen ||
       uiState.contextMenu ||
-      uiState.audioMenu
+      uiState.audioMenu ||
+      uiState.composerMenu
   );
 }
 
@@ -848,14 +855,14 @@ function renderSecondarySidebar(state) {
 
   return `
     <aside class="secondary-sidebar" data-testid="secondary-sidebar">
-      <div class="server-header ${guild.bannerUrl ? "has-banner" : ""}" data-action="toggle-server-menu" data-testid="server-header">
+      <div class="server-header ${guild.bannerUrl ? "has-banner" : ""}" data-testid="server-header">
         ${
           guild.bannerUrl
             ? `<img class="server-header-banner" src="${escapeHtml(guild.bannerUrl)}" alt="" data-testid="guild-sidebar-banner" />`
             : ""
         }
         <div class="server-header-bar">
-          <button class="server-header-title" title="Opções do servidor">
+          <button class="server-header-title" data-action="toggle-server-menu" title="Opções do servidor" data-testid="server-header-title">
             ${
               guild.iconUrl
                 ? `<img class="server-header-icon" src="${escapeHtml(guild.iconUrl)}" alt="" />`
@@ -1197,10 +1204,8 @@ function renderScreenShareBannerAndStage(state) {
   const sourceTitle = activeShare?.sourceName || state.voice.screenShareSourceName || "Tela Principal";
 
   const stats = ScreenShare.getStats ? ScreenShare.getStats() : {};
-  const displayFps = stats.sentFps || activeShare?.fps || 15;
-  const displayCapFps = stats.capturedFps || activeShare?.fps || 15;
+  const displayFps = stats.requestedFps || activeShare?.fps || 30;
   const displayRes = stats.resolution || activeShare?.resolution || "720p";
-  const displayBitrate = stats.bitrateKbps || 2500;
 
   return `
     <div style="padding:12px 16px 0 16px;" data-testid="screenshare-stage">
@@ -1224,19 +1229,106 @@ function renderScreenShareBannerAndStage(state) {
         <div style="position:relative;background:#000;display:flex;align-items:center;justify-content:center;min-height:200px;">
           ${
             isMeSharing && ScreenShare.getStream()
-              ? `<video id="local-screenshare-video" class="screenshare-video" autoplay muted playsinline data-testid="screenshare-video"></video>`
+              ? `<div class="screenshare-video-slot" data-share-video-slot></div>`
               : activeShare?.frameDataUrl
                 ? `<img class="screenshare-frame-img" data-share-frame="${escapeHtml(activeShare.channelId || voiceChannelId || "")}" src="${activeShare.frameDataUrl}" alt="Transmissão ao vivo" data-testid="screenshare-remote-img" />`
                 : `<div style="color:#9ca3af;font-size:13px;padding:40px;">Recebendo stream de vídeo em tempo real...</div>`
           }
           <div class="stream-stats-overlay" data-testid="stream-stats-overlay" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);padding:6px 10px;border-radius:6px;font-size:11px;color:#fff;display:flex;gap:10px;pointer-events:none;z-index:10;border:1px solid rgba(255,255,255,0.1);">
-            <div><span style="color:var(--text-muted);">Env:</span> <strong>${displayFps} FPS</strong></div>
-            <div><span style="color:var(--text-muted);">Cap:</span> <strong>${displayCapFps} FPS</strong></div>
-            <div><span style="color:var(--text-muted);">Bitrate:</span> <strong>${displayBitrate} kbps</strong></div>
-            <div><span style="color:var(--text-muted);">Res:</span> <strong>${displayRes}</strong></div>
+            <div><span style="color:var(--text-muted);">Captura:</span> <strong data-share-stat="capturedFps">${stats.capturedFps || "—"}</strong> / ${displayFps} FPS</div>
+            <div><span style="color:var(--text-muted);">Res:</span> <strong data-share-stat="resolution">${escapeHtml(displayRes)}</strong></div>
           </div>
         </div>
       </div>
+    </div>
+  `;
+}
+
+// ==========================================================================
+// Attachments, polls and the composer "+" menu (shared by chat and call chat)
+// ==========================================================================
+function renderAttachment(att) {
+  if (!att) return "";
+  const url = att.url || att.dataUrl || "";
+  if (att.isImage && url) {
+    return `<div class="message-attachment-card"><img class="message-attachment-img" src="${escapeHtml(url)}" alt="${escapeHtml(att.name)}" /></div>`;
+  }
+  const inner = `
+    <span class="message-file-icon">${Icons.file}</span>
+    <span class="message-file-meta">
+      <span class="message-file-name">${escapeHtml(att.name)}</span>
+      <span class="message-file-size">${escapeHtml(att.size || "")}</span>
+    </span>
+    ${url ? `<span class="message-file-download" title="Baixar">${Icons.download}</span>` : ""}
+  `;
+  return `<div class="message-attachment-card">${
+    url
+      ? `<a class="message-file-box" href="${escapeHtml(url)}" download="${escapeHtml(att.name)}" title="Baixar ${escapeHtml(att.name)}">${inner}</a>`
+      : `<div class="message-file-box">${inner}</div>`
+  }</div>`;
+}
+
+function renderPollCard(m, channelId) {
+  const poll = m.poll;
+  if (!poll) return "";
+  const meId = store.getState().auth.currentUserId;
+  const votes = poll.votes || {};
+  const total = poll.options.reduce((acc, o) => acc + (votes[o.id]?.length || 0), 0);
+  return `
+    <div class="poll-card" data-testid="poll-card">
+      <div class="poll-question">${escapeHtml(poll.question)}</div>
+      <div class="poll-hint">Escolha uma opção${total ? "" : " — seja o primeiro a votar"}</div>
+      <div class="poll-options">
+        ${poll.options
+          .map((o) => {
+            const count = votes[o.id]?.length || 0;
+            const pct = total ? Math.round((count / total) * 100) : 0;
+            const mine = (votes[o.id] || []).includes(meId);
+            return `
+              <button class="poll-option ${mine ? "mine" : ""}" style="--pct:${pct}%;" data-action="vote-poll" data-channel-id="${escapeHtml(channelId)}" data-message-id="${escapeHtml(m.id)}" data-option-id="${escapeHtml(o.id)}" title="${mine ? "Remover meu voto" : "Votar"}">
+                <span class="poll-option-check">${mine ? Icons.check : ""}</span>
+                <span class="poll-option-text">${escapeHtml(o.text)}</span>
+                <span class="poll-option-count">${count} · ${pct}%</span>
+              </button>
+            `;
+          })
+          .join("")}
+      </div>
+      <div class="poll-footer">${total} ${total === 1 ? "voto" : "votos"}</div>
+    </div>
+  `;
+}
+
+// "+" next to the message box: attach a file or start a poll
+function renderComposerPlus(target, channelId) {
+  const open = uiState.composerMenu === target;
+  const inputId = target === "call" ? "call-chat-file-input" : "composer-file-input";
+  return `
+    <div class="composer-plus ${open ? "open" : ""}">
+      <button type="button" class="icon-btn composer-plus-btn" data-action="toggle-composer-menu" data-target="${target}" title="Anexar arquivo ou criar enquete" aria-label="Mais opções" data-testid="${target}-plus-btn">${Icons.plus}</button>
+      ${
+        open
+          ? `<div class="composer-plus-menu" data-testid="${target}-plus-menu">
+              <label class="composer-plus-item" for="${inputId}">
+                ${Icons.upload}<span>Enviar arquivo</span>
+              </label>
+              <button type="button" class="composer-plus-item" data-action="open-poll-modal" data-channel-id="${escapeHtml(channelId)}" data-testid="${target}-create-poll-btn">
+                ${Icons.poll}<span>Criar enquete</span>
+              </button>
+            </div>`
+          : ""
+      }
+      <input type="file" id="${inputId}" style="display:none;" />
+    </div>
+  `;
+}
+
+function renderStagedAttachmentBanner(att, clearAction) {
+  if (!att) return "";
+  return `
+    <div class="composer-banner">
+      <span>📎 Arquivo anexado: <strong style="color:var(--header-primary);">${escapeHtml(att.name)}</strong> (${escapeHtml(att.size)})</span>
+      <button type="button" style="color:var(--interactive-normal);" data-action="${clearAction}" aria-label="Remover anexo">${Icons.close}</button>
     </div>
   `;
 }
@@ -1267,7 +1359,7 @@ function renderCallTile(state, ch, userId, { focused = false, small = false } = 
 
   let media;
   if (watching && isMe && ScreenShare.getStream()) {
-    media = `<video id="local-screenshare-video" class="call-tile-stream" autoplay muted playsinline data-testid="screenshare-video"></video>`;
+    media = `<div class="screenshare-video-slot call-tile-stream" data-share-video-slot></div>`;
   } else if (watching && !isMe && share?.frameDataUrl) {
     media = `<img class="call-tile-stream" data-share-frame="${escapeHtml(ch.id)}" src="${share.frameDataUrl}" alt="Tela de ${escapeHtml(user.displayName)}" data-testid="screenshare-remote-img" />`;
   } else if (watching) {
@@ -1287,7 +1379,7 @@ function renderCallTile(state, ch, userId, { focused = false, small = false } = 
   return `
     <div
       class="call-tile ${watching ? "has-stream" : ""} ${speaking ? "speaking" : ""} ${focused ? "focused" : ""} ${small ? "small" : ""}"
-      style="--tile-color:${escapeHtml(user.bannerColor || user.avatarColor || "#5865f2")};"
+      style="${user.callTileColor ? `--tile-bg:${escapeHtml(user.callTileColor)};` : `--tile-color:${escapeHtml(user.avatarColor || "#5865f2")};`}"
       data-action="focus-call-tile"
       data-user-id="${escapeHtml(userId)}"
       data-testid="call-tile"
@@ -1299,7 +1391,15 @@ function renderCallTile(state, ch, userId, { focused = false, small = false } = 
         <span class="call-tile-name">${escapeHtml(user.displayName)}</span>
         ${deafened ? `<span class="call-tile-state" title="Áudio desativado">${Icons.deafenOff}</span>` : muted ? `<span class="call-tile-state" title="Microfone silenciado">${Icons.micOff}</span>` : ""}
       </div>
-      ${shareControls ? `<div class="call-tile-actions">${shareControls}</div>` : ""}
+      ${
+        shareControls || focused
+          ? `<div class="call-tile-actions">${shareControls}${
+              focused
+                ? `<button class="call-tile-action" data-action="call-show-grid" title="Voltar para a grade" data-testid="call-show-grid-btn">${Icons.grid}<span>Ver todos</span></button>`
+                : ""
+            }</div>`
+          : ""
+      }
     </div>
   `;
 }
@@ -1313,9 +1413,7 @@ function renderCallChatPanel(state, ch) {
           .map((m, idx) => {
             const author = state.users[m.authorId] || { id: m.authorId, displayName: "Usuário", avatarColor: "#5865f2" };
             const grouped = idx > 0 && messages[idx - 1].authorId === m.authorId;
-            const attachment = m.attachment?.isImage && (m.attachment.url || m.attachment.dataUrl)
-              ? `<img class="message-attachment-img" src="${escapeHtml(m.attachment.url || m.attachment.dataUrl)}" alt="${escapeHtml(m.attachment.name || "")}" />`
-              : "";
+            const attachment = renderAttachment(m.attachment) + renderPollCard(m, ch.id);
             return `
               <div class="call-chat-msg ${grouped ? "grouped" : ""}" data-message-id="${m.id}">
                 ${grouped ? "" : `<div data-action="open-user-popout" data-user-id="${author.id}" style="cursor:pointer;">${renderAvatar(author)}</div>`}
@@ -1342,17 +1440,27 @@ function renderCallChatPanel(state, ch) {
         <button class="icon-btn" data-action="toggle-call-chat" title="Fechar chat" aria-label="Fechar chat" data-testid="close-call-chat-btn">${Icons.close}</button>
       </div>
       <div class="call-chat-messages" id="call-chat-scroller">${listHtml}</div>
-      <form class="call-chat-composer" id="call-chat-form" data-channel-id="${escapeHtml(ch.id)}">
-        <input class="call-chat-input" name="message" autocomplete="off" placeholder="Conversar em ${escapeHtml(ch.name)}" data-testid="call-chat-input" />
-      </form>
+      <div class="call-chat-composer">
+        ${renderStagedAttachmentBanner(uiState.callStagedAttachment, "clear-call-attachment")}
+        <form class="call-chat-box" id="call-chat-form" data-channel-id="${escapeHtml(ch.id)}">
+          ${renderComposerPlus("call", ch.id)}
+          <input class="call-chat-input" name="message" autocomplete="off" placeholder="Conversar em ${escapeHtml(ch.name)}" data-testid="call-chat-input" />
+        </form>
+      </div>
     </aside>
   `;
 }
 
 function renderCallStage(state, ch) {
   const participants = (ch.connectedUsers || []).length ? ch.connectedUsers : [state.auth.currentUserId];
-  // Clicking a tile enlarges it; clicking it again goes back to the grid
-  const focusId = participants.includes(uiState.callFocusUserId) ? uiState.callFocusUserId : null;
+  // A screen share fills the stage on its own; clicking the big tile (or "Ver
+  // todos") goes back to the grid, where the share shows as a smaller tile.
+  // callFocusUserId: undefined = automatic, null = grid chosen, id = that tile.
+  const share = state.screenShares[ch.id];
+  const sharerId = state.voice.screenShareEnabled ? state.auth.currentUserId : share?.userId;
+  const autoFocus = uiState.callFocusUserId === undefined && sharerId && !uiState.stoppedWatching[ch.id] ? sharerId : null;
+  const wanted = uiState.callFocusUserId === undefined ? autoFocus : uiState.callFocusUserId;
+  const focusId = participants.includes(wanted) ? wanted : null;
   const others = participants.filter((id) => id !== focusId);
   const chatOpen = uiState.callChatOpen;
 
@@ -1486,21 +1594,7 @@ function renderChatStage(state) {
                   ${m.edited ? `<span style="font-size:10px;color:var(--text-muted);margin-left:4px;">(editado)</span>` : ""}
                 </div>`;
 
-            const attachmentHtml = m.attachment
-              ? `<div class="message-attachment-card">
-                  ${
-                    m.attachment.isImage && (m.attachment.url || m.attachment.dataUrl)
-                      ? `<img class="message-attachment-img" src="${escapeHtml(m.attachment.url || m.attachment.dataUrl)}" alt="${escapeHtml(m.attachment.name)}" />`
-                      : `<div class="message-file-box">
-                          <span style="font-size:24px;">📄</span>
-                          <div>
-                            <div style="font-size:14px;font-weight:600;color:var(--link-color);">${escapeHtml(m.attachment.name)}</div>
-                            <div style="font-size:11px;color:var(--text-muted);">${escapeHtml(m.attachment.size || "12 KB")}</div>
-                          </div>
-                        </div>`
-                  }
-                </div>`
-              : "";
+            const attachmentHtml = renderAttachment(m.attachment) + renderPollCard(m, channel.id);
 
             const reactionsHtml =
               Array.isArray(m.reactions) && m.reactions.length > 0
@@ -1785,10 +1879,7 @@ function renderChatStage(state) {
           <div class="composer-area">
             ${bannerHtml}
             <form id="message-composer-form" class="composer-box ${bannerHtml ? "has-banner" : ""}">
-              <label class="icon-btn" title="Anexar Arquivo / Imagem" style="cursor:pointer;">
-                ${Icons.plus}
-                <input type="file" id="composer-file-input" style="display:none;" />
-              </label>
+              ${renderComposerPlus("chat", channel.id)}
               <input
                 type="text"
                 id="composer-text-input"
@@ -1971,7 +2062,7 @@ function renderUserPopout(state) {
     : [];
 
   return `
-    <div class="floating-popout" style="top:84px;right:255px;width:330px;" data-testid="user-profile-popout">
+    <div class="floating-popout user-popout ${profileCardClasses(u)}" style="top:84px;right:255px;width:330px;${profileThemeStyle(u)}" data-testid="user-profile-popout">
       <div style="position:relative;">
         ${renderBanner(u, 96)}
         <button
@@ -1980,10 +2071,10 @@ function renderUserPopout(state) {
         >×</button>
       </div>
       <div style="padding:0 16px 16px 16px;position:relative;">
-        <div style="margin-top:-42px;display:inline-block;border-radius:50%;border:6px solid var(--bg-floating);">
+        <div class="user-popout-avatar">
           ${renderExpandableAvatar(u)}
         </div>
-        <div style="margin-top:8px;background:var(--bg-channels);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:10px;">
+        <div class="user-popout-inner">
           <div>
             <div style="font-size:18px;font-weight:700;color:var(--header-primary);">${escapeHtml(u.displayName)}</div>
             <div style="font-size:13px;color:var(--text-muted);" data-testid="popout-username">@${escapeHtml(u.username)}</div>
@@ -2198,6 +2289,39 @@ function renderActiveModal(state) {
     `;
   }
 
+  // Poll: question + 2..10 options, posted as a message in the chosen channel
+  if (modal === "create-poll") {
+    return `
+      <div class="modal-backdrop" data-action="close-modal-backdrop">
+        <form class="modal-card" id="create-poll-form" data-channel-id="${escapeHtml(uiState.modalPayload?.channelId || "")}" data-testid="create-poll-modal">
+          <div class="modal-header">
+            <h2>Criar enquete</h2>
+            <button type="button" class="icon-btn" data-action="close-modal" aria-label="Fechar">${Icons.close}</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label" for="poll-question">Pergunta</label>
+              <input class="form-input" id="poll-question" name="question" maxlength="300" placeholder="Ex.: Qual jogo hoje à noite?" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Opções</label>
+              <div class="poll-option-inputs" id="poll-option-inputs">
+                <input class="form-input" name="option" maxlength="80" placeholder="Opção 1" required />
+                <input class="form-input" name="option" maxlength="80" placeholder="Opção 2" required />
+              </div>
+              <button type="button" class="link-btn" id="poll-add-option">+ Adicionar opção</button>
+            </div>
+            <div class="form-error" id="poll-error"></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+            <button type="submit" class="btn btn-primary" data-testid="poll-submit-btn">Publicar enquete</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
   // Phase 11: Cryptographic Server Invite Modal
   if (modal === "invite") {
     const guild = store.getActiveGuild();
@@ -2305,43 +2429,34 @@ function renderActiveModal(state) {
             <button class="icon-btn" data-action="close-modal">${Icons.close}</button>
           </div>
           <div class="modal-body">
-            <p style="font-size:13px;color:var(--text-muted);">
-              Selecione a tela inteira ou uma janela específica do sistema para transmitir ao vivo no canal de voz:
-            </p>
-            <div class="screen-source-grid" data-testid="screen-source-grid">
-              ${
-                sources.length === 0
-                  ? `<div style="grid-column:1/-1;padding:24px;text-align:center;color:var(--text-muted);">Carregando fontes de captura de tela...</div>`
-                  : sources
-                      .map((src) => {
-                        const isSel = uiState.selectedScreenSourceId === src.id;
-                        return `
-                          <div
-                            class="screen-source-card ${isSel ? "selected" : ""}"
-                            data-action="select-screen-source"
-                            data-source-id="${escapeHtml(src.id)}"
-                            data-source-name="${escapeHtml(src.name)}"
-                            data-testid="screen-source-item"
-                          >
-                            ${
-                              src.thumbnail
-                                ? `<img class="screen-source-thumb" src="${src.thumbnail}" alt="${escapeHtml(src.name)}" />`
-                                : `<div class="screen-source-thumb" style="display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px;">🖥️</div>`
-                            }
-                            <div style="font-size:12px;font-weight:600;color:var(--header-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                              ${escapeHtml(src.name)}
-                            </div>
-                          </div>
-                        `;
-                      })
-                      .join("")
-              }
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+              <p style="font-size:13px;color:var(--text-muted);">Escolha uma tela ou a janela de um app aberto no Windows.</p>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-screen-sources" data-testid="refresh-screen-sources-btn">Atualizar lista</button>
             </div>
+            ${
+              sources.length === 0
+                ? `<div class="screen-source-empty">${uiState.loadingScreenSources ? "Procurando telas e janelas abertas..." : "Nenhuma tela ou janela disponível para compartilhar."}</div>`
+                : [
+                    ["Telas", sources.filter((src) => src.isScreen)],
+                    ["Janelas", sources.filter((src) => !src.isScreen)]
+                  ]
+                    .filter(([, list]) => list.length > 0)
+                    .map(
+                      ([label, list]) => `
+                  <div class="screen-source-group">
+                    <div class="form-label">${label} (${list.length})</div>
+                    <div class="screen-source-grid" data-testid="screen-source-grid">
+                      ${list.map((src) => renderScreenSourceCard(src)).join("")}
+                    </div>
+                  </div>`
+                    )
+                    .join("")
+            }
             <div style="display:flex;gap:12px;background:var(--bg-channels);padding:12px;border-radius:8px;">
               <div class="form-group" style="flex:1;">
                 <label class="form-label">Qualidade da Transmissão</label>
                 <select class="form-input" id="screenshare-res-select" style="height:34px;">
-                  <option value="720p" ${uiState.screenShareResolution === "720p" ? "selected" : ""}>720p HD (Otimizado para baixa RAM)</option>
+                  <option value="720p" ${uiState.screenShareResolution === "720p" ? "selected" : ""}>720p HD</option>
                   <option value="1080p" ${uiState.screenShareResolution === "1080p" ? "selected" : ""}>1080p Full HD</option>
                 </select>
               </div>
@@ -2350,7 +2465,7 @@ function renderActiveModal(state) {
                 <select class="form-input" id="screenshare-fps-select" style="height:34px;">
                   <option value="15" ${uiState.screenShareFps === 15 ? "selected" : ""}>15 FPS</option>
                   <option value="30" ${uiState.screenShareFps === 30 ? "selected" : ""}>30 FPS</option>
-                  <option value="60" ${uiState.screenShareFps === 60 ? "selected" : ""}>60 FPS (Máxima Fluidez)</option>
+                  <option value="60" ${uiState.screenShareFps === 60 ? "selected" : ""}>60 FPS</option>
                 </select>
               </div>
             </div>
@@ -2720,6 +2835,7 @@ function gifCardHtml(gif) {
       class="gif-item-card"
       data-action="pick-gif-item"
       data-gif-url="${escapeHtml(gif.url)}"
+      data-gif-large-url="${escapeHtml(gif.largeUrl || gif.url)}"
       data-gif-title="${escapeHtml(gif.title)}"
       title="${escapeHtml(gif.title)}"
       data-testid="gif-card"
@@ -2741,7 +2857,7 @@ function mountGifPicker(gp) {
           <div>
             <h2 id="gif-picker-title" style="font-size:18px;">Biblioteca de GIFs</h2>
             <div style="font-size:12px;color:var(--text-muted);">
-              Escolha uma animação para o seu ${gp.target === "avatar" ? "avatar" : "banner"}
+              Escolha uma animação para ${gp.target === "avatar" ? "o seu avatar" : gp.target === "guild-banner" ? "o banner do servidor" : "o seu banner"}
             </div>
           </div>
           <button class="icon-btn" data-action="close-gif-picker" aria-label="Fechar">${Icons.close}</button>
@@ -3036,6 +3152,9 @@ function renderServerOverview(guild, me) {
                    ${guild.bannerUrl ? "Alterar Banner" : "Enviar Banner"}
                    <input type="file" id="guild-banner-upload-input" data-testid="guild-banner-upload-input" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none;" />
                  </label>
+                 <button type="button" class="btn btn-secondary btn-icon-text" style="height:30px;font-size:12px;" data-action="open-gif-picker" data-target="guild-banner" data-testid="guild-banner-gif-btn">
+                   ${Icons.sparkles}<span>Adicionar GIF</span>
+                 </button>
                  ${guild.bannerUrl ? `<button type="button" class="btn btn-secondary" style="height:30px;font-size:12px;" data-action="remove-guild-banner">Remover Banner</button>` : ""}
                </div>`
             : ""
@@ -3866,6 +3985,8 @@ function renderSettingsOverlay(state) {
 // ==========================================================================
 // Full profile view: card + "Atividade" (recent games) + quick customization
 // ==========================================================================
+const PROFILE_ACCENT_SWATCHES = ["#3f4147", "#5865f2", "#23a55a", "#f0b232", "#ed4245", "#eb459e", "#0ea5e9", "#ffffff"];
+
 const PROFILE_THEME_PRESETS = [
   ["#3b3fa8", "#a8434f"],
   ["#5865f2", "#eb459e"],
@@ -3939,8 +4060,14 @@ function renderActivityList(activities) {
 }
 
 function profileThemeStyle(user) {
-  if (!user?.profileThemeEnabled) return "";
-  return `--theme-primary:${escapeHtml(user.profileThemePrimary || "#5865f2")};--theme-accent:${escapeHtml(user.profileThemeAccent || "#eb459e")};`;
+  const border = user?.profileBorderEnabled === false ? "" : `--profile-border:${escapeHtml(user?.profileBorderColor || "#3f4147")};`;
+  if (!user?.profileThemeEnabled) return border;
+  return `${border}--theme-primary:${escapeHtml(user.profileThemePrimary || "#5865f2")};--theme-accent:${escapeHtml(user.profileThemeAccent || "#eb459e")};`;
+}
+
+// Classes shared by the full profile card and the member popout
+function profileCardClasses(user) {
+  return [user?.profileThemeEnabled ? "themed" : "", user?.profileBorderEnabled === false ? "" : "has-border"].filter(Boolean).join(" ");
 }
 
 function renderProfileCustomizer(me) {
@@ -3986,6 +4113,39 @@ function renderProfileCustomizer(me) {
       </section>
 
       <section class="profile-customizer-section">
+        <label class="checkbox-row compact" for="profile-border-toggle">
+          <input type="checkbox" class="checkbox-input" id="profile-border-toggle" data-testid="profile-border-toggle" ${me.profileBorderEnabled !== false ? "checked" : ""} />
+          <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+          <span class="checkbox-text">
+            <span class="setting-title">Borda do perfil</span>
+            <span class="setting-desc">Linha fina em volta do cartão e da foto.</span>
+          </span>
+        </label>
+        ${
+          me.profileBorderEnabled !== false
+            ? `<div class="profile-color-row">
+                ${PROFILE_ACCENT_SWATCHES.map(
+                  (c) => `<button type="button" class="color-swatch-btn ${(me.profileBorderColor || "#3f4147") === c ? "active" : ""}" style="background:${c};" data-action="set-profile-border-color" data-color="${c}" aria-label="Borda ${c}"></button>`
+                ).join("")}
+                <label class="color-custom-btn" title="Cor personalizada"><input type="color" id="profile-border-color" value="${escapeHtml(me.profileBorderColor || "#3f4147")}" /><span>+</span></label>
+              </div>`
+            : ""
+        }
+      </section>
+
+      <section class="profile-customizer-section">
+        <div class="form-label">Cor do seu cartão na call</div>
+        <div class="profile-color-row">
+          ${PROFILE_ACCENT_SWATCHES.map(
+            (c) => `<button type="button" class="color-swatch-btn ${me.callTileColor === c ? "active" : ""}" style="background:${c};" data-action="set-call-tile-color" data-color="${c}" aria-label="Cartão ${c}"></button>`
+          ).join("")}
+          <label class="color-custom-btn" title="Cor personalizada"><input type="color" id="call-tile-color" value="${escapeHtml(me.callTileColor || "#2b2d31")}" /><span>+</span></label>
+        </div>
+        <div class="call-tile-preview" style="background:${escapeHtml(me.callTileColor || "#2b2d31")};">${renderAvatar(me, "", false, "width:34px;height:34px;min-width:34px;font-size:13px;")}</div>
+        ${me.callTileColor ? `<button type="button" class="link-btn" data-action="set-call-tile-color" data-color="">Usar cor automática</button>` : ""}
+      </section>
+
+      <section class="profile-customizer-section">
         <label class="checkbox-row compact" for="profile-theme-toggle">
           <input type="checkbox" class="checkbox-input" id="profile-theme-toggle" data-testid="profile-theme-toggle" ${themeOn ? "checked" : ""} />
           <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
@@ -4018,7 +4178,6 @@ function renderProfileView(state) {
   const user = state.users[view.userId];
   if (!user) return "";
   const isMe = user.id === state.auth.currentUserId;
-  const themed = Boolean(user.profileThemeEnabled);
   const playing = (view.activities || []).find((a) => a.playingNow);
 
   return `
@@ -4026,7 +4185,7 @@ function renderProfileView(state) {
       <div class="profile-view">
         ${isMe ? renderProfileCustomizer(user) : ""}
         <div class="profile-view-main">
-          <article class="profile-view-card ${themed ? "themed" : ""}" id="profile-view-card" style="${profileThemeStyle(user)}">
+          <article class="profile-view-card ${profileCardClasses(user)}" id="profile-view-card" style="${profileThemeStyle(user)}">
             ${renderBanner(user, 150)}
             <div class="profile-view-body">
               <div class="profile-view-avatar">${renderExpandableAvatar(user)}</div>
@@ -4235,14 +4394,27 @@ function bindMediaEditorSliders(root) {
   }
 }
 
+// The preview <video> is created once per capture (ScreenShare) and moved into
+// the current render's slot: recreating it on every render restarted the
+// stream, which made the preview stutter
 function attachLiveScreenShareVideo() {
-  const videoEl = document.getElementById("local-screenshare-video");
-  const stream = ScreenShare.getStream();
-  if (videoEl && stream && videoEl.srcObject !== stream) {
-    videoEl.srcObject = stream;
-    videoEl.play().catch(() => {});
-  }
+  const video = ScreenShare.getPreviewElement();
+  const slot = document.querySelector("[data-share-video-slot]");
+  if (!video || !slot) return;
+  if (video.parentElement !== slot) slot.appendChild(video);
+  if (video.paused) video.play().catch(() => {});
 }
+
+// Live numbers on the stats overlay, updated in place (no re-render)
+setInterval(() => {
+  if (!ScreenShare.getStream()) return;
+  const stats = ScreenShare.getStats();
+  for (const el of document.querySelectorAll("[data-share-stat]")) {
+    const key = el.getAttribute("data-share-stat");
+    const value = key === "capturedFps" ? stats.capturedFps || "—" : stats[key] || "—";
+    if (el.textContent !== String(value)) el.textContent = String(value);
+  }
+}, 1000);
 
 async function openInviteModalForGuild(guildId, channelId = null) {
   closeAllFloatingMenus();
@@ -4265,20 +4437,63 @@ async function openInviteModalForGuild(guildId, channelId = null) {
   renderApp();
 }
 
+function renderScreenSourceCard(src) {
+  const isSel = uiState.selectedScreenSourceId === src.id;
+  return `
+    <button
+      type="button"
+      class="screen-source-card ${isSel ? "selected" : ""}"
+      data-action="select-screen-source"
+      data-source-id="${escapeHtml(src.id)}"
+      data-source-name="${escapeHtml(src.name)}"
+      data-testid="screen-source-item"
+      title="${escapeHtml(src.name)}"
+    >
+      ${
+        src.thumbnail
+          ? `<img class="screen-source-thumb" src="${src.thumbnail}" alt="" />`
+          : `<div class="screen-source-thumb screen-source-thumb-empty">${src.isScreen ? "Tela" : "Janela minimizada"}</div>`
+      }
+      <div class="screen-source-label">
+        ${src.appIcon ? `<img class="screen-source-icon" src="${src.appIcon}" alt="" />` : ""}
+        <span>${escapeHtml(src.name)}</span>
+      </div>
+    </button>
+  `;
+}
+
 async function openScreenSharePickerModal() {
   closeAllFloatingMenus();
   uiState.activeModal = "screenshare-picker";
   uiState.loadingScreenSources = true;
   renderApp();
 
+  await loadScreenSources();
+}
+
+// Windows come and go: keep the selection only if that window is still open
+async function loadScreenSources() {
   const sources = await store.getScreenShareSources();
   uiState.screenSources = sources;
   uiState.loadingScreenSources = false;
-  if (sources.length > 0 && !uiState.selectedScreenSourceId) {
-    uiState.selectedScreenSourceId = sources[0].id;
-    uiState.selectedScreenSourceName = sources[0].name;
-  }
+  const still = sources.find((src) => src.id === uiState.selectedScreenSourceId);
+  uiState.selectedScreenSourceId = still ? still.id : sources[0]?.id || null;
+  uiState.selectedScreenSourceName = still ? still.name : sources[0]?.name || null;
   renderApp();
+}
+
+// Uploads a file chosen from a "+" menu: images become inline pictures, the
+// rest a downloadable file card. Returns the staged attachment or null.
+async function stageChatFile(file) {
+  const isImage = file.type.startsWith("image/");
+  const sizeLabel = file.size >= 1024 * 1024 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`;
+  const base64Data = await readFileAsBase64(file);
+  const up = await store.uploadMedia({ fileName: file.name, mimeType: file.type, base64Data, kind: isImage ? "attachment" : "file" });
+  if (!up.ok) {
+    showToast(up.error || "Não foi possível enviar o arquivo.");
+    return null;
+  }
+  return { name: file.name, size: sizeLabel, isImage, url: up.url, mimeType: up.mimeType };
 }
 
 // All app processes together, as Windows' Task Manager shows it
@@ -4372,27 +4587,12 @@ function bindFormEvents() {
   if (fileInput) {
     fileInput.addEventListener("change", async () => {
       const file = fileInput.files?.[0];
-      if (!file) return;
-      const isImage = file.type.startsWith("image/");
-      const sizeKb = Math.max(1, Math.round(file.size / 1024)) + " KB";
-      if (isImage) {
-        const base64Data = await readFileAsBase64(file);
-        const up = await store.uploadMedia({
-          fileName: file.name,
-          mimeType: file.type,
-          base64Data,
-          kind: "attachment"
-        });
-        if (up.ok) {
-          uiState.stagedAttachment = { name: file.name, size: sizeKb, isImage: true, url: up.url };
-          renderApp();
-        } else {
-          showToast(up.error || "Arquivo de imagem inválido.");
-        }
-      } else {
-        uiState.stagedAttachment = { name: file.name, size: sizeKb, isImage: false };
-        renderApp();
-      }
+      uiState.composerMenu = null;
+      if (!file) return renderApp();
+      const staged = await stageChatFile(file);
+      if (staged) uiState.stagedAttachment = staged;
+      renderApp();
+      document.getElementById("composer-text-input")?.focus();
     });
   }
 
@@ -4987,6 +5187,29 @@ function bindFormEvents() {
     });
   });
 
+  // Profile view: border flag/colour and call tile colour
+  const borderToggle = document.getElementById("profile-border-toggle");
+  if (borderToggle) {
+    borderToggle.addEventListener("change", async () => {
+      await store.updateMyProfile({ profileBorderEnabled: borderToggle.checked });
+    });
+  }
+  const borderColor = document.getElementById("profile-border-color");
+  if (borderColor) {
+    borderColor.addEventListener("input", () => {
+      document.getElementById("profile-view-card")?.style.setProperty("--profile-border", borderColor.value);
+    });
+    borderColor.addEventListener("change", async () => {
+      await store.updateMyProfile({ profileBorderEnabled: true, profileBorderColor: borderColor.value });
+    });
+  }
+  const tileColor = document.getElementById("call-tile-color");
+  if (tileColor) {
+    tileColor.addEventListener("change", async () => {
+      await store.updateMyProfile({ callTileColor: tileColor.value });
+    });
+  }
+
   // Profile view: theme flag and colours (live preview while dragging, saved on release)
   const themeToggle = document.getElementById("profile-theme-toggle");
   if (themeToggle) {
@@ -5017,10 +5240,54 @@ function bindFormEvents() {
       e.preventDefault();
       const input = callChatForm.querySelector("input[name=message]");
       const text = input.value;
-      if (!text.trim()) return;
+      const attachment = uiState.callStagedAttachment;
+      if (!text.trim() && !attachment) return;
       input.value = "";
-      await store.sendMessage(callChatForm.getAttribute("data-channel-id"), text);
-      document.querySelector("#call-chat-form input")?.focus();
+      uiState.callStagedAttachment = null;
+      await store.sendMessage(callChatForm.getAttribute("data-channel-id"), text, { attachment });
+      document.querySelector("#call-chat-form input[name=message]")?.focus();
+    });
+  }
+  const callFileInput = document.getElementById("call-chat-file-input");
+  if (callFileInput) {
+    callFileInput.addEventListener("change", async () => {
+      const file = callFileInput.files?.[0];
+      uiState.composerMenu = null;
+      if (!file) return renderApp();
+      const staged = await stageChatFile(file);
+      if (staged) uiState.callStagedAttachment = staged;
+      renderApp();
+      document.querySelector("#call-chat-form input[name=message]")?.focus();
+    });
+  }
+
+  // Poll modal: extra options and publishing
+  const pollForm = document.getElementById("create-poll-form");
+  if (pollForm) {
+    document.getElementById("poll-add-option")?.addEventListener("click", () => {
+      const list = document.getElementById("poll-option-inputs");
+      if (list.children.length >= 10) return showToast("Máximo de 10 opções.");
+      const input = document.createElement("input");
+      input.className = "form-input";
+      input.name = "option";
+      input.maxLength = 80;
+      input.placeholder = `Opção ${list.children.length + 1}`;
+      list.appendChild(input);
+      input.focus();
+    });
+    pollForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(pollForm);
+      const poll = { question: fd.get("question"), options: fd.getAll("option").map((o) => String(o).trim()).filter(Boolean) };
+      const res = await store.sendMessage(pollForm.getAttribute("data-channel-id"), "", { poll });
+      if (!res || res.error) {
+        document.getElementById("poll-error").textContent = res?.error || "Não foi possível publicar a enquete.";
+        return;
+      }
+      uiState.activeModal = null;
+      renderApp();
+      const scroller = document.getElementById("messages-scroller") || document.getElementById("call-chat-scroller");
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
     });
   }
 
@@ -5419,7 +5686,7 @@ async function handleGlobalClick(e) {
   }
 
   const btn = e.target.closest("[data-action]");
-  const clickedInsideFloating = Boolean(e.target.closest(".floating-popout"));
+  const clickedInsideFloating = Boolean(e.target.closest(".floating-popout, .composer-plus-menu"));
 
   // 2. Phase 4: If user clicked outside any open floating popout/menu and did NOT click a trigger button, close all floating menus immediately
   if (!btn && !clickedInsideFloating && hasAnyOpenFloatingMenu()) {
@@ -5442,12 +5709,44 @@ async function handleGlobalClick(e) {
   }
 
   switch (action) {
-    case "focus-call-tile": {
-      const uid = btn.getAttribute("data-user-id");
-      uiState.callFocusUserId = uiState.callFocusUserId === uid ? null : uid;
+    case "toggle-composer-menu": {
+      e.stopPropagation();
+      const target = btn.getAttribute("data-target");
+      const next = uiState.composerMenu === target ? null : target;
+      closeAllFloatingMenus("composerMenu");
+      uiState.composerMenu = next;
       renderApp();
       break;
     }
+    case "open-poll-modal":
+      closeAllFloatingMenus();
+      uiState.activeModal = "create-poll";
+      uiState.modalPayload = { channelId: btn.getAttribute("data-channel-id") };
+      renderApp();
+      document.getElementById("poll-question")?.focus();
+      break;
+    case "vote-poll": {
+      const res = await store.votePoll(btn.getAttribute("data-channel-id"), btn.getAttribute("data-message-id"), btn.getAttribute("data-option-id"));
+      if (!res.ok) showToast(res.error || "Não foi possível votar.");
+      break;
+    }
+    case "clear-call-attachment":
+      uiState.callStagedAttachment = null;
+      renderApp();
+      break;
+    case "focus-call-tile": {
+      const uid = btn.getAttribute("data-user-id");
+      // Clicking the tile that is already big goes back to the grid
+      const isFocused = Boolean(btn.closest(".call-focus"));
+      uiState.callFocusUserId = isFocused ? null : uid;
+      renderApp();
+      break;
+    }
+    case "call-show-grid":
+      e.stopPropagation();
+      uiState.callFocusUserId = null;
+      renderApp();
+      break;
     case "toggle-call-chat":
       uiState.callChatOpen = !uiState.callChatOpen;
       renderApp();
@@ -5520,6 +5819,12 @@ async function handleGlobalClick(e) {
       uiState.profileView = null;
       uiState.settingsOverlay = { type: "user", tab: "profile" };
       renderApp();
+      break;
+    case "set-profile-border-color":
+      await store.updateMyProfile({ profileBorderEnabled: true, profileBorderColor: btn.getAttribute("data-color") });
+      break;
+    case "set-call-tile-color":
+      await store.updateMyProfile({ callTileColor: btn.getAttribute("data-color") });
       break;
     case "set-profile-theme":
       await store.updateMyProfile({
@@ -5728,6 +6033,7 @@ async function handleGlobalClick(e) {
       break;
     case "leave-voice":
       closeAllFloatingMenus();
+      uiState.callFocusUserId = undefined;
       await store.leaveVoiceChannel();
       showToast("Desconectado do canal de voz.");
       break;
@@ -5748,6 +6054,10 @@ async function handleGlobalClick(e) {
       } else {
         await openScreenSharePickerModal();
       }
+      break;
+    case "refresh-screen-sources":
+      uiState.loadingScreenSources = true;
+      await loadScreenSources();
       break;
     case "select-screen-source":
       uiState.selectedScreenSourceId = btn.getAttribute("data-source-id");
@@ -5857,9 +6167,18 @@ async function handleGlobalClick(e) {
     case "load-more-gifs":
       await store.loadMoreGifs();
       break;
-    case "pick-gif-item":
+    case "pick-gif-item": {
+      if (store.getState().gifPicker.target === "guild-banner") {
+        const guild = store.getActiveGuild();
+        store.closeGifPicker();
+        if (!guild) break;
+        const res = await store.updateGuild(guild.id, { bannerUrl: btn.getAttribute("data-gif-large-url") || btn.getAttribute("data-gif-url") });
+        showToast(res.ok ? "GIF aplicado ao banner do servidor!" : res.error || "Não foi possível salvar o banner.");
+        break;
+      }
       store.selectGif(btn.getAttribute("data-gif-url"));
       break;
+    }
     case "open-media-editor": {
       const target = btn.getAttribute("data-target") || "avatar";
       const u = store.getCurrentUser();

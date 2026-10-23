@@ -1942,8 +1942,6 @@ button {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
   gap: 12px;
-  max-height: 360px;
-  overflow-y: auto;
   padding: 4px;
 }
 
@@ -1975,6 +1973,75 @@ button {
   object-fit: cover;
   background-color: #000;
   display: block;
+}
+
+.screen-source-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.screen-source-card {
+  text-align: left;
+  color: inherit;
+}
+
+.screen-source-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.screen-source-group + .screen-source-group {
+  margin-top: 6px;
+}
+
+.screen-source-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--header-primary);
+}
+
+.screen-source-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-source-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.screen-source-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+/* Slot where the long-lived preview <video> is mounted */
+.screenshare-video-slot {
+  width: 100%;
+  background-color: #000;
+}
+
+.screenshare-video-slot > video {
+  width: 100%;
+  height: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  display: block;
+}
+
+.call-tile-stream.screenshare-video-slot > video {
+  max-height: none;
 }
 
 .screenshare-stage {
@@ -4605,6 +4672,372 @@ body.is-resizing {
   align-self: center;
 }
 
-.server-header {
+
+/* ==========================================================================
+   Call tile colour chosen in the profile (--tile-bg) wins over the default
+   ========================================================================== */
+.call-tile[style*="--tile-bg"] {
+  background: var(--tile-bg);
+}
+
+.call-tile-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.call-tile-action svg {
+  width: 14px;
+  height: 14px;
+}
+
+.call-tile-preview {
+  height: 56px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-faint);
+}
+
+.profile-color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.profile-color-row .color-swatch-btn,
+.profile-color-row .color-custom-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+
+/* ==========================================================================
+   Composer "+" menu (attach file / create poll)
+   ========================================================================== */
+.composer-plus {
+  position: relative;
+  display: inline-flex;
+}
+
+.composer-plus.open .composer-plus-btn {
+  color: var(--interactive-active);
+  transform: rotate(45deg);
+}
+
+.composer-plus-btn {
+  transition: transform 0.15s ease;
+}
+
+.composer-plus-menu {
+  position: absolute;
+  left: -6px;
+  bottom: calc(100% + 12px);
+  width: 220px;
+  padding: 6px;
+  border-radius: 8px;
+  background-color: var(--bg-floating);
+  border: 1px solid var(--border-faint);
+  box-shadow: var(--elevation-high);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.composer-plus-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--interactive-normal);
   cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.composer-plus-item:hover {
+  background-color: var(--brand-purple);
+  color: #ffffff;
+}
+
+.composer-plus-item svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.call-chat-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background-color: var(--bg-composer);
+}
+
+.call-chat-box .call-chat-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+  background: transparent;
+}
+
+.call-chat-composer .composer-banner {
+  border-radius: 8px 8px 0 0;
+}
+
+.call-chat-composer .composer-banner + .call-chat-box {
+  border-radius: 0 0 8px 8px;
+}
+
+/* ==========================================================================
+   File attachments and polls
+   ========================================================================== */
+a.message-file-box {
+  color: inherit;
+  text-decoration: none;
+  max-width: 420px;
+  border-radius: 8px;
+  background-color: var(--bg-channels);
+  border: 1px solid var(--border-faint);
+}
+
+a.message-file-box:hover {
+  border-color: var(--brand-purple);
+}
+
+.message-file-icon {
+  display: inline-flex;
+  color: var(--brand-purple);
+}
+
+.message-file-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-file-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--link-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-file-size {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.message-file-download {
+  display: inline-flex;
+  color: var(--interactive-normal);
+}
+
+.poll-card {
+  margin-top: 6px;
+  max-width: 440px;
+  padding: 14px;
+  border-radius: 10px;
+  background-color: var(--bg-channels);
+  border: 1px solid var(--border-faint);
+}
+
+.poll-question {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--header-primary);
+  word-break: break-word;
+}
+
+.poll-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 2px 0 10px 0;
+}
+
+.poll-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.poll-option {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-faint);
+  color: var(--text-normal);
+  text-align: left;
+}
+
+/* Result bar behind the option text */
+.poll-option::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--pct);
+  background-color: rgba(88, 101, 242, 0.22);
+  transition: width 0.25s ease;
+}
+
+.poll-option:hover {
+  border-color: var(--brand-purple);
+}
+
+.poll-option.mine {
+  border-color: var(--brand-purple);
+}
+
+.poll-option.mine::before {
+  background-color: rgba(88, 101, 242, 0.4);
+}
+
+.poll-option > span {
+  position: relative;
+}
+
+.poll-option-check {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--interactive-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+}
+
+.poll-option.mine .poll-option-check {
+  background-color: var(--brand-purple);
+  border-color: var(--brand-purple);
+}
+
+.poll-option-check svg {
+  width: 11px;
+  height: 11px;
+}
+
+.poll-option-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.poll-option-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.poll-footer {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.poll-option-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ==========================================================================
+   Profile border (thin line around card and avatar) + themed member popout
+   ========================================================================== */
+.profile-view-card {
+  border-color: transparent;
+}
+
+.profile-view-card.has-border {
+  border-color: var(--profile-border);
+}
+
+.profile-view-card.has-border .profile-view-avatar {
+  box-shadow: 0 0 0 1.5px var(--profile-border);
+}
+
+.user-popout.has-border {
+  border-color: var(--profile-border);
+}
+
+.user-popout-avatar {
+  margin-top: -42px;
+  display: inline-block;
+  border-radius: 50%;
+  border: 6px solid var(--bg-floating);
+  background-color: var(--bg-floating);
+}
+
+.user-popout.has-border .user-popout-avatar {
+  box-shadow: 0 0 0 1.5px var(--profile-border);
+}
+
+.user-popout-inner {
+  margin-top: 8px;
+  padding: 12px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background-color: var(--bg-channels);
+}
+
+.user-popout.themed {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.34)),
+    linear-gradient(180deg, var(--theme-primary), var(--theme-accent));
+  color: #f2f3f5;
+}
+
+.user-popout.themed .user-popout-avatar {
+  border-color: var(--theme-primary);
+  background-color: var(--theme-primary);
+}
+
+/* Inner sections become translucent so the gradient shows through */
+.user-popout.themed .user-popout-inner {
+  background-color: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.user-popout.themed .user-popout-inner .form-label,
+.user-popout.themed .user-popout-inner [style*="var(--text-muted)"] {
+  color: rgba(255, 255, 255, 0.72) !important;
+}
+
+.user-popout.themed .user-popout-inner [style*="var(--header-primary)"],
+.user-popout.themed .user-popout-inner [style*="var(--text-normal)"] {
+  color: #ffffff !important;
+}
+
+.user-popout.themed .user-popout-inner .form-input {
+  background-color: rgba(0, 0, 0, 0.35);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.user-popout.themed .user-popout-inner [style*="var(--divider-subtle)"] {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+.user-popout.themed .link-btn {
+  color: #c9d1ff;
 }

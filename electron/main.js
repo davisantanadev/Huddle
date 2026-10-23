@@ -18,7 +18,9 @@ const path = require("path");
 const fs = require("fs");
 const { execFile } = require("child_process");
 const { DiscordBackendServer } = require("./backendServer");
+const { registerScreenCaptureHandlers } = require("./screenCapture");
 const { startGameDetector } = require("./gameDetector");
+const { prepareHelper, trimProcesses, isLightTrimAvailable } = require("./memTrimmer");
 
 // productName "Discord" made Electron use %APPDATA%\discord, the official
 // Discord client's folder: both apps then shared settings.json, caches and
@@ -54,9 +56,24 @@ migrateFromSharedDiscordFolder();
 // Phase 7: V8 & Chromium Memory Optimization Flags
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=64 --initial-old-space-size=4 --OptimizeForSize --expose-gc");
 app.commandLine.appendSwitch("disable-site-isolation-trials");
+// Audio and network services run inside the main process instead of two extra
+// utility processes (measured: 105 MB -> 93 MB without trimming)
 app.commandLine.appendSwitch(
   "disable-features",
-  "SpareRendererForSitePerProcess,BackForwardCache,Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion"
+  [
+    "SpareRendererForSitePerProcess",
+    "BackForwardCache",
+    "Translate",
+    "OptimizationHints",
+    "MediaRouter",
+    "CalculateNativeWinOcclusion",
+    "AudioServiceOutOfProcess"
+  ].join(",")
+);
+// Windows Graphics Capture for screens and windows: GPU capture, no GDI copies
+app.commandLine.appendSwitch(
+  "enable-features",
+  ["WebRtcAllowWgcScreenCapturer", "WebRtcAllowWgcWindowCapturer", "NetworkServiceInProcess2", "NetworkServiceInProcess"].join(",")
 );
 app.commandLine.appendSwitch("disk-cache-size", "16777216");
 app.commandLine.appendSwitch("media-cache-size", "8388608");
@@ -71,7 +88,12 @@ function isGpuAccelerationEnabled() {
     return false;
   }
 }
-if (!isGpuAccelerationEnabled()) app.disableHardwareAcceleration();
+if (!isGpuAccelerationEnabled()) {
+  app.disableHardwareAcceleration();
+  // No SwiftShader: the compositor already rasterises on the CPU, and the GPU
+  // process drops from ~12 MB to ~6 MB
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+}
 
 const BUILD_INFO = {
   releaseChannel: "stable",
@@ -94,36 +116,25 @@ let isQuitting = false;
 // Set when Windows starts the app at login (see applyOpenOnStartup)
 let startHidden = process.argv.includes("--start-minimized");
 let backendServer = null;
-let selectedCaptureSource = { sourceId: null, includeAudio: false };
+// True while the user is in a call or sharing the screen (reported by the
+// renderer). Then only the compiled helper is used (no PowerShell CPU spike,
+// which made the stream and audio stutter) and the main-process GC is skipped.
+let mediaSessionActive = false;
+let lastTrimAt = 0;
 
 function trimProcessWorkingSets() {
-  try {
-    if (typeof global.gc === "function") global.gc();
-  } catch (_) {}
-
-  if (process.platform === "win32") {
-    const pids = app
-      .getAppMetrics()
-      .map((m) => m.pid)
-      .filter(Boolean);
-    if (pids.length > 0) {
-      const psScript = `
-Add-Type -Namespace Win32 -Name Mem -MemberDefinition '[DllImport("psapi.dll")] public static extern bool EmptyWorkingSet(IntPtr hProcess);'
-foreach ($id in @(${pids.join(",")})) {
-  try {
-    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
-    if ($p -and $p.Handle) { [void][Win32.Mem]::EmptyWorkingSet($p.Handle) }
-  } catch {}
-}
-`;
-      execFile(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", psScript],
-        { timeout: 3000, windowsHide: true },
-        () => {}
-      );
-    }
+  const light = mediaSessionActive;
+  if (light && !isLightTrimAvailable()) return;
+  if (!light) {
+    try {
+      if (typeof global.gc === "function") global.gc();
+    } catch (_) {}
   }
+  const pids = app
+    .getAppMetrics()
+    .map((mt) => mt.pid)
+    .filter(Boolean);
+  if (trimProcesses(pids, { light })) lastTrimAt = Date.now();
 }
 
 const IDLE_TRIM_DELAY_MS = 15 * 1000;
@@ -150,8 +161,14 @@ function cancelIdleTrim() {
   idleTrimTimer = null;
 }
 
-// Also trim when the app is in front but nobody has touched the PC for a minute
+// While the app is in use: trim at most every ACTIVE_TRIM_INTERVAL_MS, at a
+// moment with no keyboard/mouse input for a few seconds (so it never lands in
+// the middle of typing). Also once after a minute with nobody at the PC.
 const SYSTEM_IDLE_TRIM_SECONDS = 60;
+const ACTIVE_TRIM_INTERVAL_MS = 30 * 1000;
+// Screen capture cycles through fresh frame buffers, so memory climbs faster mid-call
+const MEDIA_TRIM_INTERVAL_MS = 10 * 1000;
+const ACTIVE_TRIM_QUIET_SECONDS = 3;
 let systemIdleTrimmed = false;
 function startSystemIdleWatch() {
   setInterval(() => {
@@ -161,13 +178,18 @@ function startSystemIdleWatch() {
     } catch (_) {
       return;
     }
-    if (idleSeconds < SYSTEM_IDLE_TRIM_SECONDS) {
-      systemIdleTrimmed = false;
-    } else if (!systemIdleTrimmed) {
+    if (idleSeconds >= SYSTEM_IDLE_TRIM_SECONDS && !systemIdleTrimmed) {
       systemIdleTrimmed = true;
       trimProcessWorkingSets();
+      return;
     }
-  }, 20 * 1000).unref();
+    if (idleSeconds < SYSTEM_IDLE_TRIM_SECONDS) systemIdleTrimmed = false;
+    // Keeps going while nobody touches the PC (e.g. watching a stream)
+    const interval = mediaSessionActive ? MEDIA_TRIM_INTERVAL_MS : ACTIVE_TRIM_INTERVAL_MS;
+    if (idleSeconds >= ACTIVE_TRIM_QUIET_SECONDS && Date.now() - lastTrimAt >= interval) {
+      trimProcessWorkingSets();
+    }
+  }, 5 * 1000).unref();
 }
 
 function getSettingsPath() {
@@ -559,66 +581,11 @@ function registerIpcHandlers(backend) {
     }
   });
 
-  ipcMain.handle("DISCORD_DESKTOP_CAPTURER_GET_SOURCES", async (_e, options = {}) => {
-    try {
-      const thumbSize = options.thumbnailSize || { width: 320, height: 180 };
-      let winThumbDataUrl = "";
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        const img = await mainWindow.webContents.capturePage();
-        winThumbDataUrl = img.resize({ width: thumbSize.width || 320, height: thumbSize.height || 180 }).toDataURL();
-      }
-      const displays = screen.getAllDisplays();
-      const result = displays.map((d, idx) => ({
-        id: `screen:${idx}:0`,
-        name: `Entire Screen (${d.size.width}×${d.size.height})`,
-        displayId: String(d.id),
-        isScreen: true,
-        thumbnail: winThumbDataUrl,
-        thumbnailDataUrl: winThumbDataUrl
-      }));
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        result.push({
-          id: `window:${mainWindow.id}:0`,
-          name: mainWindow.getTitle() || "Discord",
-          displayId: "",
-          isScreen: false,
-          thumbnail: winThumbDataUrl,
-          thumbnailDataUrl: winThumbDataUrl
-        });
-      }
-      return result;
-    } catch (err) {
-      return [];
-    }
-  });
+  // Real capture: lists every monitor and open window, answers getDisplayMedia()
+  registerScreenCaptureHandlers(ipcMain, session.defaultSession);
 
-  ipcMain.handle("DISCORD_DESKTOP_CAPTURER_SELECT_SOURCE", (_e, opts = {}) => {
-    const sourceId = typeof opts === "string" ? opts : opts.sourceId;
-    const includeAudio = typeof opts === "object" && opts ? Boolean(opts.includeAudio) : false;
-    selectedCaptureSource = {
-      sourceId: sourceId || null,
-      includeAudio
-    };
-    return { ok: true, selectedCaptureSource };
-  });
-
-  ipcMain.handle("DISCORD_DESKTOP_CAPTURE_FRAME", async (_e, options = {}) => {
-    try {
-      if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
-      const width = Number(options.width) || 640;
-      const height = Number(options.height) || 360;
-      const img = await mainWindow.webContents.capturePage();
-      const resized = img.resize({ width, height });
-      const jpegBuf = resized.toJPEG(72);
-      return {
-        ok: true,
-        frameDataUrl: `data:image/jpeg;base64,${jpegBuf.toString("base64")}`,
-        width,
-        height
-      };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
+  ipcMain.on("DISCORD_MEDIA_SESSION", (_e, active) => {
+    mediaSessionActive = Boolean(active);
   });
 
   ipcMain.handle("DISCORD_MEMORY_OPTIMIZE", async () => {
@@ -898,6 +865,8 @@ app.whenReady().then(async () => {
   setupDisplayMediaHandler();
   registerIpcHandlers(backendServer);
   setupSystemTray();
+  // Compiles the tiny memory helper the first time (a second or two, in the background)
+  prepareHelper(app.getPath("userData")).catch(() => null);
   startSystemIdleWatch();
   // Running games feed the profile's "Atividade" tab (the renderer reports them for the signed-in account)
   startGameDetector((activity) => webContentsSend("GAME_ACTIVITY", activity));

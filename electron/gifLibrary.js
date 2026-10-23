@@ -157,6 +157,8 @@ function mapGiphyGif(g, category) {
     "fixed_width"
   ]);
   const previewUrl = pickPreviewUrl(images) || fullUrl;
+  // Full-size WebP keeps every frame at a fraction of the original GIF's size
+  const largeUrl = (images.original && images.original.webp) || fullUrl;
   const dims = images.fixed_width || images.original || {};
   return {
     id: `giphy_${g.id}`,
@@ -164,6 +166,7 @@ function mapGiphyGif(g, category) {
     category,
     url: fullUrl,
     previewUrl,
+    largeUrl,
     width: Number(dims.width) || 200,
     height: Number(dims.height) || 200,
     source: "GIPHY"

@@ -184,6 +184,11 @@ export const NativeBridge = {
     return defaultValue;
   },
 
+  // While in a call or sharing, the main process must not page our memory out
+  setMediaSessionActive(active) {
+    if (this.isElectron()) window.DiscordNative.desktopCapture?.setMediaSessionActive?.(active);
+  },
+
   async purgeMemory() {
     if (this.isElectron() && window.DiscordNative.processUtils?.purgeMemory) {
       return window.DiscordNative.processUtils.purgeMemory();
@@ -776,32 +781,31 @@ class VoiceActivityDetector {
 export const VAD = new VoiceActivityDetector();
 
 // ==========================================================================
-// Phase 9: Real End-to-End Screen Share & WebRTC Media Manager
+// Phase 9: Screen Share
 // ==========================================================================
+// Real screen capture: the main process answers getDisplayMedia() with the
+// source picked in our own picker (electron/screenCapture.js), so frames come
+// straight from the GPU as a live MediaStream. The local preview plays that
+// stream in one long-lived <video> (moved into the page on each render rather
+// than recreated), and viewers get small, throttled JPEG snapshots.
+const VIEWER_FRAME_INTERVAL_MS = 500; // ~2 snapshots/s for people watching
+const VIEWER_FRAME_WIDTH = 640;
+
 class ScreenShareManager {
   constructor() {
     this.localStream = null;
-    this.activeChannelId = null;
-    this.activeSourceName = null;
-    this.activeFps = 15;
-    this.activeResolution = "720p";
-    this.frameTimer = null;
-    this.captureCanvas = null;
-    this.captureVideo = null;
-    this.peerConnections = new Map();
-    this.remoteStreams = new Map();
+    this.previewVideo = null;
+    this.snapshotCanvas = null;
+    this.snapshotTimer = null;
+    this.fpsTimer = null;
+    this.framesThisSecond = 0;
     this.onTrackEnded = null;
     this.onFrame = null;
-    this.framesSent = 0;
-    this.framesCaptured = 0;
-    this.stats = {
-      fps: 15,
-      capturedFps: 15,
-      sentFps: 15,
-      bitrateKbps: 750,
-      droppedFrames: 0,
-      resolution: "1280x720"
-    };
+    this.stats = this.emptyStats();
+  }
+
+  emptyStats() {
+    return { requestedFps: 0, capturedFps: 0, sentFps: 0, resolution: "", width: 0, height: 0 };
   }
 
   getStream() {
@@ -812,145 +816,136 @@ class ScreenShareManager {
     return { ...this.stats };
   }
 
+  // The one <video> element showing our own stream; the UI mounts it where needed
+  getPreviewElement() {
+    return this.previewVideo;
+  }
+
   async getSources() {
     return this.getAvailableSources();
   }
 
+  // Every monitor and every open app window, with thumbnail and app icon
   async getAvailableSources() {
     if (NativeBridge.isElectron() && window.DiscordNative.desktopCapture?.getSources) {
-      const sources = await window.DiscordNative.desktopCapture.getSources({
-        types: ["screen", "window"],
-        thumbnailSize: { width: 320, height: 180 }
-      });
-      if (Array.isArray(sources) && sources.length > 0) {
-        return sources.map((s) => ({
-          ...s,
-          thumbnail: s.thumbnail || s.thumbnailDataUrl || ""
-        }));
-      }
+      const sources = await window.DiscordNative.desktopCapture.getSources({ thumbnailSize: { width: 320, height: 180 } });
+      return Array.isArray(sources) ? sources : [];
     }
-    return [
-      {
-        id: "screen:0:0",
-        name: "Entire Screen (Primary Display 1920×1080)",
-        isScreen: true,
-        thumbnail: "",
-        thumbnailDataUrl: null
-      },
-      {
-        id: "window:discord:0",
-        name: "Discord Desktop — Application Window",
-        isScreen: false,
-        thumbnail: "",
-        thumbnailDataUrl: null
-      }
-    ];
+    return [];
   }
 
-  async startCapture(sourceId, { width = 1280, height = 720, frameRate = 15, includeAudio = false } = {}) {
+  async startCapture(sourceId, { width = 1280, height = 720, frameRate = 30, includeAudio = false } = {}) {
     this.stopCapture();
-
-    let stream = null;
+    const fps = Number(frameRate) || 30;
     try {
-      this.activeFps = Number(frameRate) || 15;
-      this.activeResolution = width >= 1920 ? "1080p" : "720p";
-      this.stats = {
-        fps: this.activeFps,
-        capturedFps: this.activeFps,
-        sentFps: this.activeFps,
-        bitrateKbps: Math.round(this.activeFps * (width >= 1920 ? 80 : 45)),
-        droppedFrames: 0,
-        resolution: `${width}x${height}`
-      };
-
       if (NativeBridge.isElectron() && window.DiscordNative.desktopCapture?.selectSource) {
         await window.DiscordNative.desktopCapture.selectSource(sourceId, includeAudio);
       }
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width: { max: width },
+          height: { max: height },
+          frameRate: { ideal: fps, max: fps }
+        },
+        audio: Boolean(includeAudio)
+      });
 
-      this.captureCanvas = document.createElement("canvas");
-      this.captureCanvas.width = 640;
-      this.captureCanvas.height = 360;
-
-      // Capture first real compositor frame onto this.captureCanvas
-      const firstFrame = await this.captureStreamFrame(null, sourceId || "screen:0:0");
-
-      if (typeof this.captureCanvas.captureStream === "function") {
-        stream = this.captureCanvas.captureStream(this.activeFps);
-      }
-
-      if (!stream && !NativeBridge.isElectron() && navigator.mediaDevices?.getDisplayMedia) {
-        try {
-          stream = await navigator.mediaDevices.getDisplayMedia({
-            video: {
-              width: { ideal: width, max: 1920 },
-              height: { ideal: height, max: 1080 },
-              frameRate: { ideal: this.activeFps, max: 60 }
-            },
-            audio: Boolean(includeAudio)
-          });
-        } catch (err) {
-          if (err && (err.name === "NotAllowedError" || err.name === "AbortError")) {
-            return { ok: false, canceled: true, error: "Permissão de compartilhamento de tela negada ou cancelada." };
-          }
-        }
-      }
+      const [track] = stream.getVideoTracks();
+      if (!track) throw new Error("A fonte escolhida não entregou vídeo.");
+      track.contentHint = "motion";
+      track.onended = () => {
+        // The shared window was closed (or the screen disconnected)
+        this.stopCapture();
+        if (typeof this.onTrackEnded === "function") this.onTrackEnded();
+      };
 
       this.localStream = stream;
+      const settings = track.getSettings();
+      this.stats = {
+        requestedFps: fps,
+        capturedFps: 0,
+        sentFps: Math.round(1000 / VIEWER_FRAME_INTERVAL_MS),
+        width: settings.width || 0,
+        height: settings.height || 0,
+        resolution: settings.width ? `${settings.width}x${settings.height}` : ""
+      };
 
-      if (stream) {
-        for (const track of stream.getVideoTracks()) {
-          track.onended = () => {
-            this.stopCapture();
-            if (typeof this.onTrackEnded === "function") {
-              this.onTrackEnded();
-            }
-          };
-        }
-      }
+      const video = document.createElement("video");
+      video.id = "local-screenshare-video";
+      video.className = "screenshare-video";
+      video.setAttribute("data-testid", "screenshare-video");
+      video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      this.previewVideo = video;
+      await video.play().catch(() => {});
 
-      const rpcPushInterval = this.activeFps >= 60 ? 300 : 700;
-      this.frameTimer = setInterval(async () => {
-        if (!this.localStream) return;
-        this.framesCaptured += Math.round(this.activeFps * (rpcPushInterval / 1000));
-        const frameDataUrl = await this.captureStreamFrame(this.localStream, sourceId);
-        if (frameDataUrl && typeof this.onFrame === "function") {
-          this.framesSent++;
-          this.onFrame(frameDataUrl);
-        }
-      }, rpcPushInterval);
-
-      // Emit first frame immediately
-      if (firstFrame && typeof this.onFrame === "function") {
-        setTimeout(() => {
-          if (this.localStream && typeof this.onFrame === "function") {
-            this.onFrame(firstFrame);
-          }
-        }, 40);
-      }
-
+      this.startFpsMeter(video);
+      this.startViewerSnapshots(video);
       return { ok: true, stream, stats: this.getStats() };
     } catch (err) {
       this.stopCapture();
-      return { ok: false, error: err.message || "Falha ao capturar tela." };
+      if (err && (err.name === "NotAllowedError" || err.name === "AbortError")) {
+        return { ok: false, canceled: true, error: "A janela escolhida não está mais disponível. Escolha outra." };
+      }
+      return { ok: false, error: err?.message || "Falha ao capturar a tela." };
     }
   }
 
+  // Counts frames actually delivered by the capture, once per second
+  startFpsMeter(video) {
+    if (typeof video.requestVideoFrameCallback !== "function") return;
+    const onFrame = () => {
+      if (this.previewVideo !== video) return;
+      this.framesThisSecond++;
+      video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+    this.fpsTimer = setInterval(() => {
+      this.stats.capturedFps = this.framesThisSecond;
+      this.framesThisSecond = 0;
+      const s = this.localStream?.getVideoTracks()[0]?.getSettings();
+      if (s?.width) {
+        this.stats.width = s.width;
+        this.stats.height = s.height;
+        this.stats.resolution = `${s.width}x${s.height}`;
+      }
+    }, 1000);
+  }
+
+  // Small JPEG snapshots for the other people in the call (only when someone listens)
+  startViewerSnapshots(video) {
+    this.snapshotCanvas = document.createElement("canvas");
+    const ctx = this.snapshotCanvas.getContext("2d", { alpha: false });
+    this.snapshotTimer = setInterval(() => {
+      if (typeof this.onFrame !== "function" || !video.videoWidth) return;
+      const scale = Math.min(1, VIEWER_FRAME_WIDTH / video.videoWidth);
+      const w = Math.round(video.videoWidth * scale);
+      const h = Math.round(video.videoHeight * scale);
+      if (this.snapshotCanvas.width !== w) this.snapshotCanvas.width = w;
+      if (this.snapshotCanvas.height !== h) this.snapshotCanvas.height = h;
+      ctx.drawImage(video, 0, 0, w, h);
+      this.onFrame(this.snapshotCanvas.toDataURL("image/jpeg", 0.7));
+    }, VIEWER_FRAME_INTERVAL_MS);
+  }
+
   stopCapture() {
-    if (this.frameTimer) {
-      clearInterval(this.frameTimer);
-      this.frameTimer = null;
-    }
+    clearInterval(this.snapshotTimer);
+    clearInterval(this.fpsTimer);
+    this.snapshotTimer = null;
+    this.fpsTimer = null;
+    this.framesThisSecond = 0;
+    this.snapshotCanvas = null;
 
-    if (this.captureVideo) {
+    if (this.previewVideo) {
       try {
-        this.captureVideo.pause();
-        this.captureVideo.srcObject = null;
-        this.captureVideo.load();
+        this.previewVideo.pause();
+        this.previewVideo.srcObject = null;
+        this.previewVideo.remove();
       } catch (_) {}
-      this.captureVideo = null;
+      this.previewVideo = null;
     }
-    this.captureCanvas = null;
-
     if (this.localStream) {
       for (const track of this.localStream.getTracks()) {
         try {
@@ -960,80 +955,12 @@ class ScreenShareManager {
       }
       this.localStream = null;
     }
-
-    for (const pc of this.peerConnections.values()) {
-      try {
-        pc.close();
-      } catch (_) {}
-    }
-    this.peerConnections.clear();
-    this.remoteStreams.clear();
-  }
-
-  async captureStreamFrame(_stream, label = "Screen") {
-    try {
-      if (!this.captureCanvas) {
-        this.captureCanvas = document.createElement("canvas");
-        this.captureCanvas.width = 640;
-        this.captureCanvas.height = 360;
-      }
-      const ctx = this.captureCanvas.getContext("2d");
-
-      if (NativeBridge.isElectron() && window.DiscordNative?.desktopCapture?.captureFrame) {
-        const res = await window.DiscordNative.desktopCapture.captureFrame({
-          sourceId: label,
-          width: 640,
-          height: 360
-        });
-        if (res && res.ok && res.frameDataUrl) {
-          await new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => {
-              if (this.captureCanvas) {
-                ctx.drawImage(img, 0, 0, this.captureCanvas.width, this.captureCanvas.height);
-              }
-              resolve();
-            };
-            img.onerror = () => resolve();
-            img.src = res.frameDataUrl;
-          });
-          return res.frameDataUrl;
-        }
-      }
-
-      ctx.fillStyle = "#111214";
-      ctx.fillRect(0, 0, 640, 360);
-      ctx.fillStyle = "#5865f2";
-      ctx.fillRect(20, 20, 600, 44);
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 16px sans-serif";
-      ctx.fillText(`LIVE STREAM • ${label}`, 34, 48);
-      ctx.fillStyle = "#2b2d31";
-      ctx.fillRect(20, 80, 600, 260);
-      ctx.fillStyle = "#23a55a";
-      ctx.font = "14px monospace";
-      ctx.fillText(`Compositor Frame Stream • ${new Date().toLocaleTimeString()}`, 34, 118);
-      return this.captureCanvas.toDataURL("image/jpeg", 0.72);
-    } catch (_) {
-      return null;
-    }
+    this.stats = this.emptyStats();
   }
 
   getActiveTrackCount() {
     if (!this.localStream) return 0;
     return this.localStream.getTracks().filter((t) => t.readyState === "live").length;
-  }
-
-  async stopSharing(actorId, notifyBackend = true) {
-    const chId = this.activeChannelId;
-    this.stopCapture();
-    this.activeChannelId = null;
-    this.activeSourceName = null;
-    if (notifyBackend && actorId) {
-      await NativeBridge.rpc("stopScreenShare", { actorId, channelId: chId }).catch(() => {});
-    }
-    await NativeBridge.purgeMemory().catch(() => {});
-    return { ok: true };
   }
 }
 

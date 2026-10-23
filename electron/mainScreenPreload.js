@@ -64,7 +64,7 @@ const DiscordNative = {
     getSources: (options) => ipcRenderer.invoke("DISCORD_DESKTOP_CAPTURER_GET_SOURCES", options),
     selectSource: (sourceId, includeAudio) =>
       ipcRenderer.invoke("DISCORD_DESKTOP_CAPTURER_SELECT_SOURCE", { sourceId, includeAudio }),
-    captureFrame: (options) => ipcRenderer.invoke("DISCORD_DESKTOP_CAPTURE_FRAME", options)
+    setMediaSessionActive: (active) => ipcRenderer.send("DISCORD_MEDIA_SESSION", Boolean(active))
   },
   startup: {
     getOpenOnStartup: () => ipcRenderer.sendSync("DISCORD_APP_GET_OPEN_ON_STARTUP_SYNC"),
