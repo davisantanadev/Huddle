@@ -137,15 +137,17 @@ let remoteServerUrl = null;
 let mediaSessionActive = false;
 let lastTrimAt = 0;
 
-// Emptying the working set makes every page fault back in on the next frame,
-// which showed up as stutter in GIFs, video and screen shares. So it only runs
-// while the app is out of sight (tray/minimized) and no call is going on.
+// Emptying the working set keeps the "Memory" column of Task Manager low
+// (under 50 MB), but the next frames fault those pages back in, a small
+// hitch. So: never during a call or screen share (voice/video stay smooth);
+// with the window open, only at quiet moments (see startSystemIdleWatch);
+// minimized or in the tray, right away and periodically.
 function appInView() {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized());
 }
 
 function trimProcessWorkingSets({ force = false } = {}) {
-  if (!force && (mediaSessionActive || appInView())) return;
+  if (!force && mediaSessionActive) return;
   const light = mediaSessionActive;
   if (light && !isLightTrimAvailable()) return;
   if (!light) {
@@ -184,24 +186,25 @@ function cancelIdleTrim() {
   idleTrimTimer = null;
 }
 
-// Also once after a few minutes with nobody at the PC (and no call going on)
-const SYSTEM_IDLE_TRIM_SECONDS = 5 * 60;
-let systemIdleTrimmed = false;
+// Window open: trim at most every IN_VIEW_TRIM_INTERVAL_MS, only after a few
+// seconds without keyboard/mouse input (never in the middle of typing or
+// scrolling). Out of sight: every HIDDEN_TRIM_INTERVAL_MS.
+const IN_VIEW_TRIM_INTERVAL_MS = 20 * 1000;
+const HIDDEN_TRIM_INTERVAL_MS = 60 * 1000;
+const QUIET_SECONDS = 3;
 function startSystemIdleWatch() {
   setInterval(() => {
+    if (mediaSessionActive) return;
     let idleSeconds = 0;
     try {
       idleSeconds = powerMonitor.getSystemIdleTime();
     } catch (_) {
       return;
     }
-    if (idleSeconds >= SYSTEM_IDLE_TRIM_SECONDS && !systemIdleTrimmed && !mediaSessionActive) {
-      systemIdleTrimmed = true;
-      trimProcessWorkingSets({ force: true });
-      return;
-    }
-    if (idleSeconds < SYSTEM_IDLE_TRIM_SECONDS) systemIdleTrimmed = false;
-  }, 15 * 1000).unref();
+    const inView = appInView();
+    if (inView && idleSeconds < QUIET_SECONDS) return;
+    if (Date.now() - lastTrimAt >= (inView ? IN_VIEW_TRIM_INTERVAL_MS : HIDDEN_TRIM_INTERVAL_MS)) trimProcessWorkingSets();
+  }, 4 * 1000).unref();
 }
 
 function getSettingsPath() {
@@ -486,7 +489,7 @@ function launchMainWindow(showImmediately = false) {
   // after it loses focus, then periodically until it is focused again
   mainWindow.on("blur", scheduleIdleTrim);
   mainWindow.on("hide", scheduleIdleTrim);
-  mainWindow.on("minimize", scheduleIdleTrim);
+  mainWindow.on("minimize", () => setTimeout(() => trimProcessWorkingSets(), 300));
   mainWindow.on("focus", cancelIdleTrim);
   mainWindow.on("show", () => {
     if (mainWindow.isFocused()) cancelIdleTrim();
@@ -635,7 +638,10 @@ function registerIpcHandlers(backend) {
   registerScreenCaptureHandlers(ipcMain, session.defaultSession);
 
   ipcMain.on("DISCORD_MEDIA_SESSION", (_e, active) => {
+    const ended = mediaSessionActive && !active;
     mediaSessionActive = Boolean(active);
+    // Call/share over: give back what it used
+    if (ended) setTimeout(() => trimProcessWorkingSets(), 2000);
   });
 
   ipcMain.handle("DISCORD_MEMORY_OPTIMIZE", async () => {
