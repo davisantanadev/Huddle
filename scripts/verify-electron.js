@@ -238,6 +238,14 @@ async function setupTestEnvironment() {
       return { ok: false, error: err.message };
     }
   });
+  // Saved login lives in a main-process file in the app; kept in memory here
+  let verifyAuthStore = null;
+  ipcMain.on("DISCORD_AUTH_STORE_GET_SYNC", (e) => { e.returnValue = verifyAuthStore; });
+  ipcMain.on("DISCORD_AUTH_STORE_SET_SYNC", (e, data) => { verifyAuthStore = data; e.returnValue = true; });
+  ipcMain.on("DISCORD_APP_GET_OPEN_ON_STARTUP_SYNC", (e) => { e.returnValue = false; });
+  ipcMain.on("DISCORD_APP_SET_OPEN_ON_STARTUP_SYNC", (e) => { e.returnValue = false; });
+  ipcMain.on("DISCORD_GPU_SETTINGS_SET_ENABLE_HWACCEL", () => {});
+  ipcMain.handle("DISCORD_MEMORY_GET_TASK_MANAGER_MB", () => null);
   ipcMain.on("DISCORD_SETTINGS_GET_SYNC", (e, _k, def) => { e.returnValue = def; });
   ipcMain.on("DISCORD_GPU_SETTINGS_GET_ENABLE_HWACCEL_SYNC", (e) => { e.returnValue = true; });
   ipcMain.handle("DISCORD_SETTINGS_GET", (_e, _k, def) => def);
@@ -1381,9 +1389,10 @@ async function runVerification() {
     const railIcon = document.querySelector('[data-guild-context="' + guild.id + '"] img.guild-icon-img');
     const railIconRect = railIcon ? railIcon.getBoundingClientRect() : { width: 0, height: 0 };
     const railIconOk = Boolean(railIcon) && railIcon.getAttribute("src").endsWith(".png") && railIconRect.width === 48 && railIconRect.height === 48;
-    const sidebarBanner = document.querySelector('[data-testid="guild-sidebar-banner"] img');
+    // The banner fills the server header (name, invite and settings sit on top of it)
+    const sidebarBanner = document.querySelector('[data-testid="server-header"] img[data-testid="guild-sidebar-banner"]');
     const bannerRect = sidebarBanner ? sidebarBanner.getBoundingClientRect() : { width: 0, height: 0 };
-    const sidebarBannerOk = Boolean(sidebarBanner) && sidebarBanner.getAttribute("src").endsWith(".gif") && bannerRect.height === 120 && bannerRect.width > 200;
+    const sidebarBannerOk = Boolean(sidebarBanner) && sidebarBanner.getAttribute("src").endsWith(".gif") && bannerRect.height === 136 && bannerRect.width > 200;
 
     // Someone without permission cannot edit the server
     const mariaId = Object.values(store.getState().users).find((u) => u.username === "maria_real").id;

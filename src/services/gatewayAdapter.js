@@ -31,6 +31,27 @@ export const NativeBridge = {
     return {};
   },
 
+  // Saved login (session + accounts on this device). In Electron it lives in a
+  // file owned by the main process; in a plain browser it falls back to localStorage.
+  readAuthStore() {
+    try {
+      if (this.isElectron() && window.DiscordNative.authStore) return window.DiscordNative.authStore.get();
+      return JSON.parse(localStorage.getItem("eco_auth_store_v1") || "null");
+    } catch (_) {
+      return null;
+    }
+  },
+
+  writeAuthStore(data) {
+    try {
+      if (this.isElectron() && window.DiscordNative.authStore) return window.DiscordNative.authStore.set(data);
+      localStorage.setItem("eco_auth_store_v1", JSON.stringify(data));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+
   // Session token of the logged-in account; sent with every RPC and the event stream
   sessionToken: null,
 
@@ -129,6 +150,25 @@ export const NativeBridge = {
     if (this.isElectron() && window.DiscordNative.settings) {
       window.DiscordNative.settings.set(key, value);
     }
+  },
+
+  getGpuAcceleration() {
+    if (this.isElectron() && window.DiscordNative.gpuSettings) return window.DiscordNative.gpuSettings.getEnableHardwareAcceleration();
+    return false;
+  },
+
+  setGpuAcceleration(enabled) {
+    if (this.isElectron() && window.DiscordNative.gpuSettings) window.DiscordNative.gpuSettings.setEnableHardwareAcceleration(Boolean(enabled));
+  },
+
+  getOpenOnStartup() {
+    if (this.isElectron() && window.DiscordNative.startup) return window.DiscordNative.startup.getOpenOnStartup();
+    return false;
+  },
+
+  setOpenOnStartup(enabled) {
+    if (this.isElectron() && window.DiscordNative.startup) return window.DiscordNative.startup.setOpenOnStartup(enabled);
+    return false;
   },
 
   updateBackgroundColor(color) {

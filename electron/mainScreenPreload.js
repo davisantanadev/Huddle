@@ -66,6 +66,14 @@ const DiscordNative = {
       ipcRenderer.invoke("DISCORD_DESKTOP_CAPTURER_SELECT_SOURCE", { sourceId, includeAudio }),
     captureFrame: (options) => ipcRenderer.invoke("DISCORD_DESKTOP_CAPTURE_FRAME", options)
   },
+  startup: {
+    getOpenOnStartup: () => ipcRenderer.sendSync("DISCORD_APP_GET_OPEN_ON_STARTUP_SYNC"),
+    setOpenOnStartup: (enabled) => ipcRenderer.sendSync("DISCORD_APP_SET_OPEN_ON_STARTUP_SYNC", Boolean(enabled))
+  },
+  authStore: {
+    get: () => ipcRenderer.sendSync("DISCORD_AUTH_STORE_GET_SYNC"),
+    set: (data) => ipcRenderer.sendSync("DISCORD_AUTH_STORE_SET_SYNC", data)
+  },
   backend: {
     getInfo: () => ipcRenderer.sendSync("DISCORD_BACKEND_GET_INFO_SYNC"),
     getInfoSync: () => ipcRenderer.sendSync("DISCORD_BACKEND_GET_INFO_SYNC"),
@@ -79,6 +87,7 @@ const DiscordNative = {
       } catch (_) {}
       return ipcRenderer.invoke("DISCORD_MEMORY_OPTIMIZE");
     },
+    getTaskManagerMemoryMB: () => ipcRenderer.invoke("DISCORD_MEMORY_GET_TASK_MANAGER_MB"),
     getMemoryStats: async () => {
       const procMem = await process.getProcessMemoryInfo();
       const mainStats = await ipcRenderer.invoke("DISCORD_MEMORY_GET_STATS");

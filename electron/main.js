@@ -11,19 +11,22 @@ const {
   screen,
   shell,
   desktopCapturer,
-  session
+  session,
+  powerMonitor
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { execFile } = require("child_process");
 const { DiscordBackendServer } = require("./backendServer");
+const { startGameDetector } = require("./gameDetector");
 
 // productName "Discord" made Electron use %APPDATA%\discord, the official
 // Discord client's folder: both apps then shared settings.json, caches and
 // Local Storage. Use our own folder, copying (never moving) the data the app
 // created in the shared one.
 const SHARED_DISCORD_DATA_DIR = path.join(app.getPath("appData"), "discord");
-const APP_DATA_DIR = path.join(app.getPath("appData"), "Eco");
+// ECO_USER_DATA_DIR lets tests run against a throwaway profile
+const APP_DATA_DIR = process.env.ECO_USER_DATA_DIR || path.join(app.getPath("appData"), "Eco");
 const DB_FILE = "discord_platform_v2.sqlite";
 
 function migrateFromSharedDiscordFolder() {
@@ -57,6 +60,18 @@ app.commandLine.appendSwitch(
 );
 app.commandLine.appendSwitch("disk-cache-size", "16777216");
 app.commandLine.appendSwitch("media-cache-size", "8388608");
+// GPU acceleration costs ~100 MB of private memory (measured: 260 MB -> 154 MB
+// without it), so it is off unless enabled in Configurações > Windows & Memória.
+// Read straight from settings.json: it must be decided before the app is ready.
+function isGpuAccelerationEnabled() {
+  try {
+    const p = path.join(APP_DATA_DIR, "settings.json");
+    return Boolean(JSON.parse(fs.readFileSync(p, "utf8")).GPU_ACCELERATION);
+  } catch (_) {
+    return false;
+  }
+}
+if (!isGpuAccelerationEnabled()) app.disableHardwareAcceleration();
 
 const BUILD_INFO = {
   releaseChannel: "stable",
@@ -76,6 +91,8 @@ let splashWindow = null;
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+// Set when Windows starts the app at login (see applyOpenOnStartup)
+let startHidden = process.argv.includes("--start-minimized");
 let backendServer = null;
 let selectedCaptureSource = { sourceId: null, includeAudio: false };
 
@@ -109,8 +126,82 @@ foreach ($id in @(${pids.join(",")})) {
   }
 }
 
+const IDLE_TRIM_DELAY_MS = 15 * 1000;
+const IDLE_TRIM_INTERVAL_MS = 90 * 1000;
+let idleTrimTimer = null;
+
+function scheduleIdleTrim() {
+  if (idleTrimTimer) return;
+  idleTrimTimer = setTimeout(function trimWhileIdle() {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFocused()) {
+      idleTrimTimer = null;
+      return;
+    }
+    try {
+      mainWindow.webContents.session.clearCodeCaches({}).catch(() => {});
+    } catch (_) {}
+    trimProcessWorkingSets();
+    idleTrimTimer = setTimeout(trimWhileIdle, IDLE_TRIM_INTERVAL_MS);
+  }, IDLE_TRIM_DELAY_MS);
+}
+
+function cancelIdleTrim() {
+  clearTimeout(idleTrimTimer);
+  idleTrimTimer = null;
+}
+
+// Also trim when the app is in front but nobody has touched the PC for a minute
+const SYSTEM_IDLE_TRIM_SECONDS = 60;
+let systemIdleTrimmed = false;
+function startSystemIdleWatch() {
+  setInterval(() => {
+    let idleSeconds = 0;
+    try {
+      idleSeconds = powerMonitor.getSystemIdleTime();
+    } catch (_) {
+      return;
+    }
+    if (idleSeconds < SYSTEM_IDLE_TRIM_SECONDS) {
+      systemIdleTrimmed = false;
+    } else if (!systemIdleTrimmed) {
+      systemIdleTrimmed = true;
+      trimProcessWorkingSets();
+    }
+  }, 20 * 1000).unref();
+}
+
 function getSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
+}
+
+// Saved login (session token + accounts used on this device). Kept by the main
+// process and written synchronously, so it survives tray exits, crashes and
+// Task Manager kills. Plain JSON in the user's profile folder: safeStorage was
+// tried, but its key lives in Chromium's lazily written "Local State" file and
+// is lost on a forced kill, which made the saved login unreadable.
+function getAuthStorePath() {
+  return path.join(app.getPath("userData"), "auth-store.json");
+}
+
+function readAuthStore() {
+  try {
+    const data = JSON.parse(fs.readFileSync(getAuthStorePath(), "utf8"));
+    return data && typeof data === "object" ? data : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeAuthStore(data) {
+  try {
+    const target = getAuthStorePath();
+    fs.writeFileSync(target + ".tmp", JSON.stringify(data || {}), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(target + ".tmp", target);
+    return true;
+  } catch (e) {
+    console.error("Failed to save auth store:", e);
+    return false;
+  }
 }
 
 function getUserDataCachePath() {
@@ -156,6 +247,31 @@ function setSetting(key, value) {
   if (!appSettings) appSettings = loadSettings();
   appSettings[key] = value;
   saveSettings();
+}
+
+// "Iniciar com o Windows": registers the app in the user's login items.
+// In development (electron .) the app folder has to be passed to electron.exe.
+function loginItemOptions() {
+  const args = app.isPackaged ? ["--start-minimized"] : [app.getAppPath(), "--start-minimized"];
+  return { path: process.execPath, args };
+}
+
+function isOpenOnStartupEnabled() {
+  try {
+    return Boolean(app.getLoginItemSettings(loginItemOptions()).openAtLogin);
+  } catch (_) {
+    return Boolean(getSetting("OPEN_ON_STARTUP", false));
+  }
+}
+
+function applyOpenOnStartup(enabled) {
+  try {
+    app.setLoginItemSettings({ openAtLogin: Boolean(enabled), ...loginItemOptions() });
+  } catch (e) {
+    console.error("Failed to update login item:", e);
+  }
+  setSetting("OPEN_ON_STARTUP", Boolean(enabled));
+  return isOpenOnStartupEnabled();
 }
 
 function getBackgroundColor() {
@@ -337,6 +453,16 @@ function launchMainWindow(showImmediately = false) {
   mainWindow.on("maximize", () => webContentsSend("WINDOW_MAXIMIZED_CHANGE", true));
   mainWindow.on("unmaximize", () => webContentsSend("WINDOW_MAXIMIZED_CHANGE", false));
 
+  // Return memory to Windows while the app is in the background: once shortly
+  // after it loses focus, then periodically until it is focused again
+  mainWindow.on("blur", scheduleIdleTrim);
+  mainWindow.on("hide", scheduleIdleTrim);
+  mainWindow.on("minimize", scheduleIdleTrim);
+  mainWindow.on("focus", cancelIdleTrim);
+  mainWindow.on("show", () => {
+    if (mainWindow.isFocused()) cancelIdleTrim();
+  });
+
   mainWindow.on("close", (e) => {
     saveWindowConfig(mainWindow);
     if (!isQuitting && getSetting("MINIMIZE_TO_TRAY", true) && tray && !process.argv.includes("--no-tray-hide")) {
@@ -363,6 +489,12 @@ function launchMainWindow(showImmediately = false) {
     }
     if (getSetting("IS_MAXIMIZED", false)) {
       mainWindow.maximize();
+    }
+    // Opened by Windows at login: stay in the tray until the user opens it
+    if (startHidden && tray) {
+      startHidden = false;
+      setTimeout(() => trimProcessWorkingSets(), 400);
+      return;
     }
     mainWindow.show();
     mainWindow.focus();
@@ -401,6 +533,14 @@ function launchSplashWindow() {
 }
 
 function registerIpcHandlers(backend) {
+  ipcMain.on("DISCORD_AUTH_STORE_GET_SYNC", (event) => {
+    event.returnValue = readAuthStore();
+  });
+
+  ipcMain.on("DISCORD_AUTH_STORE_SET_SYNC", (event, data) => {
+    event.returnValue = writeAuthStore(data);
+  });
+
   ipcMain.on("DISCORD_BACKEND_GET_INFO_SYNC", (event) => {
     event.returnValue = {
       httpUrl: backend && backend.port ? `http://127.0.0.1:${backend.port}` : null,
@@ -489,6 +629,21 @@ function registerIpcHandlers(backend) {
     } catch (_) {}
     trimProcessWorkingSets();
     return { ok: true };
+  });
+
+  // Same figure as the "Memory" column of Windows' Task Manager: the private
+  // working set of every app process (getAppMetrics' workingSetSize includes
+  // shared pages and reads several times higher)
+  ipcMain.handle("DISCORD_MEMORY_GET_TASK_MANAGER_MB", async () => {
+    if (process.platform !== "win32") return null;
+    const pids = app.getAppMetrics().map((mt) => mt.pid).filter(Boolean);
+    const script = `$ids = @(${pids.join(",")}); $sum = 0; Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Where-Object { $ids -contains $_.IDProcess } | ForEach-Object { $sum += $_.WorkingSetPrivate }; [math]::Round($sum / 1MB, 1)`;
+    return new Promise((resolve) => {
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 8000, windowsHide: true }, (err, stdout) => {
+        const value = Number(String(stdout).trim().replace(",", "."));
+        resolve(err || !Number.isFinite(value) ? null : value);
+      });
+    });
   });
 
   ipcMain.handle("DISCORD_MEMORY_GET_STATS", async () => {
@@ -667,12 +822,20 @@ function registerIpcHandlers(backend) {
     }
   });
 
+  ipcMain.on("DISCORD_APP_GET_OPEN_ON_STARTUP_SYNC", (event) => {
+    event.returnValue = isOpenOnStartupEnabled();
+  });
+
+  ipcMain.on("DISCORD_APP_SET_OPEN_ON_STARTUP_SYNC", (event, enabled) => {
+    event.returnValue = applyOpenOnStartup(enabled);
+  });
+
   ipcMain.on("DISCORD_GPU_SETTINGS_GET_ENABLE_HWACCEL_SYNC", (event) => {
-    event.returnValue = getSetting("enableHardwareAcceleration", true);
+    event.returnValue = Boolean(getSetting("GPU_ACCELERATION", false));
   });
 
   ipcMain.on("DISCORD_GPU_SETTINGS_SET_ENABLE_HWACCEL", (_e, enabled) => {
-    setSetting("enableHardwareAcceleration", Boolean(enabled));
+    setSetting("GPU_ACCELERATION", Boolean(enabled));
   });
 
   ipcMain.handle("DISCORD_USER_DATA_CACHE_GET", () => {
@@ -717,8 +880,13 @@ app.whenReady().then(async () => {
   setupDisplayMediaHandler();
   registerIpcHandlers(backendServer);
   setupSystemTray();
+  startSystemIdleWatch();
+  // Running games feed the profile's "Atividade" tab (the renderer reports them for the signed-in account)
+  startGameDetector((activity) => webContentsSend("GAME_ACTIVITY", activity));
 
-  if (process.argv.includes("--skip-splash")) {
+  if (startHidden && tray) {
+    launchMainWindow(false);
+  } else if (process.argv.includes("--skip-splash")) {
     launchMainWindow(true);
   } else {
     launchSplashWindow();

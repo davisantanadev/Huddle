@@ -99,6 +99,7 @@ function createEmptyState() {
       activeGuildId: "g_rea",
       activeChannelId: "c_general",
       activeThreadMessageId: null,
+      callViewChannelId: null, // voice channel whose call panel fills the main stage
       showMemberList: true,
       searchQuery: "",
       friendsSearchQuery: "",
@@ -213,19 +214,43 @@ class Store {
     this.listeners = new Set();
     this.unsubscribeEvents = null;
 
+    // Saved login lives in the device auth store (a file in Electron). Older
+    // versions kept it in localStorage, which is migrated once.
+    let savedSession = null;
     try {
-      const savedSession = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || "null");
+      savedSession = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || "null");
+    } catch {}
+    this.authData = NativeBridge.readAuthStore();
+    if (!this.authData) {
+      let legacyAccounts = [];
+      try {
+        legacyAccounts = JSON.parse(localStorage.getItem(SAVED_ACCOUNTS_KEY) || "[]");
+      } catch {}
+      this.authData = {
+        session: savedSession?.sessionToken
+          ? {
+              currentUserId: savedSession.currentUserId,
+              isAuthenticated: savedSession.isAuthenticated === true,
+              sessionToken: savedSession.sessionToken
+            }
+          : null,
+        accounts: Array.isArray(legacyAccounts) ? legacyAccounts : []
+      };
+      NativeBridge.writeAuthStore(this.authData);
+    }
+    this.lastSavedSessionJson = JSON.stringify(this.authData.session || null);
+
+    try {
+      const session = this.authData.session;
+      if (session?.currentUserId) this.state.auth.currentUserId = session.currentUserId;
+      // Without a session token the user has to sign in again
+      if (session?.sessionToken) {
+        NativeBridge.setSessionToken(session.sessionToken);
+        this.state.auth.isAuthenticated = session.isAuthenticated === true;
+      } else {
+        this.state.auth.isAuthenticated = false;
+      }
       if (savedSession) {
-        if (savedSession.currentUserId) {
-          this.state.auth.currentUserId = savedSession.currentUserId;
-        }
-        // Without a session token the user has to sign in again
-        if (savedSession.sessionToken) {
-          NativeBridge.setSessionToken(savedSession.sessionToken);
-          this.state.auth.isAuthenticated = savedSession.isAuthenticated === true;
-        } else {
-          this.state.auth.isAuthenticated = false;
-        }
         if (savedSession.navigation) {
           this.state.navigation = {
             ...this.state.navigation,
@@ -240,8 +265,13 @@ class Store {
     NativeBridge.onUnauthenticated = () => this.handleSessionExpired();
     NativeBridge.onEmailNotVerified = () => this.showEmailGate();
     if (this.state.auth.isAuthenticated) {
-      const ok = await this.syncFromBackend();
-      if (!ok && !this.state.auth.emailGate) this.handleSessionExpired();
+      // Only an explicit UNAUTHENTICATED answer (handled by onUnauthenticated) ends
+      // the saved session; a slow or failed first request is just retried
+      let ok = false;
+      for (let attempt = 0; attempt < 5 && !ok && this.state.auth.isAuthenticated; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 400 * attempt));
+        ok = await this.syncFromBackend();
+      }
       if (ok) setTimeout(() => this.prefetchGifs(), 1500);
     }
     this.connectRealtimeEvents();
@@ -262,6 +292,8 @@ class Store {
         if (this.state.screenShares[payload.channelId]) {
           this.state.screenShares[payload.channelId].frameDataUrl = payload.frameDataUrl;
           this.state.screenShares[payload.channelId].updatedAt = payload.updatedAt;
+          // The UI can paint the frame straight into the <img>, skipping a full re-render
+          if (this.onScreenFrame?.(payload.channelId, payload.frameDataUrl)) return;
           this.notify({ skipPersist: true });
         }
         return;
@@ -371,15 +403,30 @@ class Store {
     return () => this.listeners.delete(fn);
   }
 
+  // Writes the saved login to the device auth store, only when it changed
+  saveAuthSession() {
+    const session = NativeBridge.sessionToken
+      ? {
+          currentUserId: this.state.auth.currentUserId,
+          isAuthenticated: this.state.auth.isAuthenticated,
+          sessionToken: NativeBridge.sessionToken
+        }
+      : null;
+    const json = JSON.stringify(session);
+    if (json === this.lastSavedSessionJson) return;
+    this.lastSavedSessionJson = json;
+    this.authData.session = session;
+    NativeBridge.writeAuthStore(this.authData);
+  }
+
   persist() {
+    this.saveAuthSession();
     try {
       // Store only lightweight session pointers in localStorage to minimize RAM
       localStorage.setItem(
         SESSION_STORAGE_KEY,
         JSON.stringify({
           currentUserId: this.state.auth.currentUserId,
-          isAuthenticated: this.state.auth.isAuthenticated,
-          sessionToken: NativeBridge.sessionToken,
           navigation: {
             view: this.state.navigation.view,
             homeSection: this.state.navigation.homeSection,
@@ -468,12 +515,12 @@ class Store {
   // Authentication & Real Multi-Account Support
   // ==========================================================================
   getSavedAccounts() {
-    try {
-      const list = JSON.parse(localStorage.getItem(SAVED_ACCOUNTS_KEY) || "[]");
-      return Array.isArray(list) ? list : [];
-    } catch {
-      return [];
-    }
+    return Array.isArray(this.authData?.accounts) ? this.authData.accounts : [];
+  }
+
+  setSavedAccounts(list) {
+    this.authData.accounts = list;
+    NativeBridge.writeAuthStore(this.authData);
   }
 
   // Each account that signed in on this device keeps its own session token, so
@@ -488,25 +535,16 @@ class Store {
       avatarUrl: user.avatarUrl || "",
       sessionToken: sessionToken !== undefined ? sessionToken : previous?.sessionToken || null
     };
-    const list = [entry, ...this.getSavedAccounts().filter((a) => a.id !== user.id)].slice(0, 8);
-    try {
-      localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(list));
-    } catch {}
+    this.setSavedAccounts([entry, ...this.getSavedAccounts().filter((a) => a.id !== user.id)].slice(0, 8));
   }
 
   // Removes an account from "Contas neste dispositivo" (e.g. it was deleted)
   forgetAccount(userId) {
-    const list = this.getSavedAccounts().filter((a) => a.id !== userId);
-    try {
-      localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(list));
-    } catch {}
+    this.setSavedAccounts(this.getSavedAccounts().filter((a) => a.id !== userId));
   }
 
   forgetAccountSession(userId) {
-    const list = this.getSavedAccounts().map((a) => (a.id === userId ? { ...a, sessionToken: null } : a));
-    try {
-      localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(list));
-    } catch {}
+    this.setSavedAccounts(this.getSavedAccounts().map((a) => (a.id === userId ? { ...a, sessionToken: null } : a)));
   }
 
   hasSavedSession(userId) {
@@ -752,6 +790,24 @@ class Store {
     return res;
   }
 
+  // ==========================================================================
+  // Game activity (detected by the desktop app, shown in the profile)
+  // ==========================================================================
+  async reportGameActivity(activity) {
+    if (!this.state.auth.isAuthenticated || !NativeBridge.sessionToken || !activity?.gameId) return;
+    if (!this.currentGames) this.currentGames = new Map();
+    const wasPlaying = this.currentGames.has(activity.gameId);
+    if (activity.state === "started") this.currentGames.set(activity.gameId, activity.name);
+    else this.currentGames.delete(activity.gameId);
+    await NativeBridge.rpc("reportActivity", activity);
+    // Only a change (not the periodic heartbeat) needs the UI to refresh
+    if (wasPlaying !== (activity.state === "started")) this.notify({ skipPersist: true });
+  }
+
+  getUserActivities(userId) {
+    return NativeBridge.rpc("getUserActivities", { targetUserId: userId });
+  }
+
   async updateMyStatus(status, customStatus) {
     return await this.updateMyProfile({ status, customStatus });
   }
@@ -842,13 +898,31 @@ class Store {
     const ch = guild.channels.find((c) => c.id === channelId);
     if (!ch) return;
     if (ch.type === "voice") {
+      // Clicking the call you are already in opens its panel
+      if (this.state.voice.connectedChannelId === ch.id) {
+        this.openCallView(ch.id);
+        return;
+      }
       this.joinVoiceChannel(guild.id, ch.id);
       return;
     }
+    this.state.navigation.callViewChannelId = null;
     this.state.navigation.activeChannelId = ch.id;
     this.state.navigation.activeThreadMessageId = null;
     ch.unread = false;
     ch.mentions = 0;
+    this.notify();
+  }
+
+  openCallView(channelId) {
+    this.state.navigation.view = "guild";
+    this.state.navigation.callViewChannelId = channelId;
+    this.state.navigation.activeThreadMessageId = null;
+    this.notify();
+  }
+
+  closeCallView() {
+    this.state.navigation.callViewChannelId = null;
     this.notify();
   }
 
@@ -1056,6 +1130,7 @@ class Store {
 
   async leaveVoiceChannel() {
     if (!this.state.voice.connectedChannelId) return { ok: true };
+    this.state.navigation.callViewChannelId = null;
     const meId = this.state.auth.currentUserId;
     const prevSession = this.state.voice.sessionId || `${meId}:${this.state.voice.connectedChannelId}`;
 

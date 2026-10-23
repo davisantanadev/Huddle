@@ -6,6 +6,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { searchGifs, prefetchTrendingGifs, GIF_CATEGORIES } = require("./gifLibrary");
+const { getGameArt } = require("./gameCatalog");
 const { loadAppConfig } = require("./appConfig");
 const { isSupabaseConfigured, sendEmailCode, verifyEmailCode } = require("./accountDelivery");
 
@@ -21,6 +22,8 @@ const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
 // Login sessions: opaque random tokens, stored only as SHA-256 hashes.
 // Sliding expiry: each use pushes the expiry SESSION_TTL_MS into the future.
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// A playing game re-reports itself every scan; silence longer than this means it stopped
+const ACTIVITY_STALE_MS = 3 * 60 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 // Actions anyone may call without a session
@@ -491,6 +494,10 @@ class DiscordBackendServer {
     addCol("users", "phone", "TEXT DEFAULT NULL");
     addCol("users", "phone_verified", "INTEGER NOT NULL DEFAULT 0");
     addCol("users", "password_updated_at", "INTEGER DEFAULT NULL");
+    // Profile theme (optional gradient on the profile card)
+    addCol("users", "profile_theme_enabled", "INTEGER NOT NULL DEFAULT 0");
+    addCol("users", "profile_theme_primary", "TEXT NOT NULL DEFAULT '#5865f2'");
+    addCol("users", "profile_theme_accent", "TEXT NOT NULL DEFAULT '#eb459e'");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS verification_codes (
         id TEXT PRIMARY KEY,
@@ -515,6 +522,19 @@ class DiscordBackendServer {
         revoked INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+      -- Games each user played recently (reported by the desktop app's game detection)
+      CREATE TABLE IF NOT EXISTS user_activities (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        game_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        first_played_at INTEGER NOT NULL,
+        last_played_at INTEGER NOT NULL,
+        total_seconds INTEGER NOT NULL DEFAULT 0,
+        playing_since INTEGER DEFAULT NULL,
+        PRIMARY KEY (user_id, game_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_activities_recent ON user_activities(user_id, last_played_at DESC);
     `);
 
     // Remove any legacy illustrative/fictional users if they ever existed
@@ -736,6 +756,9 @@ class DiscordBackendServer {
       createdAt: row.created_at || "Today",
       version: Number(row.version || 1),
       emailVerified: Boolean(row.email_verified),
+      profileThemeEnabled: Boolean(row.profile_theme_enabled),
+      profileThemePrimary: row.profile_theme_primary || "#5865f2",
+      profileThemeAccent: row.profile_theme_accent || "#eb459e",
       isBot: false
     };
   }
@@ -1045,7 +1068,8 @@ class DiscordBackendServer {
       .prepare(`SELECT * FROM channels WHERE guild_id = ? ORDER BY position ASC`)
       .all(g.id)
       .map((c) => {
-        if (messagesMap && c.type !== "voice") {
+        // Voice channels have their own call chat, so their messages load too
+        if (messagesMap) {
           messagesMap[c.id] = this.getChannelMessages(c.id);
         }
         const roomMap = this.voiceRooms.get(c.id);
@@ -1719,6 +1743,25 @@ class DiscordBackendServer {
           params.bannerCropX !== undefined ? Number(params.bannerCropX) || 0 : (current.banner_crop_x ?? 0.0);
         const bannerCropY =
           params.bannerCropY !== undefined ? Number(params.bannerCropY) || 0 : (current.banner_crop_y ?? 0.0);
+
+        // Optional profile theme: gradient between two colours on the profile card
+        const isHex = (c) => typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c);
+        if (params.profileThemeEnabled !== undefined || params.profileThemePrimary !== undefined || params.profileThemeAccent !== undefined) {
+          if (params.profileThemePrimary !== undefined && !isHex(params.profileThemePrimary)) {
+            return { ok: false, error: "Cor principal do tema inválida." };
+          }
+          if (params.profileThemeAccent !== undefined && !isHex(params.profileThemeAccent)) {
+            return { ok: false, error: "Cor de destaque do tema inválida." };
+          }
+          this.db
+            .prepare(`UPDATE users SET profile_theme_enabled = ?, profile_theme_primary = ?, profile_theme_accent = ? WHERE id = ?`)
+            .run(
+              params.profileThemeEnabled !== undefined ? (params.profileThemeEnabled ? 1 : 0) : current.profile_theme_enabled,
+              params.profileThemePrimary !== undefined ? params.profileThemePrimary : current.profile_theme_primary,
+              params.profileThemeAccent !== undefined ? params.profileThemeAccent : current.profile_theme_accent,
+              actorId
+            );
+        }
 
         const now = Date.now();
         this.db
@@ -2675,6 +2718,71 @@ class DiscordBackendServer {
           guildName,
           message: `Você entrou em ${guildName}!`
         };
+      }
+
+      // ======================================================================
+      // Game activity (Atividade tab of the profile)
+      // ======================================================================
+      case "REPORT_ACTIVITY":
+      case "reportActivity": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const gameId = String(params.gameId || "").slice(0, 80);
+        const name = String(params.name || "").trim().slice(0, 120);
+        if (!gameId || !name) return { ok: false, error: "Jogo inválido." };
+        const now = Date.now();
+        const row = this.db.prepare(`SELECT * FROM user_activities WHERE user_id = ? AND game_id = ?`).get(actorId, gameId);
+        // "started" is re-sent every scan while the game runs (heartbeat). A session
+        // whose last heartbeat is older than ACTIVITY_STALE_MS ended unseen (app
+        // closed mid-game): count it up to that heartbeat and start a new one.
+        if (params.state === "started") {
+          if (row) {
+            let { playing_since: since, total_seconds: total } = row;
+            if (since && now - row.last_played_at > ACTIVITY_STALE_MS) {
+              total += Math.max(0, Math.round((row.last_played_at - since) / 1000));
+              since = null;
+            }
+            this.db
+              .prepare(`UPDATE user_activities SET name = ?, last_played_at = ?, total_seconds = ?, playing_since = ? WHERE user_id = ? AND game_id = ?`)
+              .run(name, now, total, since || now, actorId, gameId);
+          } else {
+            this.db
+              .prepare(
+                `INSERT INTO user_activities (user_id, game_id, name, first_played_at, last_played_at, total_seconds, playing_since)
+                 VALUES (?, ?, ?, ?, ?, 0, ?)`
+              )
+              .run(actorId, gameId, name, now, now, now);
+          }
+        } else if (row) {
+          const end = now - row.last_played_at > ACTIVITY_STALE_MS ? row.last_played_at : now;
+          const played = row.playing_since ? Math.max(0, Math.round((end - row.playing_since) / 1000)) : 0;
+          this.db
+            .prepare(`UPDATE user_activities SET last_played_at = ?, total_seconds = total_seconds + ?, playing_since = NULL WHERE user_id = ? AND game_id = ?`)
+            .run(now, played, actorId, gameId);
+        }
+        this.broadcastEvent("USER_ACTIVITY_UPDATED", { userId: actorId });
+        return { ok: true };
+      }
+
+      case "GET_USER_ACTIVITIES":
+      case "getUserActivities": {
+        const targetId = this.resolveUserId(params.targetUserId || params.actorId);
+        const activities = this.db
+          .prepare(`SELECT * FROM user_activities WHERE user_id = ? ORDER BY (playing_since IS NOT NULL) DESC, last_played_at DESC LIMIT 12`)
+          .all(targetId)
+          .map((a) => {
+            const live = Boolean(a.playing_since) && Date.now() - a.last_played_at <= ACTIVITY_STALE_MS;
+            const openUntil = live ? Date.now() : a.last_played_at;
+            return {
+              gameId: a.game_id,
+              name: a.name,
+              ...getGameArt(a.game_id),
+              lastPlayedAt: a.last_played_at,
+              totalSeconds: a.total_seconds + (a.playing_since ? Math.max(0, Math.round((openUntil - a.playing_since) / 1000)) : 0),
+              playingNow: live,
+              playingSince: live ? a.playing_since : null
+            };
+          });
+        return { ok: true, activities };
       }
 
       // Join a server listed in Discovery (only public servers, no invite needed)

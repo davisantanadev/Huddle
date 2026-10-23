@@ -97,6 +97,18 @@ const uiState = {
   isTestingMic: false,
   micTestLevel: 0,
 
+  // Call panel
+  callFocusUserId: null, // tile shown large
+  callChatOpen: false,
+  callChatWidth: (() => {
+    try {
+      return Math.min(640, Math.max(260, Number(localStorage.getItem("eco_call_chat_width")) || 340));
+    } catch {
+      return 340;
+    }
+  })(),
+  stoppedWatching: {}, // channelId -> true when the viewer chose "Parar de assistir"
+
   // Confirmation dialog for destructive actions
   confirmDialog: null, // null | { title, message, quote?, confirmLabel, requirePassword?, attrs }
 
@@ -106,6 +118,12 @@ const uiState = {
   accountFeedback: null, // null | { scope, ok, msg }
   accountDevCode: null, // null | { scope, code } when no e-mail service is configured
   accountBusy: false,
+
+  // Full profile view: null | { userId, activities: null | [] }
+  profileView: null,
+
+  // Device menu opened from the arrows next to mic/headphones: null | "input" | "output"
+  audioMenu: null,
 
   // Password prompt for the quick account switch
   switchAccountPrompt: null, // null | { userId, error }
@@ -146,6 +164,10 @@ export function closeAllFloatingMenus(except = null) {
     uiState.contextMenu = null;
     changed = true;
   }
+  if (except !== "audioMenu" && uiState.audioMenu !== null) {
+    uiState.audioMenu = null;
+    changed = true;
+  }
   return changed;
 }
 
@@ -156,7 +178,8 @@ function hasAnyOpenFloatingMenu() {
       uiState.serverMenuOpen ||
       uiState.emojiPickerForMessageId ||
       uiState.pinnedPopoverOpen ||
-      uiState.contextMenu
+      uiState.contextMenu ||
+      uiState.audioMenu
   );
 }
 
@@ -197,12 +220,14 @@ function getInitials(name) {
   return String(name || "U").slice(0, 2).toUpperCase();
 }
 
-function renderAvatar(user, sizeClass = "", includeStatus = false, extraStyle = "") {
+// The green speaking ring is opt-in ({ speaking: true }): it belongs to the
+// voice spots (channel list, account bar, call view), not to chat messages
+function renderAvatar(user, sizeClass = "", includeStatus = false, extraStyle = "", options = {}) {
   const u = user || { displayName: "User", avatarColor: "#5865f2", avatarUrl: "", status: "offline" };
   const avatarUrl = u.avatarUrl || "";
   const bg = u.avatarColor || "#5865f2";
   const st = store.getState?.();
-  const isSpeaking = Boolean(st?.voice?.speakingUsers?.[u.id]);
+  const isSpeaking = Boolean(options.speaking) && Boolean(st?.voice?.speakingUsers?.[u.id]);
   const speakingClass = isSpeaking ? "speaking" : "";
 
   const scale = Number(u.avatarScale ?? u.avatar_scale ?? 1);
@@ -582,7 +607,11 @@ function renderVoiceAndAccountPanel(state) {
               ${Icons.signal}
               <span>${statusLabel}</span>
             </div>
-            <div class="rtc-channel-sub" data-testid="rtc-channel-sub">${locationLabel}</div>
+            ${
+              voice.dmCall
+                ? `<div class="rtc-channel-sub" data-testid="rtc-channel-sub">${locationLabel}</div>`
+                : `<button class="rtc-channel-sub rtc-channel-link" data-action="open-call-view" data-channel-id="${escapeHtml(voice.connectedChannelId)}" title="Abrir o painel da call" data-testid="rtc-channel-sub">${locationLabel}</button>`
+            }
           </div>
           <button class="icon-btn danger-active" data-action="leave-voice" title="Desconectar da Chamada" data-testid="leave-voice-btn">
             ${Icons.phoneOff}
@@ -615,27 +644,33 @@ function renderVoiceAndAccountPanel(state) {
     ${rtcHtml}
     <div class="account-bar" data-testid="account-bar">
       <div class="account-profile-btn" data-action="toggle-status-menu" data-testid="account-profile-btn" title="Alterar status ou trocar de conta">
-        ${renderAvatar(me, "", true)}
+        ${renderAvatar(me, "", true, "", { speaking: true })}
         <div class="account-meta">
           <div class="account-name" data-testid="account-display-name">${escapeHtml(me.displayName)}</div>
           <div class="account-sub" data-testid="account-username-sub">@${escapeHtml(me.username)}</div>
         </div>
       </div>
       <div class="account-controls">
-        <button
-          class="icon-btn ${voice.muted ? "danger-active" : ""}"
-          data-action="toggle-mute"
-          title="${voice.muted ? "Ativar Microfone" : "Silenciar Microfone"}"
-        >
-          ${voice.muted ? Icons.micOff : Icons.mic}
-        </button>
-        <button
-          class="icon-btn ${voice.deafened ? "danger-active" : ""}"
-          data-action="toggle-deafen"
-          title="${voice.deafened ? "Ativar Áudio" : "Desativar Áudio"}"
-        >
-          ${voice.deafened ? Icons.deafenOff : Icons.headphones}
-        </button>
+        <div class="split-ctrl ${uiState.audioMenu === "input" ? "open" : ""}">
+          <button
+            class="icon-btn ${voice.muted ? "danger-active" : ""}"
+            data-action="toggle-mute"
+            title="${voice.muted ? "Ativar Microfone" : "Silenciar Microfone"}"
+          >
+            ${voice.muted ? Icons.micOff : Icons.mic}
+          </button>
+          <button class="split-ctrl-arrow" data-action="toggle-audio-menu" data-kind="input" title="Opções de entrada (microfone)" aria-label="Opções de entrada" data-testid="input-device-menu-btn">${Icons.chevronDownSmall}</button>
+        </div>
+        <div class="split-ctrl ${uiState.audioMenu === "output" ? "open" : ""}">
+          <button
+            class="icon-btn ${voice.deafened ? "danger-active" : ""}"
+            data-action="toggle-deafen"
+            title="${voice.deafened ? "Ativar Áudio" : "Desativar Áudio"}"
+          >
+            ${voice.deafened ? Icons.deafenOff : Icons.headphones}
+          </button>
+          <button class="split-ctrl-arrow" data-action="toggle-audio-menu" data-kind="output" title="Opções de saída (fone/alto-falantes)" aria-label="Opções de saída" data-testid="output-device-menu-btn">${Icons.chevronDownSmall}</button>
+        </div>
         <button
           class="icon-btn"
           data-action="open-user-settings"
@@ -739,7 +774,7 @@ function renderSecondarySidebar(state) {
                           return `
                             <div class="voice-user-row" data-action="open-user-popout" data-user-id="${u.id}">
                               <div class="voice-user-left">
-                                ${renderAvatar(u, "", false, "width:22px;height:22px;min-width:22px;font-size:10px;")}
+                                ${renderAvatar(u, "", false, "width:22px;height:22px;min-width:22px;font-size:10px;", { speaking: true })}
                                 <span>${escapeHtml(u.displayName)}</span>
                               </div>
                               <div style="display:flex;align-items:center;gap:4px;">
@@ -813,31 +848,39 @@ function renderSecondarySidebar(state) {
 
   return `
     <aside class="secondary-sidebar" data-testid="secondary-sidebar">
-      <div class="sidebar-header" data-action="toggle-server-menu" data-testid="server-header">
-        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(guild.name)}</span>
-        <div style="display:flex;align-items:center;gap:6px;">
+      <div class="server-header ${guild.bannerUrl ? "has-banner" : ""}" data-action="toggle-server-menu" data-testid="server-header">
+        ${
+          guild.bannerUrl
+            ? `<img class="server-header-banner" src="${escapeHtml(guild.bannerUrl)}" alt="" data-testid="guild-sidebar-banner" />`
+            : ""
+        }
+        <div class="server-header-bar">
+          <button class="server-header-title" title="Opções do servidor">
+            ${
+              guild.iconUrl
+                ? `<img class="server-header-icon" src="${escapeHtml(guild.iconUrl)}" alt="" />`
+                : ""
+            }
+            <span class="server-header-name">${escapeHtml(guild.name)}</span>
+            ${Icons.chevronDown}
+          </button>
           <button
-            class="server-invite-btn"
+            class="server-header-btn"
             data-action="open-invite-modal"
             title="Convidar Pessoas"
+            aria-label="Convidar Pessoas"
             data-testid="server-invite-btn"
-          >${Icons.userPlus}<span>Convidar</span></button>
+          >${Icons.userPlus}</button>
           <button
-            class="icon-btn"
-            style="width:24px;height:24px;"
+            class="server-header-btn"
             data-action="open-server-settings"
             title="Configurações do Servidor"
+            aria-label="Configurações do Servidor"
             data-testid="open-server-settings-btn"
           >${Icons.settings}</button>
-          ${Icons.chevronDown}
         </div>
       </div>
       <div class="sidebar-scroller">
-        ${
-          guild.bannerUrl
-            ? `<div class="guild-sidebar-banner" data-testid="guild-sidebar-banner"><img src="${escapeHtml(guild.bannerUrl)}" alt="Banner do servidor" /></div>`
-            : ""
-        }
         ${categoriesHtml}
       </div>
       ${renderVoiceAndAccountPanel(state)}
@@ -1183,7 +1226,7 @@ function renderScreenShareBannerAndStage(state) {
             isMeSharing && ScreenShare.getStream()
               ? `<video id="local-screenshare-video" class="screenshare-video" autoplay muted playsinline data-testid="screenshare-video"></video>`
               : activeShare?.frameDataUrl
-                ? `<img class="screenshare-frame-img" src="${activeShare.frameDataUrl}" alt="Transmissão ao vivo" data-testid="screenshare-remote-img" />`
+                ? `<img class="screenshare-frame-img" data-share-frame="${escapeHtml(activeShare.channelId || voiceChannelId || "")}" src="${activeShare.frameDataUrl}" alt="Transmissão ao vivo" data-testid="screenshare-remote-img" />`
                 : `<div style="color:#9ca3af;font-size:13px;padding:40px;">Recebendo stream de vídeo em tempo real...</div>`
           }
           <div class="stream-stats-overlay" data-testid="stream-stats-overlay" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);padding:6px 10px;border-radius:6px;font-size:11px;color:#fff;display:flex;gap:10px;pointer-events:none;z-index:10;border:1px solid rgba(255,255,255,0.1);">
@@ -1195,6 +1238,157 @@ function renderScreenShareBannerAndStage(state) {
         </div>
       </div>
     </div>
+  `;
+}
+
+// ==========================================================================
+// Call panel: who is in the voice channel, screen shares, controls & call chat
+// ==========================================================================
+const CALL_CHAT_MIN_WIDTH = 260;
+const CALL_CHAT_MAX_WIDTH = 640;
+
+function getCallChannel(state) {
+  const chId = state.navigation.callViewChannelId;
+  if (!chId || state.voice.connectedChannelId !== chId || state.navigation.view !== "guild") return null;
+  const guild = state.guilds.find((g) => g.id === state.voice.connectedGuildId);
+  return guild?.channels.find((c) => c.id === chId) || null;
+}
+
+function renderCallTile(state, ch, userId, { focused = false, small = false } = {}) {
+  const user = state.users[userId] || { id: userId, displayName: "Usuário", avatarColor: "#5865f2" };
+  const isMe = userId === state.auth.currentUserId;
+  const participant = (ch.voiceParticipants || []).find((p) => p.userId === userId);
+  const muted = isMe ? state.voice.muted : Boolean(participant?.muted);
+  const deafened = isMe ? state.voice.deafened : Boolean(participant?.deafened);
+  const speaking = Boolean(state.voice.speakingUsers?.[userId]) && !muted;
+  const share = state.screenShares[ch.id];
+  const isSharing = isMe ? state.voice.screenShareEnabled : share?.userId === userId;
+  const watching = isSharing && (isMe || !uiState.stoppedWatching[ch.id]);
+
+  let media;
+  if (watching && isMe && ScreenShare.getStream()) {
+    media = `<video id="local-screenshare-video" class="call-tile-stream" autoplay muted playsinline data-testid="screenshare-video"></video>`;
+  } else if (watching && !isMe && share?.frameDataUrl) {
+    media = `<img class="call-tile-stream" data-share-frame="${escapeHtml(ch.id)}" src="${share.frameDataUrl}" alt="Tela de ${escapeHtml(user.displayName)}" data-testid="screenshare-remote-img" />`;
+  } else if (watching) {
+    media = `<div class="call-tile-waiting">Carregando a transmissão...</div>`;
+  } else {
+    media = `<div class="call-tile-avatar">${renderAvatar(user, "", false, small ? "width:48px;height:48px;min-width:48px;font-size:18px;" : "width:84px;height:84px;min-width:84px;font-size:30px;", { speaking: true })}</div>`;
+  }
+
+  const shareControls = isSharing
+    ? isMe
+      ? `<button class="call-tile-action danger" data-action="stop-screenshare" data-testid="call-stop-share-btn">Parar de compartilhar</button>`
+      : watching
+        ? `<button class="call-tile-action" data-action="stop-watching-stream" data-channel-id="${escapeHtml(ch.id)}" data-testid="call-stop-watching-btn">Parar de assistir</button>`
+        : `<button class="call-tile-action primary" data-action="watch-stream" data-channel-id="${escapeHtml(ch.id)}" data-testid="call-watch-btn">Assistir transmissão</button>`
+    : "";
+
+  return `
+    <div
+      class="call-tile ${watching ? "has-stream" : ""} ${speaking ? "speaking" : ""} ${focused ? "focused" : ""} ${small ? "small" : ""}"
+      style="--tile-color:${escapeHtml(user.bannerColor || user.avatarColor || "#5865f2")};"
+      data-action="focus-call-tile"
+      data-user-id="${escapeHtml(userId)}"
+      data-testid="call-tile"
+      title="${focused ? "Voltar para a grade" : "Ampliar"}"
+    >
+      ${media}
+      ${isSharing ? `<span class="call-tile-live">AO VIVO</span>` : ""}
+      <div class="call-tile-footer">
+        <span class="call-tile-name">${escapeHtml(user.displayName)}</span>
+        ${deafened ? `<span class="call-tile-state" title="Áudio desativado">${Icons.deafenOff}</span>` : muted ? `<span class="call-tile-state" title="Microfone silenciado">${Icons.micOff}</span>` : ""}
+      </div>
+      ${shareControls ? `<div class="call-tile-actions">${shareControls}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderCallChatPanel(state, ch) {
+  const messages = state.messages[ch.id] || [];
+  const listHtml =
+    messages.length === 0
+      ? `<div class="call-chat-empty">Nenhuma mensagem nesta call ainda.<br />O que for enviado aqui fica só no chat da call.</div>`
+      : messages
+          .map((m, idx) => {
+            const author = state.users[m.authorId] || { id: m.authorId, displayName: "Usuário", avatarColor: "#5865f2" };
+            const grouped = idx > 0 && messages[idx - 1].authorId === m.authorId;
+            const attachment = m.attachment?.isImage && (m.attachment.url || m.attachment.dataUrl)
+              ? `<img class="message-attachment-img" src="${escapeHtml(m.attachment.url || m.attachment.dataUrl)}" alt="${escapeHtml(m.attachment.name || "")}" />`
+              : "";
+            return `
+              <div class="call-chat-msg ${grouped ? "grouped" : ""}" data-message-id="${m.id}">
+                ${grouped ? "" : `<div data-action="open-user-popout" data-user-id="${author.id}" style="cursor:pointer;">${renderAvatar(author)}</div>`}
+                <div class="call-chat-msg-body">
+                  ${
+                    grouped
+                      ? ""
+                      : `<div class="call-chat-msg-head"><span class="message-author" data-action="open-user-popout" data-user-id="${author.id}">${escapeHtml(author.displayName)}</span><span class="message-timestamp">${escapeHtml(m.timestamp)}</span></div>`
+                  }
+                  <div class="message-text">${formatMessageMarkdown(m.content)}</div>
+                  ${attachment}
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+
+  return `
+    <aside class="call-chat" data-testid="call-chat-panel">
+      <div class="call-chat-resizer" data-call-chat-resizer title="Arraste para redimensionar" role="separator" aria-orientation="vertical"></div>
+      <div class="call-chat-header">
+        ${Icons.chat}
+        <span class="call-chat-title">${escapeHtml(ch.name)}</span>
+        <button class="icon-btn" data-action="toggle-call-chat" title="Fechar chat" aria-label="Fechar chat" data-testid="close-call-chat-btn">${Icons.close}</button>
+      </div>
+      <div class="call-chat-messages" id="call-chat-scroller">${listHtml}</div>
+      <form class="call-chat-composer" id="call-chat-form" data-channel-id="${escapeHtml(ch.id)}">
+        <input class="call-chat-input" name="message" autocomplete="off" placeholder="Conversar em ${escapeHtml(ch.name)}" data-testid="call-chat-input" />
+      </form>
+    </aside>
+  `;
+}
+
+function renderCallStage(state, ch) {
+  const participants = (ch.connectedUsers || []).length ? ch.connectedUsers : [state.auth.currentUserId];
+  // Clicking a tile enlarges it; clicking it again goes back to the grid
+  const focusId = participants.includes(uiState.callFocusUserId) ? uiState.callFocusUserId : null;
+  const others = participants.filter((id) => id !== focusId);
+  const chatOpen = uiState.callChatOpen;
+
+  const tilesHtml = focusId
+    ? `
+      <div class="call-focus">${renderCallTile(state, ch, focusId, { focused: true })}</div>
+      ${others.length ? `<div class="call-strip">${others.map((id) => renderCallTile(state, ch, id, { small: true })).join("")}</div>` : ""}
+    `
+    : `<div class="call-grid" style="--call-cols:${participants.length <= 1 ? 1 : participants.length <= 4 ? 2 : 3};">${participants.map((id) => renderCallTile(state, ch, id)).join("")}</div>`;
+
+  const v = state.voice;
+  return `
+    <section class="main-stage call-stage" data-testid="call-stage" style="--call-chat-width:${uiState.callChatWidth}px;">
+      <div class="call-main">
+        <header class="call-header">
+          <span class="call-header-icon">${Icons.speaker}</span>
+          <span class="call-header-name">${escapeHtml(ch.name)}</span>
+          <span class="call-header-count">${participants.length} na call</span>
+          <div style="flex:1;"></div>
+          <button class="icon-btn ${chatOpen ? "active" : ""}" data-action="toggle-call-chat" title="${chatOpen ? "Fechar chat da call" : "Abrir chat da call"}" data-testid="toggle-call-chat-btn">${Icons.chat}</button>
+        </header>
+        <div class="call-body">${tilesHtml}</div>
+        <div class="call-controls">
+          <div class="call-controls-group">
+            <button class="call-ctrl ${v.muted ? "danger" : ""}" data-action="toggle-mute" title="${v.muted ? "Ativar microfone" : "Silenciar microfone"}">${v.muted ? Icons.micOff : Icons.mic}</button>
+            <button class="call-ctrl ${v.deafened ? "danger" : ""}" data-action="toggle-deafen" title="${v.deafened ? "Ativar áudio" : "Desativar áudio"}">${v.deafened ? Icons.deafenOff : Icons.headphones}</button>
+          </div>
+          <div class="call-controls-group">
+            <button class="call-ctrl ${v.videoEnabled ? "active" : ""}" data-action="toggle-video" title="Câmera">${Icons.video}</button>
+            <button class="call-ctrl ${v.screenShareEnabled ? "active" : ""}" data-action="toggle-screenshare" title="${v.screenShareEnabled ? "Parar de compartilhar a tela" : "Compartilhar a tela"}" data-testid="call-screenshare-btn">${Icons.screenShare}</button>
+          </div>
+          <button class="call-ctrl leave" data-action="leave-voice" title="Sair da call" data-testid="call-leave-btn">${Icons.phoneOff}</button>
+        </div>
+      </div>
+      ${chatOpen ? renderCallChatPanel(state, ch) : ""}
+    </section>
   `;
 }
 
@@ -1691,13 +1885,14 @@ function renderStatusMenu(state) {
 
   return `
     <div class="floating-popout" style="bottom:62px;left:78px;width:270px;padding:12px;" data-testid="status-popout">
-      <div style="display:flex;align-items:center;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--divider-subtle);margin-bottom:8px;">
+      <button class="status-menu-profile" data-action="open-profile-view" data-user-id="${escapeHtml(me.id)}" title="Ver seu perfil" data-testid="status-menu-profile-btn">
         ${renderAvatar(me, "lg", true)}
-        <div>
-          <div style="font-weight:700;color:var(--header-primary);">${escapeHtml(me.displayName)}</div>
-          <div style="font-size:12px;color:var(--text-muted);">@${escapeHtml(me.username)}</div>
-        </div>
-      </div>
+        <span style="min-width:0;flex:1;text-align:left;">
+          <span style="display:block;font-weight:700;color:var(--header-primary);">${escapeHtml(me.displayName)}</span>
+          <span style="display:block;font-size:12px;color:var(--text-muted);">@${escapeHtml(me.username)}</span>
+        </span>
+        <span class="status-menu-profile-hint">Ver perfil ›</span>
+      </button>
       <div style="display:flex;flex-direction:column;gap:2px;">
         ${statuses
           .map(
@@ -1792,6 +1987,7 @@ function renderUserPopout(state) {
           <div>
             <div style="font-size:18px;font-weight:700;color:var(--header-primary);">${escapeHtml(u.displayName)}</div>
             <div style="font-size:13px;color:var(--text-muted);" data-testid="popout-username">@${escapeHtml(u.username)}</div>
+            <button class="link-btn" style="margin-top:4px;" data-action="open-profile-view" data-user-id="${escapeHtml(u.id)}">Ver perfil completo</button>
           </div>
           ${u.customStatus ? `<div style="font-size:13px;color:var(--text-normal);">${escapeHtml(u.customStatus)}</div>` : ""}
           <div style="height:1px;background:var(--divider-subtle);"></div>
@@ -3583,26 +3779,55 @@ function renderSettingsOverlay(state) {
   } else if (tab === "voice") {
     panelHtml = renderVoiceSettingsPanel(state);
   } else if (tab === "windows") {
+    const openOnStartup = NativeBridge.getOpenOnStartup();
+    const checkboxRow = ({ id, checked, title, desc, testid }) => `
+      <label class="checkbox-row" for="${id}">
+        <input type="checkbox" class="checkbox-input" id="${id}" data-testid="${testid}" ${checked ? "checked" : ""} />
+        <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+        <span class="checkbox-text">
+          <span class="setting-title">${title}</span>
+          <span class="setting-desc">${desc}</span>
+        </span>
+      </label>
+    `;
     panelHtml = `
-      <h2 style="color:var(--header-primary);margin-bottom:16px;">Configurações do Windows & Desempenho</h2>
-      <div style="background:var(--bg-channels);padding:16px;border-radius:8px;display:flex;flex-direction:column;gap:16px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div>
-            <strong style="color:var(--header-primary);">Minimizar para a Bandeja (System Tray)</strong>
-            <div style="font-size:12px;color:var(--text-muted);">Fechar a janela mantém o Discord ativo na bandeja do Windows</div>
-          </div>
-          <button class="btn ${s.minimizeToTray ? "btn-success" : "btn-secondary"}" data-action="toggle-setting" data-key="minimizeToTray">
-            ${s.minimizeToTray ? "Ativado" : "Desativado"}
-          </button>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div>
-            <strong style="color:var(--header-primary);">Otimização de Memória RAM (Purge & Working Set Trim)</strong>
-            <div style="font-size:12px;color:var(--text-muted);">Libera caches ociosos de imagem e aciona coleta de lixo V8</div>
-          </div>
-          <button class="btn btn-primary" data-action="purge-memory-now">Otimizar RAM Agora</button>
-        </div>
+      <div class="settings-page-head">
+        <h2>Windows & Memória</h2>
+        <p>Como o ${escapeHtml(getAppName())} inicia, fecha e usa a memória do computador.</p>
       </div>
+      <section class="settings-card">
+        <div class="settings-card-head"><h3>Inicialização e encerramento</h3></div>
+        ${checkboxRow({
+          id: "setting-open-on-startup",
+          checked: openOnStartup,
+          title: "Iniciar junto com o Windows",
+          desc: "Abre automaticamente ao entrar no Windows, minimizado na bandeja do sistema.",
+          testid: "open-on-startup-checkbox"
+        })}
+        ${checkboxRow({
+          id: "setting-quit-on-close",
+          checked: s.minimizeToTray === false,
+          title: "Encerrar processos ao fechar o app",
+          desc: "Fechar a janela encerra o app por completo. Desmarcado, ele continua rodando na bandeja do sistema.",
+          testid: "quit-on-close-checkbox"
+        })}
+      </section>
+      <section class="settings-card">
+        <div class="settings-card-head">
+          <div>
+            <h3>Memória</h3>
+            <p>Em uso agora: <strong id="memory-usage-label">${escapeHtml(uiState.memoryUsageLabel || "medindo...")}</strong></p>
+          </div>
+          <button class="btn btn-primary btn-sm" data-action="purge-memory-now">Liberar memória agora</button>
+        </div>
+        ${checkboxRow({
+          id: "setting-hardware-acceleration",
+          checked: NativeBridge.getGpuAcceleration(),
+          title: "Aceleração de hardware (GPU)",
+          desc: "Deixa vídeo e compartilhamento de tela mais fluidos, mas usa cerca de 100 MB a mais. Vale após reiniciar o app.",
+          testid: "hardware-acceleration-checkbox"
+        })}
+      </section>
     `;
   } else if (tab === "profile") {
     panelHtml = renderProfileSettingsPanel(me);
@@ -3634,6 +3859,239 @@ function renderSettingsOverlay(state) {
           <span style="font-size:11px;font-weight:700;color:var(--text-muted);">ESC</span>
         </div>
       </div>
+    </div>
+  `;
+}
+
+// ==========================================================================
+// Full profile view: card + "Atividade" (recent games) + quick customization
+// ==========================================================================
+const PROFILE_THEME_PRESETS = [
+  ["#3b3fa8", "#a8434f"],
+  ["#5865f2", "#eb459e"],
+  ["#0f766e", "#1e3a8a"],
+  ["#7c3aed", "#0ea5e9"],
+  ["#b45309", "#7f1d1d"],
+  ["#14532d", "#0f172a"],
+  ["#be185d", "#4c1d95"],
+  ["#111827", "#374151"]
+];
+
+async function loadProfileActivities(userId) {
+  const res = await store.getUserActivities(userId);
+  if (uiState.profileView?.userId !== userId) return;
+  uiState.profileView.activities = res?.ok ? res.activities : [];
+  renderApp();
+}
+
+function openProfileView(userId) {
+  closeAllFloatingMenus();
+  uiState.profileView = { userId, activities: null };
+  renderApp();
+  loadProfileActivities(userId);
+}
+
+function formatRelativeTime(ts) {
+  const diff = Math.max(0, Date.now() - Number(ts || 0));
+  const min = Math.round(diff / 60000);
+  if (min < 1) return "agora mesmo";
+  if (min < 60) return `há ${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `há ${h} h`;
+  const d = Math.round(h / 24);
+  return d === 1 ? "ontem" : `há ${d} dias`;
+}
+
+function formatPlayTime(seconds) {
+  const s = Number(seconds) || 0;
+  if (s < 60) return "menos de 1 min";
+  const min = Math.round(s / 60);
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  return `${h} h${min % 60 ? ` ${min % 60} min` : ""}`;
+}
+
+function renderActivityList(activities) {
+  if (activities === null) return `<div class="profile-activity-empty">Carregando atividades...</div>`;
+  if (!activities.length) {
+    return `<div class="profile-activity-empty">Nenhum jogo detectado ainda.<br />Abra um jogo com o app aberto e ele aparece aqui.</div>`;
+  }
+  return `
+    <div class="profile-activity-grid">
+      ${activities
+        .map(
+          (a) => `
+        <div class="profile-activity-card ${a.playingNow ? "playing" : ""}" title="${escapeHtml(a.name)}">
+          <div class="profile-activity-cover" style="--game-color:${escapeHtml(a.color || "#5865f2")};">
+            <span class="profile-activity-initials">${escapeHtml(getInitials(a.name))}</span>
+            ${a.coverUrl ? `<img src="${escapeHtml(a.coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ""}
+            ${a.playingNow ? `<span class="profile-activity-live">Jogando</span>` : ""}
+          </div>
+          <div class="profile-activity-name">${escapeHtml(a.name)}</div>
+          <div class="profile-activity-meta">${a.playingNow ? `Agora · ${escapeHtml(formatPlayTime((Date.now() - a.playingSince) / 1000))}` : escapeHtml(formatRelativeTime(a.lastPlayedAt))}</div>
+          <div class="profile-activity-meta">${escapeHtml(formatPlayTime(a.totalSeconds))} no total</div>
+        </div>
+      `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function profileThemeStyle(user) {
+  if (!user?.profileThemeEnabled) return "";
+  return `--theme-primary:${escapeHtml(user.profileThemePrimary || "#5865f2")};--theme-accent:${escapeHtml(user.profileThemeAccent || "#eb459e")};`;
+}
+
+function renderProfileCustomizer(me) {
+  const themeOn = Boolean(me.profileThemeEnabled);
+  const primary = me.profileThemePrimary || "#5865f2";
+  const accent = me.profileThemeAccent || "#eb459e";
+  return `
+    <aside class="profile-customizer" data-testid="profile-customizer">
+      <div class="profile-customizer-head">
+        <h3>Customização de perfil</h3>
+        <p>Mudanças rápidas, salvas na hora.</p>
+      </div>
+      <button class="btn btn-secondary btn-sm profile-customizer-surprise" data-action="surprise-profile-theme">🎲 Surpreenda-me!</button>
+
+      <section class="profile-customizer-section">
+        <div class="form-label">Foto de perfil</div>
+        <div class="btn-row wrap">
+          <label class="btn btn-primary btn-sm btn-icon-text" style="cursor:pointer;">
+            ${Icons.upload}<span>Enviar foto</span>
+            <input type="file" id="avatar-upload-input" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none;" />
+          </label>
+          <button type="button" class="btn btn-secondary btn-sm btn-icon-text" data-action="open-gif-picker" data-target="avatar">${Icons.sparkles}<span>GIFs</span></button>
+        </div>
+        ${uiState.stagedAvatar ? renderStagedMediaBar({ label: "Nova foto pronta.", confirmAction: "confirm-staged-avatar", cancelAction: "cancel-staged-avatar", confirmTestid: "profile-confirm-avatar-btn" }) : ""}
+      </section>
+
+      <section class="profile-customizer-section">
+        <div class="form-label">Banner do perfil</div>
+        <div class="btn-row wrap">
+          <label class="btn btn-primary btn-sm btn-icon-text" style="cursor:pointer;">
+            ${Icons.image}<span>Enviar imagem</span>
+            <input type="file" id="banner-upload-input" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none;" />
+          </label>
+          <button type="button" class="btn btn-secondary btn-sm btn-icon-text" data-action="open-gif-picker" data-target="banner">${Icons.sparkles}<span>GIFs</span></button>
+          ${me.bannerUrl ? `<button type="button" class="icon-square-btn danger" data-action="remove-banner-image" title="Remover imagem do banner" aria-label="Remover imagem do banner">${Icons.trash}</button>` : ""}
+        </div>
+        ${uiState.stagedBanner ? renderStagedMediaBar({ label: "Novo banner pronto.", confirmAction: "confirm-staged-banner", cancelAction: "cancel-staged-banner", confirmTestid: "profile-confirm-banner-btn" }) : ""}
+        <div class="color-swatch-row">
+          ${BANNER_SWATCHES.map(
+            (c) => `<button type="button" class="color-swatch-btn ${me.bannerColor === c ? "active" : ""}" style="background:${c};" data-action="select-banner-swatch" data-color="${c}" aria-label="Cor ${c}"></button>`
+          ).join("")}
+        </div>
+      </section>
+
+      <section class="profile-customizer-section">
+        <label class="checkbox-row compact" for="profile-theme-toggle">
+          <input type="checkbox" class="checkbox-input" id="profile-theme-toggle" data-testid="profile-theme-toggle" ${themeOn ? "checked" : ""} />
+          <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+          <span class="checkbox-text">
+            <span class="setting-title">Tema de perfil</span>
+            <span class="setting-desc">Aplica um gradiente de duas cores no seu cartão de perfil.</span>
+          </span>
+        </label>
+        ${
+          themeOn
+            ? `<div class="profile-theme-pickers">
+                <label class="profile-theme-color"><span>Principal</span><input type="color" id="profile-theme-primary" value="${escapeHtml(primary)}" /></label>
+                <label class="profile-theme-color"><span>Destaque</span><input type="color" id="profile-theme-accent" value="${escapeHtml(accent)}" /></label>
+              </div>
+              <div class="profile-theme-presets">
+                ${PROFILE_THEME_PRESETS.map(
+                  ([p, a]) => `<button type="button" class="profile-theme-preset" style="background:linear-gradient(180deg, ${p}, ${a});" data-action="set-profile-theme" data-primary="${p}" data-accent="${a}" aria-label="Tema ${p} e ${a}"></button>`
+                ).join("")}
+              </div>`
+            : ""
+        }
+      </section>
+    </aside>
+  `;
+}
+
+function renderProfileView(state) {
+  const view = uiState.profileView;
+  if (!view) return "";
+  const user = state.users[view.userId];
+  if (!user) return "";
+  const isMe = user.id === state.auth.currentUserId;
+  const themed = Boolean(user.profileThemeEnabled);
+  const playing = (view.activities || []).find((a) => a.playingNow);
+
+  return `
+    <div class="profile-view-backdrop" data-action="close-profile-view-backdrop" data-testid="profile-view">
+      <div class="profile-view">
+        ${isMe ? renderProfileCustomizer(user) : ""}
+        <div class="profile-view-main">
+          <article class="profile-view-card ${themed ? "themed" : ""}" id="profile-view-card" style="${profileThemeStyle(user)}">
+            ${renderBanner(user, 150)}
+            <div class="profile-view-body">
+              <div class="profile-view-avatar">${renderExpandableAvatar(user)}</div>
+              ${user.customStatus ? `<div class="profile-view-bubble">${escapeHtml(user.customStatus)}</div>` : ""}
+              <h2 class="profile-view-name">${escapeHtml(user.displayName)}</h2>
+              <div class="profile-view-username">@${escapeHtml(user.username)}${user.pronouns ? ` · ${escapeHtml(user.pronouns)}` : ""}</div>
+              <div class="btn-row" style="margin-top:14px;">
+                ${
+                  isMe
+                    ? `<button class="btn btn-secondary btn-sm" data-action="open-profile-settings">Editar perfil completo</button>`
+                    : `<button class="btn btn-primary btn-sm" data-action="message-friend" data-user-id="${escapeHtml(user.id)}">${Icons.chat}<span>Mensagem</span></button>`
+                }
+              </div>
+              ${playing ? `<div class="profile-view-playing">${Icons.signal}<span>Jogando <strong>${escapeHtml(playing.name)}</strong></span></div>` : ""}
+              ${user.aboutMe ? `<div class="profile-view-about">${formatMessageMarkdown(user.aboutMe)}</div>` : ""}
+              <div class="profile-view-field">
+                <div class="profile-view-label">Membro desde</div>
+                <div>${escapeHtml(user.memberSince || "")}</div>
+              </div>
+            </div>
+          </article>
+          <section class="profile-view-side">
+            <div class="profile-view-tabs" role="tablist"><span class="profile-view-tab active" role="tab" aria-selected="true">Atividade</span></div>
+            <div class="profile-view-panel">
+              <div class="profile-view-panel-title">Jogou recentemente</div>
+              ${renderActivityList(view.activities)}
+            </div>
+          </section>
+        </div>
+        <button class="profile-view-close" data-action="close-profile-view" title="Fechar" aria-label="Fechar">${Icons.close}</button>
+      </div>
+    </div>
+  `;
+}
+
+// Quick device picker above the account bar (mic arrow = input, headphones arrow = output)
+function renderAudioDeviceMenu(state) {
+  const kind = uiState.audioMenu;
+  if (!kind) return "";
+  const isInput = kind === "input";
+  const devices = isInput ? uiState.audioInputDevices : uiState.audioOutputDevices;
+  const selected = isInput
+    ? state.settings.audioInputDeviceId || uiState.selectedAudioInput || "default"
+    : state.settings.audioOutputDeviceId || uiState.selectedAudioOutput || "default";
+  const list = devices.length ? devices : [{ deviceId: "default", label: isInput ? "Microfone padrão do sistema" : "Saída padrão do sistema" }];
+  return `
+    <div class="floating-popout audio-device-menu ${isInput ? "input" : "output"}" data-testid="audio-device-menu">
+      <div class="audio-device-menu-title">${isInput ? "Dispositivo de entrada" : "Dispositivo de saída"}</div>
+      <div class="audio-device-list">
+        ${list
+          .map(
+            (d) => `
+          <button class="audio-device-item ${d.deviceId === selected ? "selected" : ""}" data-action="pick-audio-device" data-kind="${kind}" data-device-id="${escapeHtml(d.deviceId)}">
+            <span class="audio-device-radio" aria-hidden="true"></span>
+            <span class="audio-device-label">${escapeHtml(d.label || "Dispositivo sem nome")}</span>
+          </button>
+        `
+          )
+          .join("")}
+      </div>
+      <div class="audio-device-menu-sep"></div>
+      <button class="audio-device-item" data-action="open-voice-settings">
+        ${Icons.settings}
+        <span class="audio-device-label">Configurações de voz</span>
+      </button>
     </div>
   `;
 }
@@ -3688,7 +4146,8 @@ export function renderApp() {
       mainStageHtml = renderChatStage(state);
     }
   } else {
-    mainStageHtml = renderChatStage(state);
+    const callChannel = getCallChannel(state);
+    mainStageHtml = callChannel ? renderCallStage(state, callChannel) : renderChatStage(state);
   }
 
   root.innerHTML = `
@@ -3707,6 +4166,8 @@ export function renderApp() {
       ${renderActiveModal(state)}
       ${renderSettingsOverlay(state)}
       ${renderContextMenu()}
+      ${renderAudioDeviceMenu(state)}
+      ${renderProfileView(state)}
       ${renderIncomingCall(state)}
       ${renderAvatarLightbox()}
       ${renderConfirmDialog()}
@@ -3818,6 +4279,15 @@ async function openScreenSharePickerModal() {
     uiState.selectedScreenSourceName = sources[0].name;
   }
   renderApp();
+}
+
+// All app processes together, as Windows' Task Manager shows it
+async function refreshMemoryUsageLabel() {
+  const mb = await window.DiscordNative?.processUtils?.getTaskManagerMemoryMB?.().catch(() => null);
+  if (mb === null || mb === undefined) return;
+  uiState.memoryUsageLabel = `${Math.round(mb)} MB`;
+  const label = document.getElementById("memory-usage-label");
+  if (label) label.textContent = uiState.memoryUsageLabel;
 }
 
 function bindFormEvents() {
@@ -4517,6 +4987,94 @@ function bindFormEvents() {
     });
   });
 
+  // Profile view: theme flag and colours (live preview while dragging, saved on release)
+  const themeToggle = document.getElementById("profile-theme-toggle");
+  if (themeToggle) {
+    themeToggle.addEventListener("change", async () => {
+      await store.updateMyProfile({ profileThemeEnabled: themeToggle.checked });
+    });
+  }
+  for (const [id, key, cssVar] of [
+    ["profile-theme-primary", "profileThemePrimary", "--theme-primary"],
+    ["profile-theme-accent", "profileThemeAccent", "--theme-accent"]
+  ]) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    input.addEventListener("input", () => {
+      document.getElementById("profile-view-card")?.style.setProperty(cssVar, input.value);
+    });
+    input.addEventListener("change", async () => {
+      await store.updateMyProfile({ [key]: input.value });
+    });
+  }
+
+  // Call chat: send to the voice channel's own chat
+  const callChatForm = document.getElementById("call-chat-form");
+  if (callChatForm) {
+    const scroller = document.getElementById("call-chat-scroller");
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    callChatForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = callChatForm.querySelector("input[name=message]");
+      const text = input.value;
+      if (!text.trim()) return;
+      input.value = "";
+      await store.sendMessage(callChatForm.getAttribute("data-channel-id"), text);
+      document.querySelector("#call-chat-form input")?.focus();
+    });
+  }
+
+  // Dragging the line between the call and its chat resizes the chat
+  const callResizer = document.querySelector("[data-call-chat-resizer]");
+  if (callResizer) {
+    callResizer.addEventListener("mousedown", (downEvent) => {
+      downEvent.preventDefault();
+      const stage = callResizer.closest(".call-stage");
+      const startX = downEvent.clientX;
+      const startWidth = uiState.callChatWidth;
+      document.body.classList.add("is-resizing");
+      const onMove = (moveEvent) => {
+        const next = Math.min(CALL_CHAT_MAX_WIDTH, Math.max(CALL_CHAT_MIN_WIDTH, startWidth + (startX - moveEvent.clientX)));
+        uiState.callChatWidth = Math.round(next);
+        stage?.style.setProperty("--call-chat-width", `${uiState.callChatWidth}px`);
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.classList.remove("is-resizing");
+        try {
+          localStorage.setItem("eco_call_chat_width", String(uiState.callChatWidth));
+        } catch {}
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  // Windows & Memória checkboxes
+  const openOnStartupBox = document.getElementById("setting-open-on-startup");
+  if (openOnStartupBox) {
+    openOnStartupBox.addEventListener("change", () => {
+      const applied = NativeBridge.setOpenOnStartup(openOnStartupBox.checked);
+      openOnStartupBox.checked = applied;
+      showToast(applied ? "O app vai iniciar junto com o Windows." : "Início automático desativado.");
+    });
+  }
+  const quitOnCloseBox = document.getElementById("setting-quit-on-close");
+  if (quitOnCloseBox) {
+    quitOnCloseBox.addEventListener("change", async () => {
+      await store.updateSetting("minimizeToTray", !quitOnCloseBox.checked);
+    });
+  }
+  const hwAccelBox = document.getElementById("setting-hardware-acceleration");
+  if (hwAccelBox) {
+    hwAccelBox.addEventListener("change", () => {
+      NativeBridge.setGpuAcceleration(hwAccelBox.checked);
+      showToast("Reinicie o app para aplicar a mudança na aceleração de hardware.");
+    });
+  }
+  if (document.getElementById("memory-usage-label")) refreshMemoryUsageLabel();
+
   // Account security forms (e-mail change, password, verification codes)
   document.querySelectorAll("[data-account-form]").forEach((form) => {
     form.addEventListener("submit", async (e) => {
@@ -4884,6 +5442,98 @@ async function handleGlobalClick(e) {
   }
 
   switch (action) {
+    case "focus-call-tile": {
+      const uid = btn.getAttribute("data-user-id");
+      uiState.callFocusUserId = uiState.callFocusUserId === uid ? null : uid;
+      renderApp();
+      break;
+    }
+    case "toggle-call-chat":
+      uiState.callChatOpen = !uiState.callChatOpen;
+      renderApp();
+      if (uiState.callChatOpen) document.querySelector("#call-chat-form input")?.focus();
+      break;
+    case "open-call-view":
+      store.openCallView(btn.getAttribute("data-channel-id"));
+      break;
+    case "stop-watching-stream":
+      e.stopPropagation();
+      uiState.stoppedWatching[btn.getAttribute("data-channel-id")] = true;
+      renderApp();
+      break;
+    case "watch-stream": {
+      e.stopPropagation();
+      const chId = btn.getAttribute("data-channel-id");
+      delete uiState.stoppedWatching[chId];
+      // Watching someone's screen enlarges it
+      uiState.callFocusUserId = store.getState().screenShares[chId]?.userId || uiState.callFocusUserId;
+      renderApp();
+      break;
+    }
+    case "toggle-audio-menu": {
+      e.stopPropagation();
+      const kind = btn.getAttribute("data-kind");
+      const next = uiState.audioMenu === kind ? null : kind;
+      closeAllFloatingMenus("audioMenu");
+      uiState.audioMenu = next;
+      renderApp();
+      if (next) {
+        VoiceDevices.enumerateDevices().then((res) => {
+          uiState.audioInputDevices = res.inputDevices || [];
+          uiState.audioOutputDevices = res.outputDevices || [];
+          if (uiState.audioMenu) renderApp();
+        });
+      }
+      break;
+    }
+    case "pick-audio-device": {
+      const kind = btn.getAttribute("data-kind");
+      const deviceId = btn.getAttribute("data-device-id");
+      uiState.audioMenu = null;
+      if (kind === "input") {
+        uiState.selectedAudioInput = deviceId;
+        await store.updatePreferences({ audioInputDeviceId: deviceId });
+      } else {
+        uiState.selectedAudioOutput = deviceId;
+        await store.updatePreferences({ audioOutputDeviceId: deviceId });
+      }
+      const label = (kind === "input" ? uiState.audioInputDevices : uiState.audioOutputDevices).find((d) => d.deviceId === deviceId)?.label;
+      showToast(`${kind === "input" ? "Entrada" : "Saída"}: ${label || "dispositivo padrão"}`);
+      renderApp();
+      break;
+    }
+    case "open-profile-view":
+      e.stopPropagation();
+      openProfileView(btn.getAttribute("data-user-id"));
+      break;
+    case "close-profile-view":
+      uiState.profileView = null;
+      renderApp();
+      break;
+    case "close-profile-view-backdrop":
+      if (e.target === btn) {
+        uiState.profileView = null;
+        renderApp();
+      }
+      break;
+    case "open-profile-settings":
+      uiState.profileView = null;
+      uiState.settingsOverlay = { type: "user", tab: "profile" };
+      renderApp();
+      break;
+    case "set-profile-theme":
+      await store.updateMyProfile({
+        profileThemeEnabled: true,
+        profileThemePrimary: btn.getAttribute("data-primary"),
+        profileThemeAccent: btn.getAttribute("data-accent")
+      });
+      break;
+    case "surprise-profile-theme": {
+      const [primary, accent] = PROFILE_THEME_PRESETS[Math.floor(Math.random() * PROFILE_THEME_PRESETS.length)];
+      const bannerColor = BANNER_SWATCHES[Math.floor(Math.random() * BANNER_SWATCHES.length)];
+      await store.updateMyProfile({ profileThemeEnabled: true, profileThemePrimary: primary, profileThemeAccent: accent, bannerColor });
+      break;
+    }
     case "set-banner-editor-mode":
       uiState.bannerEditorMode = btn.getAttribute("data-mode");
       renderApp();
@@ -5530,7 +6180,8 @@ async function handleGlobalClick(e) {
       break;
     }
     case "purge-memory-now":
-      NativeBridge.purgeMemory();
+      await NativeBridge.purgeMemory();
+      setTimeout(refreshMemoryUsageLabel, 1200);
       showToast("Memória RAM otimizada e caches limpos!");
       break;
     case "toggle-reaction": {
@@ -5742,6 +6393,11 @@ document.addEventListener("keydown", (e) => {
       renderApp();
       return;
     }
+    if (uiState.profileView && !store.getState().mediaEditor.isOpen) {
+      uiState.profileView = null;
+      renderApp();
+      return;
+    }
     if (uiState.confirmDialog) {
       uiState.confirmDialog = null;
       renderApp();
@@ -5775,6 +6431,13 @@ document.addEventListener("keydown", (e) => {
 store.subscribe(() => renderApp());
 store.subscribeGifPicker((state) => syncGifPicker(state));
 
+NativeBridge.subscribeIpc("GAME_ACTIVITY", (activity) => {
+  store.reportGameActivity(activity).then(() => {
+    // Keep an open profile's "Atividade" list current
+    if (uiState.profileView?.userId === store.getState().auth.currentUserId) loadProfileActivities(uiState.profileView.userId);
+  });
+});
+
 NativeBridge.subscribeIpc("SYSTEM_TRAY_TOGGLE_MUTE", () => {
   store.toggleMute();
   showToast(store.getState().voice.muted ? "Microfone silenciado via Bandeja" : "Microfone ativado via Bandeja");
@@ -5794,6 +6457,25 @@ NativeBridge.subscribeIpc("SYSTEM_TRAY_OPEN_VOICE_SETTINGS", () => {
 NativeBridge.subscribeIpc("CHECK_FOR_UPDATES", () => {
   showToast("Discord v1.0.9262 está atualizado!");
 });
+
+// Screen share frames go straight into the visible <img> (no full re-render
+// per frame). Returns true when nothing else needs to redraw.
+store.onScreenFrame = (channelId, frameDataUrl) => {
+  const imgs = document.querySelectorAll(`[data-share-frame="${CSS.escape(channelId)}"]`);
+  imgs.forEach((img) => {
+    img.src = frameDataUrl;
+  });
+  return imgs.length > 0 || Boolean(uiState.stoppedWatching[channelId]);
+};
+
+// Game covers come from the Steam CDN; if one fails, the card keeps its initials
+document.addEventListener(
+  "error",
+  (e) => {
+    if (e.target?.matches?.(".profile-activity-cover img")) e.target.remove();
+  },
+  true
+);
 
 window.__DISCORD_STORE__ = store;
 window.__DISCORD_UI_STATE__ = uiState;
