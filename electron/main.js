@@ -872,7 +872,25 @@ function registerIpcHandlers(backend) {
   });
 }
 
+// Only one copy of the app per profile: opening it again (shortcut, Windows
+// startup) brings the existing window forward instead of starting another set
+// of processes. The lock is tied to the userData folder set above.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    startHidden = false;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  if (!gotSingleInstanceLock) return;
   appSettings = loadSettings();
   backendServer = new DiscordBackendServer({ dataDir: app.getPath("userData") });
   await backendServer.startHttpServer(0);
