@@ -23,6 +23,16 @@ const DiscordNative = {
     getBuildNumber: () => 348291,
     getArch: () => process.arch,
     setBadgeCount: (count) => ipcRenderer.invoke("DISCORD_APP_SET_BADGE_COUNT", count),
+    checkForUpdates: () => ipcRenderer.invoke("DISCORD_UPDATE_CHECK"),
+    installUpdate: () => ipcRenderer.invoke("DISCORD_UPDATE_INSTALL"),
+    // Interface size (everything: text, icons, spacing); remembered in settings.json
+    setZoomFactor: (factor) => {
+      const f = Math.min(1.75, Math.max(0.7, Number(factor) || 1));
+      webFrame.setZoomFactor(f);
+      ipcRenderer.invoke("DISCORD_SETTINGS_SET", "UI_ZOOM", f);
+      return f;
+    },
+    getZoomFactor: () => webFrame.getZoomFactor(),
     relaunch: () => ipcRenderer.send("DISCORD_APP_RELAUNCH")
   },
   window: {
@@ -117,3 +127,9 @@ const DiscordNative = {
 };
 
 contextBridge.exposeInMainWorld("DiscordNative", DiscordNative);
+
+// Interface size chosen in Configurações > Aparência, applied before the first paint
+try {
+  const zoom = Number(ipcRenderer.sendSync("DISCORD_SETTINGS_GET_SYNC", "UI_ZOOM", 1)) || 1;
+  if (zoom !== 1) webFrame.setZoomFactor(Math.min(1.75, Math.max(0.7, zoom)));
+} catch (_) {}

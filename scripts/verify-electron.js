@@ -205,6 +205,7 @@ async function setupTestEnvironment() {
   ipcMain.on("DISCORD_SETTINGS_UPDATE_BACKGROUND_COLOR", () => {});
   ipcMain.handle("DISCORD_APP_SET_BADGE_COUNT", () => true);
   ipcMain.handle("DISCORD_USER_DATA_CACHE_GET", () => null);
+  ipcMain.handle("DISCORD_DEEP_LINK_TAKE", () => null);
   ipcMain.on("DISCORD_USER_DATA_CACHE_SAVE", () => {});
   ipcMain.on("DISCORD_CLIPBOARD_COPY", (_e, text) => {
     clipboard.writeText(String(text || ""));
@@ -350,13 +351,17 @@ async function runVerification() {
   const phase3Check = await mainWin.webContents.executeJavaScript(`(async () => {
     const store = window.__DISCORD_STORE__;
     const q = (sel) => { const el = document.querySelector(sel); if (!el) throw new Error("Elemento não encontrado: " + sel); return el; };
-    // Register a second real user in SQLite to test username collision and friend requests
+    // Register a second real user in SQLite to test username collision and friend requests.
+    // New accounts start with no servers; Maria joins the sample server through an invite.
+    const mariaInvite = await store.createServerInvite("g_rea", {});
     const regMaria = await store.register({
       email: "maria@discord.local",
       displayName: "Maria Clara",
       username: "maria_real",
       password: "password123"
     });
+    const mariaStartedEmpty = store.getState().guilds.length === 0;
+    const mariaJoin = await store.acceptServerInvite(mariaInvite.invite.url);
     // Switch back to Davis (u_davis)
     await store.switchAccount("u_davis", "password123");
 
@@ -372,7 +377,7 @@ async function runVerification() {
     const restoreChange = await store.updateUsername("davis_dev");
 
     return {
-      regMariaOk: regMaria.ok,
+      regMariaOk: regMaria.ok && mariaStartedEmpty && mariaJoin.ok,
       invalidShortRejected: !invalidShort.ok,
       invalidReservedRejected: !invalidReserved.ok,
       collisionRejected: !collisionCheck.ok,
@@ -1926,7 +1931,22 @@ async function runVerification() {
     osc.connect(dest);
     osc.start();
     window.__fakeMicCtx = ctx;
-    navigator.mediaDevices.getUserMedia = async () => new MediaStream(dest.stream.getAudioTracks().map((t) => t.clone()));
+    // ...and a synthetic "camera": an animated canvas
+    const cam = document.createElement("canvas");
+    cam.width = 640;
+    cam.height = 360;
+    const g = cam.getContext("2d");
+    let f = 0;
+    setInterval(() => {
+      f++;
+      g.fillStyle = "hsl(" + (f % 360) + ",70%,45%)";
+      g.fillRect(0, 0, 640, 360);
+    }, 33);
+    const camStream = cam.captureStream(30);
+    navigator.mediaDevices.getUserMedia = async (c) =>
+      c && c.video
+        ? new MediaStream(camStream.getVideoTracks().map((t) => t.clone()))
+        : new MediaStream(dest.stream.getAudioTracks().map((t) => t.clone()));
     return true;
   })()`;
   // RMS level of the audio we receive from the other person, over ~1.5 s
@@ -2008,6 +2028,42 @@ async function runVerification() {
   await delay(400);
   const afterUnmute = await peerWin.webContents.executeJavaScript(remoteLevelScript);
 
+  // Davis shares a real screen at 1080p/60 and turns his camera on: Maria gets
+  // both as live WebRTC video (not snapshots), at the real resolution
+  const shareStart = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const sources = await store.getScreenShareSources();
+    const src = sources.find((s) => s.isScreen) || sources[0];
+    const share = await store.startScreenShare(src.id, { sourceName: src.name, resolution: "1080p", fps: 60 });
+    const cam = await store.toggleCamera();
+    return { share: share.ok, cam: cam.ok && cam.videoEnabled };
+  })()`);
+  let videoCheck = null;
+  for (let i = 0; i < 24; i++) {
+    await delay(500);
+    videoCheck = await peerWin.webContents.executeJavaScript(`(async () => {
+      const { Voice } = await import("./services/gatewayAdapter.js");
+      const store = window.__DISCORD_STORE__;
+      const screen = await Voice.getInboundVideoStats("u_davis", "screen");
+      const camera = await Voice.getInboundVideoStats("u_davis", "camera");
+      store.openCallView?.("c_voice_lounge");
+      const strip = [...document.querySelectorAll(".call-strip [data-user-id]")].map((el) => el.getAttribute("data-user-id"));
+      return {
+        screen,
+        camera,
+        screenInUi: Boolean(document.querySelector('[data-remote-video="u_davis:screen"] video')),
+        cameraFlag: Boolean(store.getActiveChannel?.() && true) && (store.getState().guilds.find((g) => g.id === "g_rea")?.channels.find((c) => c.id === "c_voice_lounge")?.voiceParticipants || []).some((p) => p.userId === "u_davis" && p.videoEnabled),
+        strip
+      };
+    })()`);
+    if (videoCheck.screen?.width >= 1280 && videoCheck.screen?.fps > 0 && videoCheck.camera?.fps > 0 && videoCheck.cameraFlag) break;
+  }
+  await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    await store.toggleCamera();
+    await store.stopScreenShare();
+  })()`);
+
   // Signaling stays private: a third party cannot send setup messages into the call
   const outsiderBlocked = await mainWin.webContents.executeJavaScript(`(async () => {
     const backend = window.DiscordNative.backend;
@@ -2034,7 +2090,9 @@ async function runVerification() {
     levelWhileMuted: whileMuted.level,
     levelAfterUnmute: afterUnmute.level,
     outsiderBlocked,
-    closedAfterLeave
+    closedAfterLeave,
+    shareStart,
+    videoCheck
   };
   recordTest(
     "Domain 18: Real Voice Between Two People (WebRTC)",
@@ -2046,8 +2104,148 @@ async function runVerification() {
       voiceCheck.levelWhileMuted < 0.01 &&
       voiceCheck.levelAfterUnmute > 0.05 &&
       voiceCheck.outsiderBlocked &&
-      voiceCheck.closedAfterLeave,
+      voiceCheck.closedAfterLeave &&
+      shareStart.share &&
+      shareStart.cam &&
+      videoCheck?.screen?.width >= 1280 &&
+      videoCheck?.screen?.fps > 0 &&
+      videoCheck?.camera?.fps > 0 &&
+      videoCheck?.cameraFlag,
     JSON.stringify(voiceCheck)
+  );
+
+  // =========================================================================
+  // SUITE 31: Moderation & chat batch (ban, delete server, empty new accounts,
+  // links, typing indicator, emoji picker, message menu, profile card buttons)
+  // =========================================================================
+  const batchCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const ui = window.__DISCORD_UI_STATE__;
+    const backend = window.DiscordNative.backend;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 4000) => {
+      const t0 = Date.now();
+      while (!fn() && Date.now() - t0 < ms) await wait(50);
+      return fn();
+    };
+
+    // A brand-new account starts with no servers at all
+    await backend.rpc("register", { email: "banido@exemplo.com", username: "banido", displayName: "Banido", password: "senha12345" });
+    const login = await backend.rpc("login", { emailOrUsername: "banido", password: "senha12345" });
+    const firstSnap = await backend.rpc("getStateSnapshot", {}, login.sessionToken);
+    const newAccountEmpty = firstSnap.snapshot.guilds.length === 0;
+
+    // Davis creates a server and invites the account, then bans it
+    const guild = await store.createGuild({ name: "Servidor Temporario", iconColor: "#ed4245" });
+    const invite = await store.createServerInvite(guild.id, {});
+    const joined = await backend.rpc("acceptInvite", { tokenOrUrl: invite.invite.url }, login.sessionToken);
+    await store.syncFromBackend({ silent: true });
+    const bannedId = login.user.id;
+    const memberBefore = (store.getActiveGuild().memberIds || []).includes(bannedId);
+
+    // Profile card of that member shows Mensagem / Adicionar amigo / Banir
+    ui.userPopout = { userId: bannedId };
+    store.notify({ skipPersist: true });
+    await wait(150);
+    const popoutButtons = {
+      message: Boolean(document.querySelector('[data-testid="popout-message-btn"]')),
+      addFriend: Boolean(document.querySelector('[data-testid="popout-add-friend-btn"]')),
+      ban: Boolean(document.querySelector('[data-testid="popout-ban-btn"]'))
+    };
+    ui.userPopout = null;
+
+    const ban = await store.banMember(guild.id, bannedId);
+    const memberAfter = (store.getState().guilds.find((g) => g.id === guild.id)?.memberIds || []).includes(bannedId);
+    const rejoin = await backend.rpc("acceptInvite", { tokenOrUrl: invite.invite.url }, login.sessionToken);
+
+    // Deleting the server needs the password and removes it for everyone
+    const wrongPassword = await store.deleteGuild(guild.id, "senha-errada");
+    const deleted = await store.deleteGuild(guild.id, "password123");
+    const gone = !store.getState().guilds.some((g) => g.id === guild.id);
+
+    // Links in messages are real, clickable links
+    store.selectGuild("g_rea", "c_general");
+    await store.sendMessage("c_general", "olha isso https://example.com/pagina?x=1&y=2 legal");
+    await waitFor(() => document.querySelector('a.chat-link[data-url="https://example.com/pagina?x=1&y=2"]'));
+    const linkOk = Boolean(document.querySelector('a.chat-link[data-url="https://example.com/pagina?x=1&y=2"]'));
+
+    // Maria typing shows up under Davis's chat box, and goes away with her message
+    const maria = await backend.rpc("login", { emailOrUsername: "maria_real", password: "password123" });
+    await backend.rpc("typing", { channelId: "c_general" }, maria.sessionToken);
+    const typingShown = await waitFor(() => (document.querySelector('[data-testid="typing-indicator"]')?.textContent || "").includes("digitando"));
+    await backend.rpc("sendMessage", { channelId: "c_general", content: "oi" }, maria.sessionToken);
+    const typingCleared = await waitFor(() => !(document.querySelector('[data-testid="typing-indicator"]')?.textContent || "").includes("digitando"));
+    // An outsider cannot fake typing in a channel they cannot see
+    const outsiderTyping = await backend.rpc("typing", { channelId: "c_general" }, login.sessionToken);
+
+    // Right-click on a message: Responder / Editar / Excluir...
+    await wait(200);
+    const row = [...document.querySelectorAll(".message-row[data-message-id]")].pop();
+    const r = row.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 200, clientY: r.top + 10 }));
+    await wait(150);
+    const menuItems = [...document.querySelectorAll('[data-testid="context-menu"] .context-menu-item')].map((b) => b.textContent.trim());
+    ui.contextMenu = null;
+
+    // Emoji picker: every emoji, frequent ones first, search by name
+    ui.emojiPickerForMessageId = "composer";
+    store.notify({ skipPersist: true });
+    await wait(200);
+    const picker = document.querySelector('[data-testid="emoji-picker"]');
+    const emojiCount = picker ? picker.querySelectorAll(".emoji-btn").length : 0;
+    const firstFrequent = picker?.querySelector("[data-frequent-grid] .emoji-btn")?.dataset.emoji;
+    const search = picker?.querySelector(".emoji-search");
+    if (search) {
+      search.value = "fire";
+      search.dispatchEvent(new Event("input"));
+    }
+    const firstResult = picker?.querySelector("[data-results-grid] .emoji-btn")?.dataset.emoji;
+    ui.emojiPickerForMessageId = null;
+    store.notify({ skipPersist: true });
+
+    return {
+      newAccountEmpty,
+      joined: joined.ok,
+      memberBefore,
+      popoutButtons,
+      banOk: ban.ok,
+      memberAfter,
+      rejoinBlocked: !rejoin.ok,
+      wrongPasswordRejected: !wrongPassword.ok,
+      deleteOk: deleted.ok && gone,
+      linkOk,
+      typingShown,
+      typingCleared,
+      outsiderTypingBlocked: !outsiderTyping.ok,
+      menuItems,
+      emojiCount,
+      firstFrequent,
+      firstResult
+    };
+  })()`);
+  recordTest(
+    "Domain 19: Moderation & Chat Batch",
+    "New accounts start empty; ban removes and blocks re-join; delete server needs the password; links, typing indicator, message menu, emoji picker and profile card buttons",
+    batchCheck.newAccountEmpty &&
+      batchCheck.joined &&
+      batchCheck.memberBefore &&
+      batchCheck.popoutButtons.message &&
+      batchCheck.popoutButtons.addFriend &&
+      batchCheck.popoutButtons.ban &&
+      batchCheck.banOk &&
+      !batchCheck.memberAfter &&
+      batchCheck.rejoinBlocked &&
+      batchCheck.wrongPasswordRejected &&
+      batchCheck.deleteOk &&
+      batchCheck.linkOk &&
+      batchCheck.typingShown &&
+      batchCheck.typingCleared &&
+      batchCheck.outsiderTypingBlocked &&
+      ["Responder", "Copiar texto", "Excluir mensagem"].every((label) => batchCheck.menuItems.includes(label)) &&
+      batchCheck.emojiCount > 1500 &&
+      batchCheck.firstFrequent === "👍" &&
+      batchCheck.firstResult === "🔥",
+    JSON.stringify(batchCheck)
   );
 
   // =========================================================================

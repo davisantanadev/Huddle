@@ -12,7 +12,8 @@ const {
   shell,
   desktopCapturer,
   session,
-  powerMonitor
+  powerMonitor,
+  net
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -71,22 +72,34 @@ app.commandLine.appendSwitch(
     "AudioServiceOutOfProcess"
   ].join(",")
 );
-// Windows Graphics Capture for screens and windows: GPU capture, no GDI copies
+// Windows Graphics Capture for screens and windows: GPU capture, no GDI copies.
+// Camera/screen capture runs inside the main process too (no extra utility process).
 app.commandLine.appendSwitch(
   "enable-features",
-  ["WebRtcAllowWgcScreenCapturer", "WebRtcAllowWgcWindowCapturer", "NetworkServiceInProcess2", "NetworkServiceInProcess"].join(",")
+  [
+    "WebRtcAllowWgcScreenCapturer",
+    "WebRtcAllowWgcWindowCapturer",
+    "NetworkServiceInProcess2",
+    "NetworkServiceInProcess",
+    "RunVideoCaptureServiceInBrowserProcess"
+  ].join(",")
 );
+// The GPU process is folded into the main one: the app shows as two processes
+// (app + page) instead of three
+app.commandLine.appendSwitch("in-process-gpu");
 app.commandLine.appendSwitch("disk-cache-size", "16777216");
 app.commandLine.appendSwitch("media-cache-size", "8388608");
-// GPU acceleration costs ~100 MB of private memory (measured: 260 MB -> 154 MB
-// without it), so it is off unless enabled in Configurações > Windows & Memória.
+// GPU acceleration is on by default: without it GIFs, video and screen shares
+// are decoded and drawn on the CPU (choppy) and video can't be hardware-encoded.
+// It can be turned off in Configurações > Windows & Memória (saves ~100 MB).
 // Read straight from settings.json: it must be decided before the app is ready.
 function isGpuAccelerationEnabled() {
   try {
     const p = path.join(APP_DATA_DIR, "settings.json");
-    return Boolean(JSON.parse(fs.readFileSync(p, "utf8")).GPU_ACCELERATION);
+    const value = JSON.parse(fs.readFileSync(p, "utf8")).GPU_ACCELERATION;
+    return value === undefined ? true : Boolean(value);
   } catch (_) {
-    return false;
+    return true;
   }
 }
 if (!isGpuAccelerationEnabled()) {
@@ -100,7 +113,7 @@ const BUILD_INFO = {
   releaseChannel: "stable",
   sentryDist: "stable-win-x64",
   sentryRelease: "discord-desktop-7e0a1fef1fc1295b33b9404e5b77f1ae39d0c6e0",
-  version: "1.0.9262"
+  version: app.getVersion()
 };
 
 const DEFAULT_WIDTH = 1280;
@@ -124,7 +137,15 @@ let remoteServerUrl = null;
 let mediaSessionActive = false;
 let lastTrimAt = 0;
 
-function trimProcessWorkingSets() {
+// Emptying the working set makes every page fault back in on the next frame,
+// which showed up as stutter in GIFs, video and screen shares. So it only runs
+// while the app is out of sight (tray/minimized) and no call is going on.
+function appInView() {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized());
+}
+
+function trimProcessWorkingSets({ force = false } = {}) {
+  if (!force && (mediaSessionActive || appInView())) return;
   const light = mediaSessionActive;
   if (light && !isLightTrimAvailable()) return;
   if (!light) {
@@ -163,14 +184,8 @@ function cancelIdleTrim() {
   idleTrimTimer = null;
 }
 
-// While the app is in use: trim at most every ACTIVE_TRIM_INTERVAL_MS, at a
-// moment with no keyboard/mouse input for a few seconds (so it never lands in
-// the middle of typing). Also once after a minute with nobody at the PC.
-const SYSTEM_IDLE_TRIM_SECONDS = 60;
-const ACTIVE_TRIM_INTERVAL_MS = 30 * 1000;
-// Screen capture cycles through fresh frame buffers, so memory climbs faster mid-call
-const MEDIA_TRIM_INTERVAL_MS = 10 * 1000;
-const ACTIVE_TRIM_QUIET_SECONDS = 3;
+// Also once after a few minutes with nobody at the PC (and no call going on)
+const SYSTEM_IDLE_TRIM_SECONDS = 5 * 60;
 let systemIdleTrimmed = false;
 function startSystemIdleWatch() {
   setInterval(() => {
@@ -180,18 +195,13 @@ function startSystemIdleWatch() {
     } catch (_) {
       return;
     }
-    if (idleSeconds >= SYSTEM_IDLE_TRIM_SECONDS && !systemIdleTrimmed) {
+    if (idleSeconds >= SYSTEM_IDLE_TRIM_SECONDS && !systemIdleTrimmed && !mediaSessionActive) {
       systemIdleTrimmed = true;
-      trimProcessWorkingSets();
+      trimProcessWorkingSets({ force: true });
       return;
     }
     if (idleSeconds < SYSTEM_IDLE_TRIM_SECONDS) systemIdleTrimmed = false;
-    // Keeps going while nobody touches the PC (e.g. watching a stream)
-    const interval = mediaSessionActive ? MEDIA_TRIM_INTERVAL_MS : ACTIVE_TRIM_INTERVAL_MS;
-    if (idleSeconds >= ACTIVE_TRIM_QUIET_SECONDS && Date.now() - lastTrimAt >= interval) {
-      trimProcessWorkingSets();
-    }
-  }, 5 * 1000).unref();
+  }, 15 * 1000).unref();
 }
 
 function getSettingsPath() {
@@ -491,6 +501,44 @@ function launchMainWindow(showImmediately = false) {
     }
   });
 
+  // Standard right-click menu for text boxes, selected text and links (the
+  // renderer shows its own menu for messages and servers)
+  mainWindow.webContents.on("context-menu", (_event, params) => {
+    const template = [];
+    if (params.isEditable) {
+      const f = params.editFlags;
+      template.push(
+        { label: "Desfazer", role: "undo", enabled: f.canUndo },
+        { label: "Refazer", role: "redo", enabled: f.canRedo },
+        { type: "separator" },
+        { label: "Recortar", role: "cut", enabled: f.canCut },
+        { label: "Copiar", role: "copy", enabled: f.canCopy },
+        { label: "Colar", role: "paste", enabled: f.canPaste },
+        { label: "Colar sem formatação", role: "pasteAndMatchStyle", enabled: f.canPaste },
+        { label: "Excluir", role: "delete", enabled: f.canDelete },
+        { type: "separator" },
+        { label: "Selecionar tudo", role: "selectAll", enabled: f.canSelectAll }
+      );
+    } else if (params.selectionText && params.selectionText.trim()) {
+      template.push({ label: "Copiar", role: "copy" });
+    }
+    if (params.linkURL && /^https?:\/\//i.test(params.linkURL)) {
+      if (template.length) template.push({ type: "separator" });
+      template.push(
+        { label: "Abrir link no navegador", click: () => shell.openExternal(params.linkURL) },
+        { label: "Copiar link", click: () => clipboard.writeText(params.linkURL) }
+      );
+    }
+    if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
+  });
+
+  // The app window never navigates away from the app: web links go to the browser
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url.startsWith("file://")) return;
+    event.preventDefault();
+    if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
+  });
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (details.url.startsWith("https://") || details.url.startsWith("http://")) {
       shell.openExternal(details.url);
@@ -596,7 +644,7 @@ function registerIpcHandlers(backend) {
         await mainWindow.webContents.session.clearCodeCaches({});
       }
     } catch (_) {}
-    trimProcessWorkingSets();
+    trimProcessWorkingSets({ force: true });
     return { ok: true };
   });
 
@@ -687,6 +735,53 @@ function registerIpcHandlers(backend) {
 
   ipcMain.on("DISCORD_APP_GET_HOST_VERSION_SYNC", (event) => {
     event.returnValue = BUILD_INFO.version;
+  });
+
+  // Updates: the server publishes /download/version.json next to Eco.zip.
+  // Installing runs the same installer as the first install (it downloads,
+  // checks the SHA-256, closes this app, replaces the files and reopens it).
+  const updateBase = () => {
+    const cfg = loadAppConfig();
+    return String(cfg.serverUrl || cfg.publicUrl || "").replace(/\/+$/, "");
+  };
+  const newerVersion = (a, b) => {
+    const pa = String(a).split(".").map(Number);
+    const pb = String(b).split(".").map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+    }
+    return false;
+  };
+  ipcMain.handle("DISCORD_UPDATE_CHECK", async () => {
+    const base = updateBase();
+    if (!/^https:\/\//.test(base)) return { ok: false, error: "Este app não está ligado a um servidor de atualizações." };
+    try {
+      const res = await net.fetch(`${base}/download/version.json`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const info = await res.json();
+      const latest = String(info.version || "");
+      return {
+        ok: true,
+        current: BUILD_INFO.version,
+        latest,
+        notes: String(info.notes || "").slice(0, 2000),
+        available: Boolean(latest) && newerVersion(latest, BUILD_INFO.version)
+      };
+    } catch (err) {
+      return { ok: false, error: "Não foi possível falar com o servidor de atualizações." };
+    }
+  });
+  ipcMain.handle("DISCORD_UPDATE_INSTALL", async () => {
+    const base = updateBase();
+    if (!/^https:\/\//.test(base) || !app.isPackaged) return { ok: false, error: "Atualização automática só funciona no app instalado." };
+    const { spawn } = require("child_process");
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${base}/download/install.ps1' | iex`],
+      { detached: true, stdio: "ignore", windowsHide: false }
+    );
+    child.unref();
+    return { ok: true };
   });
 
   ipcMain.handle("DISCORD_APP_SET_BADGE_COUNT", (_e, count) => {
@@ -800,7 +895,7 @@ function registerIpcHandlers(backend) {
   });
 
   ipcMain.on("DISCORD_GPU_SETTINGS_GET_ENABLE_HWACCEL_SYNC", (event) => {
-    event.returnValue = Boolean(getSetting("GPU_ACCELERATION", false));
+    event.returnValue = Boolean(getSetting("GPU_ACCELERATION", true));
   });
 
   ipcMain.on("DISCORD_GPU_SETTINGS_SET_ENABLE_HWACCEL", (_e, enabled) => {
@@ -844,11 +939,27 @@ function registerIpcHandlers(backend) {
 // Only one copy of the app per profile: opening it again (shortcut, Windows
 // startup) brings the existing window forward instead of starting another set
 // of processes. The lock is tied to the userData folder set above.
+// eco://convite/<code> links (the "Entrar no servidor" button of the invite
+// page) start the app, or reach the running copy through second-instance.
+const DEEP_LINK_PROTOCOL = "eco";
+let pendingDeepLink = findDeepLink(process.argv);
+
+function findDeepLink(argv) {
+  return (argv || []).find((arg) => typeof arg === "string" && arg.toLowerCase().startsWith(`${DEEP_LINK_PROTOCOL}://`)) || null;
+}
+
+function deliverDeepLink(url) {
+  if (!url) return;
+  pendingDeepLink = url;
+  webContentsSend("DEEP_LINK", url);
+}
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    deliverDeepLink(findDeepLink(argv));
     startHidden = false;
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -860,6 +971,13 @@ if (!gotSingleInstanceLock) {
 
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
+  // Only the installed app claims eco:// (a dev checkout would steal the links)
+  if (app.isPackaged) app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
+  ipcMain.handle("DISCORD_DEEP_LINK_TAKE", () => {
+    const url = pendingDeepLink;
+    pendingDeepLink = null;
+    return url;
+  });
   appSettings = loadSettings();
   // app.config.json → serverUrl set: everyone shares that hosted server, so no
   // local backend is started. Empty: the app runs its own backend on this PC.
@@ -875,7 +993,10 @@ app.whenReady().then(async () => {
   prepareHelper(app.getPath("userData")).catch(() => null);
   startSystemIdleWatch();
   // Running games feed the profile's "Atividade" tab (the renderer reports them for the signed-in account)
-  startGameDetector((activity) => webContentsSend("GAME_ACTIVITY", activity));
+  startGameDetector((activity) => webContentsSend(activity.kind === "spotify" ? "SPOTIFY_ACTIVITY" : "GAME_ACTIVITY", activity), {
+    isSpotifyEnabled: () => Boolean(getSetting("SPOTIFY_SYNC", false)),
+    isGameActivityEnabled: () => getSetting("SHOW_GAME_ACTIVITY", true) !== false
+  });
 
   if (startHidden && tray) {
     launchMainWindow(false);

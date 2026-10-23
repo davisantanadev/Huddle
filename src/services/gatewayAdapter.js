@@ -794,17 +794,58 @@ export const VAD = new VoiceActivityDetector();
 // covers networks where a direct path is impossible.
 //
 // To avoid both sides offering at once, the user with the smaller id always
-// makes the offer; the other answers. Each connection has exactly one audio
-// transceiver (created by the offerer, adopted by the answerer from the offer),
-// so a microphone that arrives later or a device switch is attached with
-// replaceTrack, without renegotiating.
+// makes the offer; the other answers. Every connection has the same four
+// transceivers, created by the offerer and adopted by the answerer from the
+// offer: microphone, screen video, camera video and screen audio. Starting a
+// screen share or the camera, or switching the microphone, only swaps the
+// track on its slot (replaceTrack), without renegotiating.
+//
+// Screen video goes out at the resolution and frame rate picked in the share
+// picker, with a bitrate sized for them (up to 120 FPS), hardware-encoded
+// H.264 when the PC supports it.
+const SLOTS = ["mic", "screen", "camera", "screenAudio"];
+const SLOT_KINDS = { mic: "audio", screen: "video", camera: "video", screenAudio: "audio" };
+const CAMERA_MAX_BITRATE = 2_500_000;
+
+// Bits per second for a screen share: enough for sharp text and fluid motion
+export function screenBitrateFor(width, height, fps) {
+  const bits = width * height * fps * 0.07;
+  return Math.round(Math.min(30_000_000, Math.max(2_000_000, bits)));
+}
+
+// Starts video near the target bitrate instead of ramping up from ~300 kbps
+// (which looked like 144p for the first seconds of every share)
+function tuneVideoSdp(sdp) {
+  return sdp.replace(/^(a=fmtp:\d+ .*)$/gm, (line) => {
+    if (/x-google-start-bitrate|apt=/.test(line)) return line;
+    return `${line};x-google-start-bitrate=8000;x-google-min-bitrate=1500`;
+  });
+}
+
+function preferredVideoCodecs() {
+  const caps = typeof RTCRtpReceiver !== "undefined" && RTCRtpReceiver.getCapabilities?.("video");
+  if (!caps?.codecs?.length) return null;
+  const rank = (c) => {
+    const mime = c.mimeType.toLowerCase();
+    if (mime === "video/h264") return /packetization-mode=1/.test(c.sdpFmtpLine || "") ? 0 : 1;
+    if (mime === "video/vp9") return 2;
+    if (mime === "video/vp8") return 3;
+    if (mime === "video/av1") return 4;
+    return 5; // rtx, red, ulpfec...
+  };
+  return [...caps.codecs].sort((a, b) => rank(a) - rank(b));
+}
+
 class VoiceMesh {
   constructor() {
     this.channelId = null;
     this.meId = null;
     this.iceServers = [];
-    this.localTrack = null;
-    this.peers = new Map(); // userId -> { pc, audio, pendingCandidates, initiator, restartTimer }
+    this.tracks = { mic: null, screen: null, camera: null, screenAudio: null };
+    this.screenEncoding = { maxBitrate: 6_000_000, maxFramerate: 60 };
+    this.peers = new Map(); // userId -> { pc, audio, screenAudio, remote, pendingCandidates, initiator, restartTimer }
+    this.remoteVideos = new Map(); // `${userId}:${slot}` -> <video> kept between renders
+    this.onRemoteMedia = null; // (userId, slot) => void
     this.muted = false;
     this.deafened = false;
     this.outputDeviceId = "default";
@@ -824,14 +865,104 @@ class VoiceMesh {
     this.sendSignal = sendSignal;
   }
 
+  get localTrack() {
+    return this.tracks.mic;
+  }
+
   // Microphone track to send (null = nothing yet)
   setLocalStream(stream) {
-    this.localTrack = stream?.getAudioTracks()[0] || null;
-    if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
-    for (const peer of this.peers.values()) {
-      const sender = peer.pc.getTransceivers()[0]?.sender;
-      if (sender) sender.replaceTrack(this.localTrack).catch(() => {});
+    const track = stream?.getAudioTracks()[0] || null;
+    if (track) track.enabled = !this.muted && !this.deafened;
+    this.setTrack("mic", track);
+  }
+
+  // Screen share (video + optional PC audio) at the chosen quality; null stops it
+  setScreenStream(stream, { width = 1920, height = 1080, fps = 60 } = {}) {
+    this.screenEncoding = { maxBitrate: screenBitrateFor(width, height, fps), maxFramerate: fps };
+    this.setTrack("screen", stream?.getVideoTracks()[0] || null);
+    this.setTrack("screenAudio", stream?.getAudioTracks()[0] || null);
+  }
+
+  setCameraStream(stream) {
+    this.setTrack("camera", stream?.getVideoTracks()[0] || null);
+  }
+
+  setTrack(slot, track) {
+    this.tracks[slot] = track || null;
+    for (const peer of this.peers.values()) this.applyTrack(peer, slot);
+  }
+
+  applyTrack(peer, slot) {
+    const transceiver = peer.pc.getTransceivers()[SLOTS.indexOf(slot)];
+    if (!transceiver) return;
+    transceiver.sender.replaceTrack(this.tracks[slot]).catch(() => {});
+    this.applyEncoding(transceiver.sender, slot);
+  }
+
+  // Bitrate/frame-rate limits only exist once the connection is negotiated
+  applyEncoding(sender, slot) {
+    if (slot !== "screen" && slot !== "camera") return;
+    const params = sender.getParameters();
+    if (!params.encodings?.length) return;
+    const enc = params.encodings[0];
+    if (slot === "screen") {
+      enc.maxBitrate = this.screenEncoding.maxBitrate;
+      enc.maxFramerate = this.screenEncoding.maxFramerate;
+      enc.scaleResolutionDownBy = 1;
+      enc.priority = "high";
+      enc.networkPriority = "high";
+      params.degradationPreference = "balanced";
+    } else {
+      enc.maxBitrate = CAMERA_MAX_BITRATE;
+      enc.maxFramerate = 30;
     }
+    sender.setParameters(params).catch(() => {});
+  }
+
+  applyAllTracks(peer) {
+    for (const slot of SLOTS) this.applyTrack(peer, slot);
+  }
+
+  // The <video> showing someone's screen or camera; the UI mounts it where needed
+  getRemoteVideo(userId, slot = "screen") {
+    return this.remoteVideos.get(`${userId}:${slot}`) || null;
+  }
+
+  // Live numbers of what we receive from someone (for the stream overlay)
+  async getInboundVideoStats(userId, slot = "screen") {
+    const peer = this.peers.get(userId);
+    const transceiver = peer?.pc.getTransceivers()[SLOTS.indexOf(slot)];
+    if (!transceiver) return null;
+    const report = await transceiver.receiver.getStats().catch(() => null);
+    let stats = null;
+    report?.forEach((r) => {
+      if (r.type === "inbound-rtp" && r.kind === "video") {
+        stats = { fps: Math.round(r.framesPerSecond || 0), width: r.frameWidth || 0, height: r.frameHeight || 0, decoder: r.decoderImplementation || "" };
+      }
+    });
+    return stats;
+  }
+
+  async getOutboundVideoStats(slot = "screen") {
+    for (const peer of this.peers.values()) {
+      const transceiver = peer.pc.getTransceivers()[SLOTS.indexOf(slot)];
+      if (!transceiver?.sender.track) continue;
+      const report = await transceiver.sender.getStats().catch(() => null);
+      let stats = null;
+      report?.forEach((r) => {
+        if (r.type === "outbound-rtp" && r.kind === "video") {
+          stats = {
+            fps: Math.round(r.framesPerSecond || 0),
+            width: r.frameWidth || 0,
+            height: r.frameHeight || 0,
+            encoder: r.encoderImplementation || "",
+            limitedBy: r.qualityLimitationReason || "none"
+          };
+        }
+      });
+      if (stats) return stats;
+    }
+    return null;
   }
 
   // Connect to people who joined, drop people who left
@@ -848,25 +979,40 @@ class VoiceMesh {
 
   createPeer(userId, initiator) {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers, bundlePolicy: "max-bundle" });
-    // The answerer must not add its own transceiver: the offer creates one, and
-    // a second, unmatched transceiver would leave our microphone unsent
+    // The answerer must not add its own transceivers: the offer creates them,
+    // and extra, unmatched ones would leave our tracks unsent
     if (initiator) {
-      const transceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
-      if (this.localTrack) transceiver.sender.replaceTrack(this.localTrack).catch(() => {});
+      for (const slot of SLOTS) {
+        const transceiver = pc.addTransceiver(SLOT_KINDS[slot], { direction: "sendrecv" });
+        this.preferCodecs(transceiver, slot);
+      }
     }
 
-    const audio = new Audio();
-    audio.autoplay = true;
-    audio.muted = this.deafened;
-    audio.volume = this.outputVolume;
-    this.applySink(audio);
+    const makeAudio = () => {
+      const el = new Audio();
+      el.autoplay = true;
+      el.muted = this.deafened;
+      el.volume = this.outputVolume;
+      this.applySink(el);
+      return el;
+    };
+    const audio = makeAudio();
+    const screenAudio = makeAudio();
 
-    const peer = { pc, audio, pendingCandidates: [], initiator, restartTimer: null };
+    const peer = { pc, audio, screenAudio, pendingCandidates: [], initiator, restartTimer: null };
     this.peers.set(userId, peer);
+    if (initiator) this.applyAllTracks(peer);
 
     pc.ontrack = (e) => {
-      audio.srcObject = e.streams[0] || new MediaStream([e.track]);
-      audio.play().catch(() => {});
+      const slot = SLOTS[pc.getTransceivers().indexOf(e.transceiver)];
+      const stream = new MediaStream([e.track]);
+      if (slot === "mic" || slot === "screenAudio") {
+        const el = slot === "mic" ? audio : screenAudio;
+        el.srcObject = stream;
+        el.play().catch(() => {});
+      } else if (slot) {
+        this.setRemoteVideo(userId, slot, stream);
+      }
     };
     pc.onicecandidate = (e) => {
       if (e.candidate) this.signal(userId, "ice", e.candidate.toJSON());
@@ -887,13 +1033,40 @@ class VoiceMesh {
     return peer;
   }
 
+  preferCodecs(transceiver, slot) {
+    if (SLOT_KINDS[slot] !== "video" || typeof transceiver.setCodecPreferences !== "function") return;
+    const codecs = preferredVideoCodecs();
+    if (codecs) {
+      try {
+        transceiver.setCodecPreferences(codecs);
+      } catch (_) {}
+    }
+  }
+
+  setRemoteVideo(userId, slot, stream) {
+    const key = `${userId}:${slot}`;
+    let video = this.remoteVideos.get(key);
+    if (!video) {
+      video = document.createElement("video");
+      video.className = "screenshare-video";
+      video.muted = true; // sound comes through the audio elements
+      video.autoplay = true;
+      video.playsInline = true;
+      video.setAttribute("data-testid", slot === "screen" ? "screenshare-remote-video" : "camera-remote-video");
+      this.remoteVideos.set(key, video);
+    }
+    video.srcObject = stream;
+    video.play().catch(() => {});
+    if (typeof this.onRemoteMedia === "function") this.onRemoteMedia(userId, slot);
+  }
+
   async makeOffer(userId, { iceRestart = false } = {}) {
     const peer = this.peers.get(userId);
     if (!peer) return;
     try {
       const offer = await peer.pc.createOffer({ iceRestart });
       await peer.pc.setLocalDescription(offer);
-      this.signal(userId, "offer", { type: offer.type, sdp: offer.sdp });
+      this.signal(userId, "offer", { type: offer.type, sdp: tuneVideoSdp(offer.sdp) });
     } catch (_) {}
   }
 
@@ -908,18 +1081,19 @@ class VoiceMesh {
       if (signalType === "offer") {
         if (!peer) peer = this.createPeer(fromUserId, false);
         await peer.pc.setRemoteDescription(signalData);
-        // Send our microphone on the audio transceiver the offer created
-        const transceiver = peer.pc.getTransceivers()[0];
-        if (transceiver) {
+        // Send our tracks on the transceivers the offer created
+        peer.pc.getTransceivers().forEach((transceiver, i) => {
           transceiver.direction = "sendrecv";
-          if (this.localTrack) await transceiver.sender.replaceTrack(this.localTrack).catch(() => {});
-        }
+          this.preferCodecs(transceiver, SLOTS[i]);
+        });
         const answer = await peer.pc.createAnswer();
         await peer.pc.setLocalDescription(answer);
-        this.signal(fromUserId, "answer", { type: answer.type, sdp: answer.sdp });
+        this.signal(fromUserId, "answer", { type: answer.type, sdp: tuneVideoSdp(answer.sdp) });
+        this.applyAllTracks(peer);
         await this.flushCandidates(peer);
       } else if (signalType === "answer" && peer) {
         await peer.pc.setRemoteDescription(signalData);
+        this.applyAllTracks(peer);
         await this.flushCandidates(peer);
       } else if (signalType === "ice" && peer) {
         if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(signalData).catch(() => {});
@@ -945,19 +1119,28 @@ class VoiceMesh {
   // Deafened: hear nobody and send nothing (like Discord)
   setDeafened(deafened) {
     this.deafened = Boolean(deafened);
-    for (const peer of this.peers.values()) peer.audio.muted = this.deafened;
+    for (const peer of this.peers.values()) {
+      peer.audio.muted = this.deafened;
+      peer.screenAudio.muted = this.deafened;
+    }
     if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
   }
 
   setOutputDevice(deviceId) {
     this.outputDeviceId = deviceId || "default";
-    for (const peer of this.peers.values()) this.applySink(peer.audio);
+    for (const peer of this.peers.values()) {
+      this.applySink(peer.audio);
+      this.applySink(peer.screenAudio);
+    }
   }
 
   // 0–100 from the settings slider
   setOutputVolume(percent) {
     this.outputVolume = Math.max(0, Math.min(1, (Number(percent) || 0) / 100));
-    for (const peer of this.peers.values()) peer.audio.volume = this.outputVolume;
+    for (const peer of this.peers.values()) {
+      peer.audio.volume = this.outputVolume;
+      peer.screenAudio.volume = this.outputVolume;
+    }
   }
 
   applySink(audio) {
@@ -982,15 +1165,25 @@ class VoiceMesh {
     try {
       peer.pc.close();
     } catch (_) {}
-    peer.audio.pause();
-    peer.audio.srcObject = null;
+    for (const el of [peer.audio, peer.screenAudio]) {
+      el.pause();
+      el.srcObject = null;
+    }
+    for (const slot of ["screen", "camera"]) {
+      const video = this.remoteVideos.get(`${userId}:${slot}`);
+      if (video) {
+        video.srcObject = null;
+        video.remove();
+        this.remoteVideos.delete(`${userId}:${slot}`);
+      }
+    }
     this.peers.delete(userId);
   }
 
   stop() {
     for (const id of [...this.peers.keys()]) this.closePeer(id);
     this.channelId = null;
-    this.localTrack = null;
+    this.tracks = { mic: null, screen: null, camera: null, screenAudio: null };
     this.sendSignal = null;
   }
 }
@@ -1004,20 +1197,15 @@ export const Voice = new VoiceMesh();
 // source picked in our own picker (electron/screenCapture.js), so frames come
 // straight from the GPU as a live MediaStream. The local preview plays that
 // stream in one long-lived <video> (moved into the page on each render rather
-// than recreated), and viewers get small, throttled JPEG snapshots.
-const VIEWER_FRAME_INTERVAL_MS = 500; // ~2 snapshots/s for people watching
-const VIEWER_FRAME_WIDTH = 640;
+// than recreated); the people in the call receive it as WebRTC video (Voice).
 
 class ScreenShareManager {
   constructor() {
     this.localStream = null;
     this.previewVideo = null;
-    this.snapshotCanvas = null;
-    this.snapshotTimer = null;
     this.fpsTimer = null;
     this.framesThisSecond = 0;
     this.onTrackEnded = null;
-    this.onFrame = null;
     this.stats = this.emptyStats();
   }
 
@@ -1051,25 +1239,25 @@ class ScreenShareManager {
     return [];
   }
 
-  async startCapture(sourceId, { width = 1280, height = 720, frameRate = 30, includeAudio = false } = {}) {
+  // width/height 0 = the source's own size
+  async startCapture(sourceId, { width = 1920, height = 1080, frameRate = 60, includeAudio = false } = {}) {
     this.stopCapture();
-    const fps = Number(frameRate) || 30;
+    const fps = Math.min(120, Number(frameRate) || 60);
     try {
       if (NativeBridge.isElectron() && window.DiscordNative.desktopCapture?.selectSource) {
         await window.DiscordNative.desktopCapture.selectSource(sourceId, includeAudio);
       }
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { max: width },
-          height: { max: height },
-          frameRate: { ideal: fps, max: fps }
-        },
-        audio: Boolean(includeAudio)
-      });
+      const videoConstraints = { frameRate: { ideal: fps, max: fps } };
+      if (width && height) {
+        videoConstraints.width = { max: width };
+        videoConstraints.height = { max: height };
+      }
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints, audio: Boolean(includeAudio) });
 
       const [track] = stream.getVideoTracks();
       if (!track) throw new Error("A fonte escolhida não entregou vídeo.");
-      track.contentHint = "motion";
+      // "motion" keeps the frame rate; at 30 FPS or less, sharp text matters more
+      track.contentHint = fps > 30 ? "motion" : "detail";
       track.onended = () => {
         // The shared window was closed (or the screen disconnected)
         this.stopCapture();
@@ -1081,7 +1269,7 @@ class ScreenShareManager {
       this.stats = {
         requestedFps: fps,
         capturedFps: 0,
-        sentFps: Math.round(1000 / VIEWER_FRAME_INTERVAL_MS),
+        sentFps: 0,
         width: settings.width || 0,
         height: settings.height || 0,
         resolution: settings.width ? `${settings.width}x${settings.height}` : ""
@@ -1099,7 +1287,6 @@ class ScreenShareManager {
       await video.play().catch(() => {});
 
       this.startFpsMeter(video);
-      this.startViewerSnapshots(video);
       return { ok: true, stream, stats: this.getStats() };
     } catch (err) {
       this.stopCapture();
@@ -1131,29 +1318,10 @@ class ScreenShareManager {
     }, 1000);
   }
 
-  // Small JPEG snapshots for the other people in the call (only when someone listens)
-  startViewerSnapshots(video) {
-    this.snapshotCanvas = document.createElement("canvas");
-    const ctx = this.snapshotCanvas.getContext("2d", { alpha: false });
-    this.snapshotTimer = setInterval(() => {
-      if (typeof this.onFrame !== "function" || !video.videoWidth) return;
-      const scale = Math.min(1, VIEWER_FRAME_WIDTH / video.videoWidth);
-      const w = Math.round(video.videoWidth * scale);
-      const h = Math.round(video.videoHeight * scale);
-      if (this.snapshotCanvas.width !== w) this.snapshotCanvas.width = w;
-      if (this.snapshotCanvas.height !== h) this.snapshotCanvas.height = h;
-      ctx.drawImage(video, 0, 0, w, h);
-      this.onFrame(this.snapshotCanvas.toDataURL("image/jpeg", 0.7));
-    }, VIEWER_FRAME_INTERVAL_MS);
-  }
-
   stopCapture() {
-    clearInterval(this.snapshotTimer);
     clearInterval(this.fpsTimer);
-    this.snapshotTimer = null;
     this.fpsTimer = null;
     this.framesThisSecond = 0;
-    this.snapshotCanvas = null;
 
     if (this.previewVideo) {
       try {
@@ -1182,3 +1350,67 @@ class ScreenShareManager {
 }
 
 export const ScreenShare = new ScreenShareManager();
+
+// ==========================================================================
+// Camera
+// ==========================================================================
+class CameraManager {
+  constructor() {
+    this.stream = null;
+    this.previewVideo = null;
+  }
+
+  getStream() {
+    return this.stream;
+  }
+
+  getPreviewElement() {
+    return this.previewVideo;
+  }
+
+  async start(deviceId = "default") {
+    this.stop();
+    try {
+      const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } };
+      if (deviceId && deviceId !== "default") video.deviceId = { exact: deviceId };
+      const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+      this.stream = stream;
+      const el = document.createElement("video");
+      el.className = "camera-video mirrored";
+      el.muted = true;
+      el.autoplay = true;
+      el.playsInline = true;
+      el.setAttribute("data-testid", "camera-local-video");
+      el.srcObject = stream;
+      this.previewVideo = el;
+      await el.play().catch(() => {});
+      return { ok: true, stream };
+    } catch (err) {
+      this.stop();
+      const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+      const missing = err && (err.name === "NotFoundError" || err.name === "OverconstrainedError");
+      return {
+        ok: false,
+        error: denied
+          ? "O Windows bloqueou a câmera. Libere em Configurações do Windows > Privacidade > Câmera."
+          : missing
+            ? "Nenhuma câmera encontrada."
+            : "Não foi possível ligar a câmera (ela pode estar em uso por outro app)."
+      };
+    }
+  }
+
+  stop() {
+    if (this.previewVideo) {
+      this.previewVideo.srcObject = null;
+      this.previewVideo.remove();
+      this.previewVideo = null;
+    }
+    if (this.stream) {
+      for (const t of this.stream.getTracks()) t.stop();
+      this.stream = null;
+    }
+  }
+}
+
+export const Camera = new CameraManager();

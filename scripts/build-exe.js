@@ -9,7 +9,8 @@ const { loadAppConfig } = require("../electron/appConfig");
 
 async function build() {
   const rootDir = path.resolve(__dirname, "..");
-  const outDir = path.join(rootDir, "dist");
+  // BUILD_OUT_DIR builds somewhere else (e.g. while the app in dist/ is open)
+  const outDir = process.env.BUILD_OUT_DIR ? path.resolve(process.env.BUILD_OUT_DIR) : path.join(rootDir, "dist");
   const iconPath = path.join(rootDir, "assets", "app.ico");
 
   console.log("[1/3] Packaging Electron application with @electron/packager...");
@@ -36,6 +37,8 @@ async function build() {
   const packagedDir = appPaths[0];
   const packagedExe = path.join(packagedDir, "Discord.exe");
   console.log("Packaged Electron binary at:", packagedExe);
+
+  if (process.env.NO_SHORTCUT === "1") return;
 
   // Desktop shortcut (.lnk) to the packaged app, named after app.config.json →
   // appName. DESKTOP_DIR overrides the folder.

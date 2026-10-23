@@ -4,7 +4,18 @@
 // guilds, channels, messages, invites, and preferences are persisted in SQLite.
 // ==========================================================================
 
-import { NativeBridge, CallSounds, ScreenShare, VoiceDevices, VAD, Voice } from "../services/gatewayAdapter.js";
+import { NativeBridge, CallSounds, ScreenShare, VoiceDevices, VAD, Voice, Camera } from "../services/gatewayAdapter.js";
+
+const TYPING_PING_MS = 3000;
+const TYPING_SHOW_MS = 7000;
+
+// Screen share picker options -> capture size (0 = the source's own size)
+export const SCREEN_RESOLUTIONS = {
+  "720p": { width: 1280, height: 720 },
+  "1080p": { width: 1920, height: 1080 },
+  "1440p": { width: 2560, height: 1440 },
+  source: { width: 0, height: 0 }
+};
 
 const LEGACY_STORAGE_KEY = "discord_desktop_replica_state_v1";
 const SESSION_STORAGE_KEY = "discord_session_user_v2";
@@ -127,7 +138,8 @@ function createEmptyState() {
       outputVolume: 100
     },
     incomingCall: null, // { channelId, callerId } while another user is ringing us
-    screenShares: {}, // channelId -> { userId, guildId, channelId, sourceName, resolution, fps, frameDataUrl }
+    screenShares: {}, // channelId -> { userId, guildId, channelId, sourceName, resolution, fps }
+    typing: {}, // channelId -> { userId: visibleUntil }
     settings: {
       theme: "dark",
       messageDisplay: "cozy",
@@ -293,16 +305,10 @@ class Store {
       if (!packet || !packet.event) return;
       const { event, payload } = packet;
 
-      if (event === "SCREEN_SHARE_FRAME" && payload?.channelId) {
-        // Our own snapshots come back too; we already show the live video
-        if (payload.sharerId === this.state.auth.currentUserId) return;
-        if (this.state.screenShares[payload.channelId]) {
-          this.state.screenShares[payload.channelId].frameDataUrl = payload.frameDataUrl;
-          this.state.screenShares[payload.channelId].updatedAt = payload.updatedAt;
-          // The UI can paint the frame straight into the <img>, skipping a full re-render
-          if (this.onScreenFrame?.(payload.channelId, payload.frameDataUrl)) return;
-          this.notify({ skipPersist: true });
-        }
+      if (event === "SCREEN_SHARE_FRAME") return; // older clients; video now goes over WebRTC
+
+      if (event === "TYPING_STARTED" && payload?.channelId && payload.userId) {
+        this.setTyping(payload.channelId, payload.userId, true);
         return;
       }
 
@@ -343,6 +349,7 @@ class Store {
       }
 
       if (event === "MESSAGE_CREATED" && payload?.channelId) {
+        if (payload.authorId) this.setTyping(payload.channelId, payload.authorId, false);
         this.syncFromBackend({ silent: false }).then(() => this.notifyIncomingMessage(payload.channelId, payload.messageId));
         return;
       }
@@ -363,6 +370,7 @@ class Store {
     this.state.users = snap.users || {};
     this.state.userNotes = snap.userNotes || {};
     this.state.friends = snap.friends || [];
+    this.state.liveActivities = snap.liveActivities || {};
     this.state.dms = snap.dms || [];
     this.state.guilds = snap.guilds || [];
     this.state.discoverableGuilds = snap.discoverableGuilds || [];
@@ -823,6 +831,64 @@ class Store {
     if (wasPlaying !== (activity.state === "started")) this.notify({ skipPersist: true });
   }
 
+  // ==========================================================================
+  // Typing indicator
+  // ==========================================================================
+  // Typing sends a ping at most every TYPING_PING_MS; others show the name for
+  // TYPING_SHOW_MS after the last ping (or until the message arrives)
+  notifyTyping(channelId) {
+    if (!channelId || !NativeBridge.sessionToken) return;
+    const now = Date.now();
+    this.lastTypingPing = this.lastTypingPing || {};
+    if (now - (this.lastTypingPing[channelId] || 0) < TYPING_PING_MS) return;
+    this.lastTypingPing[channelId] = now;
+    NativeBridge.rpc("typing", { channelId });
+  }
+
+  setTyping(channelId, userId, typing) {
+    if (userId === this.state.auth.currentUserId) return;
+    const forChannel = (this.state.typing[channelId] = this.state.typing[channelId] || {});
+    const had = Boolean(forChannel[userId]);
+    if (typing) forChannel[userId] = Date.now() + TYPING_SHOW_MS;
+    else delete forChannel[userId];
+    if (typing) this.lastTypingPing = { ...(this.lastTypingPing || {}), [channelId]: 0 };
+    clearTimeout(this.typingTimer);
+    this.typingTimer = setTimeout(() => this.expireTyping(), TYPING_SHOW_MS + 100);
+    if (had !== typing) this.notify({ skipPersist: true });
+  }
+
+  expireTyping() {
+    const now = Date.now();
+    let changed = false;
+    for (const users of Object.values(this.state.typing)) {
+      for (const [id, until] of Object.entries(users)) {
+        if (until <= now) {
+          delete users[id];
+          changed = true;
+        }
+      }
+    }
+    if (changed) this.notify({ skipPersist: true });
+  }
+
+  getTypingUsers(channelId) {
+    const now = Date.now();
+    return Object.entries(this.state.typing[channelId] || {})
+      .filter(([, until]) => until > now)
+      .map(([id]) => this.state.users[id])
+      .filter(Boolean);
+  }
+
+  // Song playing on Spotify on this PC (detected by the desktop app)
+  async reportListening(activity) {
+    if (!this.state.auth.isAuthenticated || !NativeBridge.sessionToken || activity?.kind !== "spotify") return;
+    await NativeBridge.rpc("reportListening", activity);
+  }
+
+  getLiveActivity(userId) {
+    return this.state.liveActivities?.[userId] || null;
+  }
+
   getUserActivities(userId) {
     return NativeBridge.rpc("getUserActivities", { targetUserId: userId });
   }
@@ -907,8 +973,9 @@ class Store {
     guild.unread = false;
     guild.mentions = 0;
 
+    // Voice channels are never opened as a chat (an invite may point to one)
     const targetChannel =
-      (channelId && guild.channels.find((c) => c.id === channelId)) ||
+      (channelId && guild.channels.find((c) => c.id === channelId && c.type !== "voice")) ||
       guild.channels.find((c) => c.id === this.state.navigation.activeChannelId && c.type !== "voice") ||
       guild.channels.find((c) => c.type !== "voice") ||
       guild.channels[0];
@@ -1027,6 +1094,8 @@ class Store {
       const res = await NativeBridge.rpc("getIceServers", {});
       this.iceServersCache = { at: Date.now(), servers: res?.iceServers || [] };
     }
+    // A screen or camera video started arriving: show it
+    Voice.onRemoteMedia = () => this.notify({ skipPersist: true });
     Voice.start({
       channelId,
       meId: this.state.auth.currentUserId,
@@ -1040,6 +1109,36 @@ class Store {
     Voice.setOutputVolume(this.state.settings.voiceOutputVolume ?? 100);
     if (this.localAudioStream) Voice.setLocalStream(this.localAudioStream);
     Voice.syncParticipants((participants || []).map((p) => p.userId));
+  }
+
+  // Webcam on/off for the current call
+  async toggleCamera() {
+    if (!this.state.voice.connectedChannelId) {
+      return { ok: false, error: "Entre em uma call para ligar a câmera." };
+    }
+    if (this.state.voice.videoEnabled) {
+      Camera.stop();
+      Voice.setCameraStream(null);
+      this.state.voice.videoEnabled = false;
+    } else {
+      const res = await Camera.start(this.state.settings.videoInputDeviceId || "default");
+      if (!res.ok) return res;
+      Voice.setCameraStream(res.stream);
+      this.state.voice.videoEnabled = true;
+    }
+    this.notify({ skipPersist: true });
+    await this.publishVoiceState();
+    return { ok: true, videoEnabled: this.state.voice.videoEnabled };
+  }
+
+  publishVoiceState() {
+    if (!this.state.voice.connectedChannelId) return Promise.resolve();
+    return NativeBridge.rpc("updateVoiceState", {
+      userId: this.state.auth.currentUserId,
+      muted: this.state.voice.muted,
+      deafened: this.state.voice.deafened,
+      videoEnabled: this.state.voice.videoEnabled
+    });
   }
 
   // Wire up real-time VAD if audio input is available
@@ -1201,6 +1300,7 @@ class Store {
 
   async leaveVoiceChannel() {
     NativeBridge.setMediaSessionActive(false);
+    Camera.stop();
     Voice.stop();
     if (!this.state.voice.connectedChannelId) return { ok: true };
     this.state.navigation.callViewChannelId = null;
@@ -1316,7 +1416,7 @@ class Store {
     return await ScreenShare.getSources();
   }
 
-  async startScreenShare(sourceId, { sourceName = "Screen", resolution = "720p", fps = 30 } = {}) {
+  async startScreenShare(sourceId, { sourceName = "Screen", resolution = "1080p", fps = 60, includeAudio = false } = {}) {
     if (!this.state.voice.connectedChannelId) {
       return { ok: false, error: "Conecte-se a um canal de voz antes de compartilhar a tela." };
     }
@@ -1328,27 +1428,19 @@ class Store {
       this.stopScreenShare();
     };
 
-    ScreenShare.onFrame = (frameDataUrl) => {
-      if (!this.state.voice.screenShareEnabled) return;
-      if (this.state.screenShares[channelId]) {
-        this.state.screenShares[channelId].frameDataUrl = frameDataUrl;
-      }
-      NativeBridge.rpc("broadcastScreenFrame", {
-        userId: meId,
-        channelId,
-        frameDataUrl
-      });
-    };
-
-    const cap = await ScreenShare.startCapture(sourceId, {
-      width: resolution === "1080p" ? 1920 : 1280,
-      height: resolution === "1080p" ? 1080 : 720,
-      frameRate: fps
-    });
+    const size = SCREEN_RESOLUTIONS[resolution] || SCREEN_RESOLUTIONS["1080p"];
+    const cap = await ScreenShare.startCapture(sourceId, { ...size, frameRate: fps, includeAudio });
 
     if (!cap.ok) {
       return cap;
     }
+    // Bitrate is sized from what the capture really delivers (e.g. "source" on a 1440p monitor)
+    const settings = cap.stream.getVideoTracks()[0]?.getSettings() || {};
+    Voice.setScreenStream(cap.stream, {
+      width: settings.width || size.width || 1920,
+      height: settings.height || size.height || 1080,
+      fps: Number(fps) || 60
+    });
 
     this.state.voice.screenShareEnabled = true;
     this.state.voice.screenShareSourceId = sourceId;
@@ -1374,6 +1466,7 @@ class Store {
   async stopScreenShare() {
     const meId = this.state.auth.currentUserId;
     const channelId = this.state.voice.connectedChannelId;
+    Voice.setScreenStream(null);
     ScreenShare.stopCapture();
     this.state.voice.screenShareEnabled = false;
     this.state.voice.screenShareSourceId = null;
@@ -1712,6 +1805,23 @@ class Store {
       ...roleData
     });
     if (res.ok) {
+      await this.syncFromBackend({ silent: true });
+    }
+    return res;
+  }
+
+  async banMember(guildId, targetUserId, reason = "") {
+    const res = await NativeBridge.rpc("banMember", { guildId, targetUserId, reason });
+    if (res.ok) await this.syncFromBackend({ silent: true });
+    return res;
+  }
+
+  async deleteGuild(guildId, currentPassword) {
+    const res = await NativeBridge.rpc("deleteGuild", { guildId, currentPassword });
+    if (res.ok) {
+      if (this.state.voice.connectedGuildId === guildId) await this.leaveVoiceChannel();
+      this.state.guilds = this.state.guilds.filter((g) => g.id !== guildId);
+      this.selectHome("friends");
       await this.syncFromBackend({ silent: true });
     }
     return res;

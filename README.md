@@ -6,13 +6,15 @@ Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord,
 
 ## Funcionalidades
 
-- Servidores com canais de texto e voz, cargos com hierarquia, convites com link próprio, nome, ícone e banner editáveis
+- Servidores com canais de texto e voz, cargos com hierarquia, convites com link próprio (com botão que abre o app), banir membros e apagar servidor
 - Mensagens diretas, pedidos de amizade por `@username`, chamadas de voz na DM (toca, atende, recusa)
-- Compartilhamento de tela, indicador de quem está falando, escolha de microfone e fone
+- Chat com links clicáveis, reações com todos os emojis (os mais usados primeiro), "fulano está digitando...", menu de botão direito na mensagem (responder, editar, excluir)
+- Compartilhamento de tela em vídeo de verdade (WebRTC, até 1440p/120 FPS, com som do PC), câmera, indicador de quem está falando
+- Atividade no perfil: o jogo que você está jogando (com o ícone do app e o tempo) e a música do Spotify, com capa e barra de progresso
 - Sons de entrar, sair, chamando e notificação
-- Perfil com foto e banner (inclusive GIF), editor de enquadramento e biblioteca de GIFs (Giphy)
+- Perfil com foto e banner (inclusive GIF), tema em gradiente, editor de enquadramento e biblioteca de GIFs (Giphy)
 - Conta com verificação de e-mail por código (Supabase + Brevo, grátis), troca de senha e sessões seguras
-- Confirmação antes de qualquer exclusão e 10 temas visuais
+- Tamanho da interface e do texto ajustáveis, 10 temas visuais e atualização pelo próprio app
 
 ---
 
@@ -24,7 +26,9 @@ No **PowerShell** (tecla Windows → digite `powershell` → Enter), cole:
 irm https://129-159-51-96.sslip.io/download/install.ps1 | iex
 ```
 
-Isso baixa o Eco do servidor, confere o arquivo, instala em `%LOCALAPPDATA%\Eco`, cria o atalho **Eco** na Área de Trabalho e no Menu Iniciar e abre o app. Rodar o mesmo comando de novo **atualiza** o app (suas contas não são apagadas). Não precisa de administrador nem de Node.js.
+Isso baixa o Eco do servidor, confere o arquivo, instala em `%LOCALAPPDATA%\Eco`, cria o atalho **Eco** na Área de Trabalho e no Menu Iniciar e abre o app. Não precisa de administrador nem de Node.js.
+
+**Atualizar:** o app avisa quando sai uma versão nova; em *Configurações → Windows & Memória → Atualizações* clique em **Atualizar agora** (ou rode o mesmo comando de novo). Suas contas não são apagadas.
 
 As seções abaixo são para quem vai **desenvolver** o app.
 
@@ -174,7 +178,9 @@ Na Oracle, a *Security List* da sub-rede precisa liberar **TCP 80 e 443** (entra
 
 **Voz nas calls (WebRTC):** o áudio vai direto entre os PCs (criptografado); o servidor só repassa as mensagens de conexão, e apenas para o destinatário. Para redes que não permitem conexão direta (CGNAT), o mesmo servidor roda um relay **TURN** (`coturn`, `/etc/turnserver.conf`) com credenciais temporárias de 12 h assinadas pelo Eco a partir de `turn.secret` em `/var/lib/eco/app.config.local.json` — o segredo nunca vai para o app. Portas extras a liberar na Security List e no `iptables`: **UDP 3478, TCP 3478 e UDP 49160–49200**.
 
-Para publicar uma nova versão do app para download (depois de `npm run build:exe`), envie o zip de `dist\Discord-win32-x64` como `/var/www/eco-download/Eco.zip` e regenere o checksum com `sha256sum Eco.zip > Eco.zip.sha256` na mesma pasta. O instalador fica em `scripts/install.ps1` (servido em `/download/install.ps1`).
+Para publicar uma nova versão do app para download: aumente `version` no `package.json`, rode `npm run build:exe`, envie o zip de `dist\Discord-win32-x64` como `/var/www/eco-download/Eco.zip`, regenere o checksum com `sha256sum Eco.zip > Eco.zip.sha256` e atualize `/var/www/eco-download/version.json` (`{"version": "1.1.0", "notes": "..."}`) — é esse arquivo que o botão **Verificar atualizações** do app consulta. O instalador fica em `scripts/install.ps1` (servido em `/download/install.ps1`).
+
+**Vídeo nas calls:** tela e câmera vão pela mesma conexão WebRTC da voz (H.264 por hardware quando a placa suporta), na resolução e FPS escolhidos, com taxa de bits proporcional (1080p a 60 FPS ≈ 9 Mbps por pessoa assistindo). Se a internet não aguentar, o WebRTC ajusta sozinho.
 
 Para atualizar o código no servidor:
 

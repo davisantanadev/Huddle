@@ -319,6 +319,7 @@ class DiscordBackendServer {
     this.db = new DatabaseSync(this.dbPath);
     this.sseClients = new Set();
     this.voiceRooms = new Map();
+    this.listening = new Map(); // userId -> song playing on Spotify (reportListening)
     this.screenShares = new Map();
     this.server = null;
     this.port = 0;
@@ -481,6 +482,17 @@ class DiscordBackendServer {
       );
     `);
 
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS guild_bans (
+        guild_id TEXT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        banned_by TEXT,
+        reason TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+      );
+    `);
+
     const addCol = (table, col, def) => {
       try {
         this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
@@ -488,6 +500,7 @@ class DiscordBackendServer {
     };
 
     addCol("guilds", "icon_url", "TEXT");
+    addCol("user_activities", "icon_data_url", "TEXT NOT NULL DEFAULT ''");
     addCol("guilds", "banner_url", "TEXT");
     addCol("user_preferences", "call_join_custom_name", "TEXT NOT NULL DEFAULT ''");
     addCol("user_preferences", "call_leave_custom_name", "TEXT NOT NULL DEFAULT ''");
@@ -1003,8 +1016,34 @@ class DiscordBackendServer {
       discoverableGuilds,
       messages: messagesMap,
       activeScreenShares,
+      liveActivities: this.getLiveActivities(Object.keys(usersMap)),
       appConfig: { appName: this.config.appName, publicUrl: this.getPublicBaseUrl() }
     };
+  }
+
+  // Game being played (from the heartbeats) and song being heard, per user
+  getLiveActivities(userIds) {
+    const now = Date.now();
+    const result = {};
+    const wanted = new Set(userIds);
+    const rows = this.db
+      .prepare(`SELECT * FROM user_activities WHERE playing_since IS NOT NULL AND last_played_at >= ? ORDER BY playing_since DESC`)
+      .all(now - ACTIVITY_STALE_MS);
+    for (const row of rows) {
+      if (!wanted.has(row.user_id) || result[row.user_id]?.game) continue;
+      result[row.user_id] = {
+        game: { gameId: row.game_id, name: row.name, since: row.playing_since, iconDataUrl: row.icon_data_url || "", ...getGameArt(row.game_id) }
+      };
+    }
+    for (const [userId, track] of this.listening) {
+      // No heartbeat for a while (app closed mid-song): drop it
+      if (now - track.updatedAt > ACTIVITY_STALE_MS) {
+        this.listening.delete(userId);
+        continue;
+      }
+      if (wanted.has(userId)) result[userId] = { ...(result[userId] || {}), listening: track };
+    }
+    return result;
   }
 
   getMemberPermissions(guildId, userId) {
@@ -1645,12 +1684,7 @@ class DiscordBackendServer {
           .prepare(`INSERT OR IGNORE INTO user_preferences (user_id, updated_at) VALUES (?, ?)`)
           .run(id, now);
 
-        const defaultGuild = this.db.prepare(`SELECT id FROM guilds WHERE id = 'g_rea'`).get();
-        if (defaultGuild) {
-          this.db
-            .prepare(`INSERT OR IGNORE INTO guild_members (guild_id, user_id, roles_json, joined_at) VALUES ('g_rea', ?, '[]', ?)`)
-            .run(id, now);
-        }
+        // New accounts start with no servers: they join through invites
 
         const row = this.db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
         this.broadcastEvent("USER_REGISTERED", { user: this.serializePublicUser(row) });
@@ -2409,7 +2443,7 @@ class DiscordBackendServer {
           poll
         };
 
-        this.broadcastEvent("MESSAGE_CREATED", { channelId, messageId: msgId });
+        this.broadcastEvent("MESSAGE_CREATED", { channelId, messageId: msgId, authorId: actorId });
         return { ok: true, messageId: msgId, message: messageObj };
       }
 
@@ -2559,6 +2593,89 @@ class DiscordBackendServer {
         this.broadcastEvent("GUILD_UPDATED", { guildId });
         const updated = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
         return { ok: true, guild: this.serializeGuild(updated) };
+      }
+
+      // "So-and-so is typing...": only to the people who can see the channel
+      case "typing": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const channelId = String(params.channelId || "");
+        if (!actorId || !channelId) return { ok: false };
+        const audience = this.channelAudience(channelId);
+        if (!audience.includes(actorId)) return { ok: false, status: 403 };
+        this.sendEventToUsers(
+          audience.filter((id) => id !== actorId),
+          "TYPING_STARTED",
+          { channelId, userId: actorId }
+        );
+        return { ok: true };
+      }
+
+      case "banMember": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId, targetUserId } = params;
+        const reason = String(params.reason || "").slice(0, 300);
+        const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
+        if (!guild) return { ok: false, status: 404, error: "Servidor não encontrado." };
+        const perms = this.getMemberPermissions(guildId, actorId);
+        if (!perms.has("BAN_MEMBERS") && !perms.has("ADMINISTRATOR")) {
+          return { ok: false, status: 403, error: "Você não tem permissão para banir membros." };
+        }
+        if (!targetUserId || targetUserId === actorId) return { ok: false, error: "Você não pode banir a si mesmo." };
+        if (targetUserId === guild.owner_id) return { ok: false, status: 403, error: "O dono do servidor não pode ser banido." };
+        // Moderators can only ban people below their highest role
+        if (actorId !== guild.owner_id) {
+          const mine = this.getMemberHighestRolePosition(guildId, actorId);
+          const theirs = this.getMemberHighestRolePosition(guildId, targetUserId);
+          if (theirs >= mine) return { ok: false, status: 403, error: "Você só pode banir membros com cargo abaixo do seu." };
+        }
+        const now = Date.now();
+        this.db
+          .prepare(`INSERT OR REPLACE INTO guild_bans (guild_id, user_id, banned_by, reason, created_at) VALUES (?, ?, ?, ?, ?)`)
+          .run(guildId, targetUserId, actorId, reason, now);
+        this.db.prepare(`DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?`).run(guildId, targetUserId);
+        // Out of any voice channel of this server too
+        for (const ch of this.db.prepare(`SELECT id FROM channels WHERE guild_id = ?`).all(guildId)) {
+          const room = this.voiceRooms.get(ch.id);
+          if (room?.delete(targetUserId)) {
+            this.broadcastEvent("RTC_ROOM_UPDATED", { channelId: ch.id, participants: Array.from(room.values()) });
+          }
+        }
+        const target = this.db.prepare(`SELECT username FROM users WHERE id = ?`).get(targetUserId);
+        this.db
+          .prepare(`INSERT INTO audit_logs (id, guild_id, actor_id, action, time_label, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run("al_" + crypto.randomBytes(6).toString("hex"), guildId, actorId, `banned @${target?.username || targetUserId}`, this.formatTimeLabel(now), now);
+        this.broadcastEvent("GUILD_MEMBER_REMOVED", { guildId, userId: targetUserId, banned: true });
+        return { ok: true };
+      }
+
+      case "deleteGuild": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId } = params;
+        const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
+        if (!guild) return { ok: false, status: 404, error: "Servidor não encontrado." };
+        if (guild.owner_id !== actorId) return { ok: false, status: 403, error: "Só o dono pode apagar o servidor." };
+        const me = this.db.prepare(`SELECT * FROM users WHERE id = ?`).get(actorId);
+        const pwError = this.requireCurrentPassword(me, params.currentPassword);
+        if (pwError) return { ok: false, status: 403, error: pwError };
+
+        const channelIds = this.db.prepare(`SELECT id FROM channels WHERE guild_id = ?`).all(guildId).map((r) => r.id);
+        for (const chId of channelIds) {
+          this.voiceRooms.delete(chId);
+          if (this.screenShares.delete(chId)) this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId: chId });
+        }
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          // Messages are not tied to channels by a foreign key: remove them first
+          const del = this.db.prepare(`DELETE FROM messages WHERE channel_id = ?`);
+          for (const chId of channelIds) del.run(chId);
+          this.db.prepare(`DELETE FROM guilds WHERE id = ?`).run(guildId);
+          this.db.exec("COMMIT");
+        } catch (err) {
+          this.db.exec("ROLLBACK");
+          return { ok: false, error: "Não foi possível apagar o servidor." };
+        }
+        this.broadcastEvent("GUILD_DELETED", { guildId });
+        return { ok: true };
       }
 
       case "createGuild": {
@@ -2833,6 +2950,9 @@ class DiscordBackendServer {
         if (!inspectRes.ok) return inspectRes;
 
         const { token, guildId, channelId, guildName } = inspectRes.preview;
+        if (this.db.prepare(`SELECT 1 FROM guild_bans WHERE guild_id = ? AND user_id = ?`).get(guildId, actorId)) {
+          return { ok: false, status: 403, error: "Você foi banido deste servidor." };
+        }
         const existingMember = this.db
           .prepare(`SELECT * FROM guild_members WHERE guild_id = ? AND user_id = ?`)
           .get(guildId, actorId);
@@ -2890,6 +3010,8 @@ class DiscordBackendServer {
         const name = String(params.name || "").trim().slice(0, 120);
         if (!gameId || !name) return { ok: false, error: "Jogo inválido." };
         const now = Date.now();
+        const icon = String(params.iconDataUrl || "");
+        const validIcon = icon.length <= 24000 && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(icon) ? icon : "";
         const row = this.db.prepare(`SELECT * FROM user_activities WHERE user_id = ? AND game_id = ?`).get(actorId, gameId);
         // "started" is re-sent every scan while the game runs (heartbeat). A session
         // whose last heartbeat is older than ACTIVITY_STALE_MS ended unseen (app
@@ -2919,7 +3041,42 @@ class DiscordBackendServer {
             .prepare(`UPDATE user_activities SET last_played_at = ?, total_seconds = total_seconds + ?, playing_since = NULL WHERE user_id = ? AND game_id = ?`)
             .run(now, played, actorId, gameId);
         }
-        this.broadcastEvent("USER_ACTIVITY_UPDATED", { userId: actorId });
+        if (validIcon) {
+          this.db.prepare(`UPDATE user_activities SET icon_data_url = ? WHERE user_id = ? AND game_id = ?`).run(validIcon, actorId, gameId);
+        }
+        // Heartbeats of a game already shown as running change nothing for others
+        const wasLive = row?.playing_since && now - row.last_played_at <= ACTIVITY_STALE_MS;
+        if (params.state !== "started" || !wasLive || validIcon) this.broadcastEvent("USER_ACTIVITY_UPDATED", { userId: actorId });
+        return { ok: true };
+      }
+
+      // What the user is listening to on Spotify (detected on their PC). Kept in
+      // memory only: it is gone once the song stops or the heartbeats stop.
+      case "reportListening": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        if (!actorId) return { ok: false, status: 401, error: "Autenticação necessária." };
+        const now = Date.now();
+        if (params.state !== "playing") {
+          if (this.listening.delete(actorId)) this.broadcastEvent("USER_ACTIVITY_UPDATED", { userId: actorId });
+          return { ok: true };
+        }
+        const clean = (v, max) => String(v || "").trim().slice(0, max);
+        const art = clean(params.albumArtUrl, 400);
+        const track = {
+          service: "spotify",
+          title: clean(params.title, 200),
+          artist: clean(params.artist, 300),
+          album: clean(params.album, 200),
+          albumArtUrl: /^https:\/\/[a-z0-9.-]+\.(mzstatic\.com|scdn\.co)\//i.test(art) ? art : "",
+          durationMs: Math.max(0, Math.min(3 * 60 * 60 * 1000, Number(params.durationMs) || 0)),
+          startedAt: Math.min(now, Number(params.startedAt) || now),
+          updatedAt: now
+        };
+        if (!track.title) return { ok: false, error: "Música inválida." };
+        const prev = this.listening.get(actorId);
+        this.listening.set(actorId, track);
+        const changed = !prev || prev.title !== track.title || prev.artist !== track.artist || prev.albumArtUrl !== track.albumArtUrl;
+        if (changed) this.broadcastEvent("USER_ACTIVITY_UPDATED", { userId: actorId });
         return { ok: true };
       }
 
@@ -2936,6 +3093,7 @@ class DiscordBackendServer {
               gameId: a.game_id,
               name: a.name,
               ...getGameArt(a.game_id),
+              iconDataUrl: a.icon_data_url || "",
               lastPlayedAt: a.last_played_at,
               totalSeconds: a.total_seconds + (a.playing_since ? Math.max(0, Math.round((openUntil - a.playing_since) / 1000)) : 0),
               playingNow: live,
@@ -3042,11 +3200,14 @@ class DiscordBackendServer {
 
       case "updateVoiceState": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
-        for (const [, room] of this.voiceRooms.entries()) {
+        for (const [channelId, room] of this.voiceRooms.entries()) {
           if (room.has(actorId)) {
             const p = room.get(actorId);
             p.muted = Boolean(params.muted);
             p.deafened = Boolean(params.deafened);
+            if (params.videoEnabled !== undefined) p.videoEnabled = Boolean(params.videoEnabled);
+            // Everyone sees the new mic/camera state on the call tiles
+            this.broadcastEvent("RTC_ROOM_UPDATED", { channelId, participants: Array.from(room.values()) });
           }
         }
         return { ok: true };
@@ -3526,8 +3687,10 @@ class DiscordBackendServer {
          <p class="muted">${esc(p.inviterDisplayName)} convidou você para entrar em</p>
          <h1>${esc(p.guildName)}</h1>
          <p class="muted">${Number(p.memberCount) || 0} membro(s)</p>
+         <a class="join" href="eco://convite/${encodeURIComponent(p.code)}">Entrar no servidor</a>
+         <p class="hint">O botão abre o ${appName} e entra no servidor. Se nada acontecer, abra o app, clique em <b>+</b> &rsaquo; <b>Entrar em um servidor</b> e cole o código:</p>
          <div class="code">${esc(p.code)}</div>
-         <p class="hint">Abra o ${appName}, clique em <b>+</b> &rsaquo; <b>Entrar em um servidor</b> e cole este link ou código.</p>`
+         <p class="hint small">Ainda não tem o ${appName}? No PowerShell do Windows, rode:<br><code>irm ${esc(this.getPublicBaseUrl())}/download/install.ps1 | iex</code></p>`
       : `<h1>Convite inválido</h1><p class="muted">${esc(result.error || "Este convite não existe.")}</p>`;
     return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
       <title>Convite · ${appName}</title>
@@ -3539,6 +3702,9 @@ class DiscordBackendServer {
         h1{margin:6px 0;font-size:24px}.muted{color:#a3a6b8;margin:4px 0}
         .code{margin:18px auto 10px;padding:10px 14px;border-radius:8px;background:#15161f;font-family:monospace;font-size:16px;user-select:all}
         .hint{color:#a3a6b8;font-size:13px;line-height:1.5}
+        .hint.small{font-size:12px;margin-top:18px}.hint code{display:inline-block;margin-top:6px;padding:4px 8px;border-radius:6px;background:#15161f;color:#dfe1ff;user-select:all;word-break:break-all}
+        .join{display:block;margin:20px 0 6px;padding:12px 16px;border-radius:8px;background:#5865f2;color:#fff;font-weight:700;font-size:15px;text-decoration:none}
+        .join:hover{background:#4752c4}
       </style></head><body><div class="card"><div class="brand">${appName}</div>${body}</div></body></html>`;
   }
 

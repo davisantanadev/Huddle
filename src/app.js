@@ -4,11 +4,15 @@
 // ==========================================================================
 
 import { store, AVAILABLE_THEMES } from "./state/store.js";
+import { morphInnerHTML, bindReplacingDuplicates } from "./ui/morph.js";
+import { syncEmojiPicker, recordEmojiUse } from "./ui/emojiPicker.js";
 import { Icons } from "./components/icons.js";
 import {
   NativeBridge,
   IntegrationMetadata,
   ScreenShare,
+  Voice,
+  Camera,
   CallAudioEngine,
   VoiceDevices,
   VAD,
@@ -72,8 +76,9 @@ const uiState = {
   screenSources: [],
   selectedScreenSourceId: null,
   selectedScreenSourceName: "",
-  screenShareResolution: "720p",
-  screenShareFps: 30,
+  screenShareResolution: "1080p",
+  screenShareFps: 60,
+  screenShareAudio: false,
   loadingScreenSources: false,
 
   // Phase 10: Real user search results
@@ -300,6 +305,12 @@ function readFileAsBase64(file) {
 
 function formatMessageMarkdown(rawText) {
   let html = escapeHtml(rawText);
+  // Links are set aside first so the other rules (mentions, *bold*...) can't break them
+  const links = [];
+  html = html.replace(/\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g, (url) => {
+    links.push(url);
+    return `\u0000${links.length - 1}\u0000`;
+  });
   html = html.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
     return `<pre><code>${code.trim()}</code></pre>`;
   });
@@ -314,6 +325,10 @@ function formatMessageMarkdown(rawText) {
   html = html.replace(/(^|\n)&gt;\s*(.+)/g, "$1<blockquote>$2</blockquote>");
   html = html.replace(/@([a-zA-Z0-9_.]+)/g, '<span class="mention-pill" data-mention="$1">@$1</span>');
   html = html.replace(/\n/g, "<br/>");
+  html = html.replace(/\u0000(\d+)\u0000/g, (_m, i) => {
+    const url = links[Number(i)];
+    return `<a class="chat-link" href="${url}" data-action="open-link" data-url="${url}" title="${url}">${url}</a>`;
+  });
   return html;
 }
 
@@ -1018,7 +1033,7 @@ function renderFriendsStage(state) {
                             ? "Solicitação de Amizade Recebida"
                             : f.relation === "outgoing"
                               ? "Solicitação de Amizade Enviada"
-                              : escapeHtml(u.customStatus || u.status)
+                              : activitySummaryHtml(u.id) || escapeHtml(u.customStatus || u.status)
                         }
                       </div>
                     </div>
@@ -1072,10 +1087,12 @@ function renderFriendsStage(state) {
   }
 
   // Real Active Now sidebar (only real friends who are online)
+  // Friends doing something right now (game or Spotify) come first
   const activeRealFriends = state.friends
     .filter((f) => f.relation === "friend")
     .map((f) => state.users[f.userId])
-    .filter((u) => u && u.status !== "offline");
+    .filter((u) => u && (u.status !== "offline" || store.getLiveActivity(u.id)))
+    .sort((a, b) => Number(Boolean(store.getLiveActivity(b.id))) - Number(Boolean(store.getLiveActivity(a.id))));
 
   return `
     <section class="main-stage" data-testid="friends-stage">
@@ -1106,15 +1123,7 @@ function renderFriendsStage(state) {
               : activeRealFriends
                   .map(
                     (u) => `
-                  <div class="active-now-card">
-                    <div style="display:flex;align-items:center;gap:10px;">
-                      ${renderAvatar(u, "", true)}
-                      <div>
-                        <div style="font-size:14px;font-weight:600;color:var(--header-primary);">${escapeHtml(u.displayName)}</div>
-                        <div style="font-size:12px;color:var(--text-muted);">@${escapeHtml(u.username)} • ${escapeHtml(u.customStatus || "Online")}</div>
-                      </div>
-                    </div>
-                  </div>
+                  ${renderActiveNowCard(u)}
                 `
                   )
                   .join("")
@@ -1123,6 +1132,38 @@ function renderFriendsStage(state) {
       </div>
     </section>
   `;
+}
+
+// Card in "Ativo agora": who, what (with the app's icon) and for how long
+function renderActiveNowCard(u) {
+  const live = store.getLiveActivity(u.id);
+  const game = live?.game;
+  const track = live?.listening;
+  const headline = game
+    ? `<span>${escapeHtml(game.name)}</span><span data-activity-since="${Number(game.since) || 0}">${escapeHtml(formatPlayTime((Date.now() - game.since) / 1000))}</span>`
+    : track
+      ? `<span>Ouvindo Spotify</span>`
+      : `<span>${escapeHtml(u.customStatus || "Online")}</span>`;
+  const icon = game ? gameIconHtml(game, 28) : track ? `<span class="active-now-app">${SPOTIFY_ICON}</span>` : "";
+  const detail = game
+    ? `<div class="active-now-detail">${gameIconHtml(game, 36)}<div><div class="active-now-detail-title">${escapeHtml(game.name)}</div><div class="active-now-detail-sub">Jogando agora</div></div></div>`
+    : track
+      ? `<div class="active-now-detail">${
+          track.albumArtUrl ? `<img class="activity-album-art small" src="${escapeHtml(track.albumArtUrl)}" alt="" referrerpolicy="no-referrer" />` : `<span class="activity-album-art small placeholder">${SPOTIFY_ICON}</span>`
+        }<div><div class="active-now-detail-title">${escapeHtml(track.title)}</div><div class="active-now-detail-sub">${escapeHtml(track.artist)}</div></div></div>`
+      : "";
+  return `
+    <div class="active-now-card" data-action="open-user-popout" data-user-id="${escapeHtml(u.id)}" data-testid="active-now-card">
+      <div class="active-now-head">
+        ${renderAvatar(u, "", true)}
+        <div class="active-now-who">
+          <div class="active-now-name">${escapeHtml(u.displayName)}</div>
+          <div class="active-now-what">${headline}</div>
+        </div>
+        ${icon}
+      </div>
+      ${detail}
+    </div>`;
 }
 
 function renderDiscoveryStage(state) {
@@ -1230,13 +1271,16 @@ function renderScreenShareBannerAndStage(state) {
           ${
             isMeSharing && ScreenShare.getStream()
               ? `<div class="screenshare-video-slot" data-share-video-slot></div>`
-              : activeShare?.frameDataUrl
-                ? `<img class="screenshare-frame-img" data-share-frame="${escapeHtml(activeShare.channelId || voiceChannelId || "")}" src="${activeShare.frameDataUrl}" alt="Transmissão ao vivo" data-testid="screenshare-remote-img" />`
-                : `<div style="color:#9ca3af;font-size:13px;padding:40px;">Recebendo stream de vídeo em tempo real...</div>`
+              : activeShare && Voice.getRemoteVideo(activeShare.userId, "screen")
+                ? `<div class="screenshare-remote-slot" data-remote-video="${escapeHtml(activeShare.userId)}:screen" data-keep-children data-testid="screenshare-remote-slot"></div>`
+                : activeShare && activeShare.channelId !== voiceChannelId
+                  ? `<div style="color:#9ca3af;font-size:13px;padding:40px;">Entre na call para assistir à transmissão.</div>`
+                  : `<div style="color:#9ca3af;font-size:13px;padding:40px;">Conectando à transmissão...</div>`
           }
           <div class="stream-stats-overlay" data-testid="stream-stats-overlay" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);padding:6px 10px;border-radius:6px;font-size:11px;color:#fff;display:flex;gap:10px;pointer-events:none;z-index:10;border:1px solid rgba(255,255,255,0.1);">
-            <div><span style="color:var(--text-muted);">Captura:</span> <strong data-share-stat="capturedFps">${stats.capturedFps || "—"}</strong> / ${displayFps} FPS</div>
+            <div><span style="color:var(--text-muted);">${isMeSharing ? "Captura" : "Recebendo"}:</span> <strong data-share-stat="capturedFps">${stats.capturedFps || "—"}</strong> / ${displayFps} FPS</div>
             <div><span style="color:var(--text-muted);">Res:</span> <strong data-share-stat="resolution">${escapeHtml(displayRes)}</strong></div>
+            ${isMeSharing ? `<div><span style="color:var(--text-muted);">Enviando:</span> <strong data-share-stat="sent">—</strong></div>` : ""}
           </div>
         </div>
       </div>
@@ -1346,7 +1390,7 @@ function getCallChannel(state) {
   return guild?.channels.find((c) => c.id === chId) || null;
 }
 
-function renderCallTile(state, ch, userId, { focused = false, small = false } = {}) {
+function renderCallTile(state, ch, userId, { focused = false, small = false, noStream = false } = {}) {
   const user = state.users[userId] || { id: userId, displayName: "Usuário", avatarColor: "#5865f2" };
   const isMe = userId === state.auth.currentUserId;
   const participant = (ch.voiceParticipants || []).find((p) => p.userId === userId);
@@ -1355,20 +1399,25 @@ function renderCallTile(state, ch, userId, { focused = false, small = false } = 
   const speaking = Boolean(state.voice.speakingUsers?.[userId]) && !muted;
   const share = state.screenShares[ch.id];
   const isSharing = isMe ? state.voice.screenShareEnabled : share?.userId === userId;
-  const watching = isSharing && (isMe || !uiState.stoppedWatching[ch.id]);
+  const watching = !noStream && isSharing && (isMe || !uiState.stoppedWatching[ch.id]);
+  const cameraOn = isMe ? state.voice.videoEnabled : Boolean(participant?.videoEnabled);
 
   let media;
   if (watching && isMe && ScreenShare.getStream()) {
     media = `<div class="screenshare-video-slot call-tile-stream" data-share-video-slot></div>`;
-  } else if (watching && !isMe && share?.frameDataUrl) {
-    media = `<img class="call-tile-stream" data-share-frame="${escapeHtml(ch.id)}" src="${share.frameDataUrl}" alt="Tela de ${escapeHtml(user.displayName)}" data-testid="screenshare-remote-img" />`;
+  } else if (watching && !isMe && Voice.getRemoteVideo(userId, "screen")) {
+    media = `<div class="call-tile-stream" data-remote-video="${escapeHtml(userId)}:screen" data-keep-children data-testid="screenshare-remote-slot"></div>`;
   } else if (watching) {
     media = `<div class="call-tile-waiting">Carregando a transmissão...</div>`;
+  } else if (cameraOn && (isMe ? Camera.getPreviewElement() : Voice.getRemoteVideo(userId, "camera"))) {
+    media = isMe
+      ? `<div class="call-tile-stream camera" data-local-camera data-keep-children></div>`
+      : `<div class="call-tile-stream camera" data-remote-video="${escapeHtml(userId)}:camera" data-keep-children></div>`;
   } else {
     media = `<div class="call-tile-avatar">${renderAvatar(user, "", false, small ? "width:48px;height:48px;min-width:48px;font-size:18px;" : "width:84px;height:84px;min-width:84px;font-size:30px;", { speaking: true })}</div>`;
   }
 
-  const shareControls = isSharing
+  const shareControls = isSharing && !noStream
     ? isMe
       ? `<button class="call-tile-action danger" data-action="stop-screenshare" data-testid="call-stop-share-btn">Parar de compartilhar</button>`
       : watching
@@ -1378,7 +1427,7 @@ function renderCallTile(state, ch, userId, { focused = false, small = false } = 
 
   return `
     <div
-      class="call-tile ${watching ? "has-stream" : ""} ${speaking ? "speaking" : ""} ${focused ? "focused" : ""} ${small ? "small" : ""}"
+      class="call-tile ${watching || (cameraOn && !media.includes("call-tile-avatar")) ? "has-stream" : ""} ${speaking ? "speaking" : ""} ${focused ? "focused" : ""} ${small ? "small" : ""}"
       style="${user.callTileColor ? `--tile-bg:${escapeHtml(user.callTileColor)};` : `--tile-color:${escapeHtml(user.avatarColor || "#5865f2")};`}"
       data-action="focus-call-tile"
       data-user-id="${escapeHtml(userId)}"
@@ -1386,7 +1435,7 @@ function renderCallTile(state, ch, userId, { focused = false, small = false } = 
       title="${focused ? "Voltar para a grade" : "Ampliar"}"
     >
       ${media}
-      ${isSharing ? `<span class="call-tile-live">AO VIVO</span>` : ""}
+      ${isSharing && !noStream ? `<span class="call-tile-live">AO VIVO</span>` : ""}
       <div class="call-tile-footer">
         <span class="call-tile-name">${escapeHtml(user.displayName)}</span>
         ${deafened ? `<span class="call-tile-state" title="Áudio desativado">${Icons.deafenOff}</span>` : muted ? `<span class="call-tile-state" title="Microfone silenciado">${Icons.micOff}</span>` : ""}
@@ -1402,6 +1451,20 @@ function renderCallTile(state, ch, userId, { focused = false, small = false } = 
       }
     </div>
   `;
+}
+
+// "Fulano está digitando..." under a chat box
+function renderTypingIndicator(channelId) {
+  const users = store.getTypingUsers(channelId);
+  if (!users.length) return `<div class="typing-indicator" data-testid="typing-indicator"></div>`;
+  const names = users.map((u) => `<strong>${escapeHtml(u.displayName)}</strong>`);
+  const text =
+    names.length === 1
+      ? `${names[0]} está digitando...`
+      : names.length <= 3
+        ? `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]} estão digitando...`
+        : "Várias pessoas estão digitando...";
+  return `<div class="typing-indicator active" data-testid="typing-indicator"><span class="typing-dots"><i></i><i></i><i></i></span><span>${text}</span></div>`;
 }
 
 function renderCallChatPanel(state, ch) {
@@ -1446,6 +1509,7 @@ function renderCallChatPanel(state, ch) {
           ${renderComposerPlus("call", ch.id)}
           <input class="call-chat-input" name="message" autocomplete="off" placeholder="Conversar em ${escapeHtml(ch.name)}" data-testid="call-chat-input" />
         </form>
+        ${renderTypingIndicator(ch.id)}
       </div>
     </aside>
   `;
@@ -1461,13 +1525,15 @@ function renderCallStage(state, ch) {
   const autoFocus = uiState.callFocusUserId === undefined && sharerId && !uiState.stoppedWatching[ch.id] ? sharerId : null;
   const wanted = uiState.callFocusUserId === undefined ? autoFocus : uiState.callFocusUserId;
   const focusId = participants.includes(wanted) ? wanted : null;
-  const others = participants.filter((id) => id !== focusId);
+  const focusIsStream = focusId && focusId === sharerId && !uiState.stoppedWatching[ch.id];
+  // While a stream fills the stage, the sharer's own card stays in the strip too
+  const stripIds = focusIsStream ? participants : participants.filter((id) => id !== focusId);
   const chatOpen = uiState.callChatOpen;
 
   const tilesHtml = focusId
     ? `
       <div class="call-focus">${renderCallTile(state, ch, focusId, { focused: true })}</div>
-      ${others.length ? `<div class="call-strip">${others.map((id) => renderCallTile(state, ch, id, { small: true })).join("")}</div>` : ""}
+      ${stripIds.length ? `<div class="call-strip">${stripIds.map((id) => renderCallTile(state, ch, id, { small: true, noStream: focusIsStream && id === focusId })).join("")}</div>` : ""}
     `
     : `<div class="call-grid" style="--call-cols:${participants.length <= 1 ? 1 : participants.length <= 4 ? 2 : 3};">${participants.map((id) => renderCallTile(state, ch, id)).join("")}</div>`;
 
@@ -1735,9 +1801,7 @@ function renderChatStage(state) {
     `;
   } else if (state.navigation.showMemberList && !isDm) {
     const guild = store.getActiveGuild();
-    const memberIds = Array.isArray(guild?.memberIds) && guild.memberIds.length > 0
-      ? guild.memberIds
-      : Object.keys(state.users);
+    const memberIds = Array.isArray(guild?.memberIds) ? guild.memberIds : [];
     const guildUsers = memberIds.map((id) => state.users[id]).filter(Boolean);
     const onlineUsers = guildUsers.filter((u) => u.status !== "offline");
     const offlineUsers = guildUsers.filter((u) => u.status === "offline");
@@ -1754,7 +1818,7 @@ function renderChatStage(state) {
               <div class="member-name" style="color:var(--header-primary);">
                 ${escapeHtml(u.displayName)}
               </div>
-              <div class="member-activity">@${escapeHtml(u.username)}</div>
+              <div class="member-activity">${activitySummaryHtml(u.id) || `@${escapeHtml(u.username)}`}</div>
             </div>
           </div>
         `
@@ -1891,6 +1955,7 @@ function renderChatStage(state) {
               <button type="button" class="icon-btn" data-action="insert-slash-shrug" title="Inserir /shrug">¯\\_(ツ)_/¯</button>
               <button type="button" class="icon-btn" data-action="open-emoji-picker" data-message-id="composer" title="Escolher Emoji">${Icons.smile}</button>
             </form>
+            ${renderTypingIndicator(channel.id)}
           </div>
         </div>
 
@@ -1922,6 +1987,14 @@ function renderServerDropdownMenu(state) {
         <span>Criar Canal</span>
         <span>＋</span>
       </button>
+      ${
+        guild.ownerId === state.auth.currentUserId
+          ? `<button class="context-menu-item danger" data-action="delete-guild" data-guild-id="${escapeHtml(guild.id)}" data-testid="delete-guild-menu-btn">
+               <span>Apagar Servidor</span>
+               <span>🗑️</span>
+             </button>`
+          : ""
+      }
     </div>
   `;
 }
@@ -2031,6 +2104,49 @@ function renderStatusMenu(state) {
   `;
 }
 
+// Message / friend / ban buttons shown on someone else's profile card
+function renderProfileActions(state, u, guild) {
+  const meId = state.auth.currentUserId;
+  if (!u || u.id === meId) return "";
+  const relation = state.friends.find((f) => f.userId === u.id)?.relation || null;
+  let friendBtn;
+  if (relation === "friend") {
+    friendBtn = `<button type="button" class="btn btn-secondary btn-sm" disabled title="Vocês já são amigos">Amigos ✓</button>`;
+  } else if (relation === "outgoing") {
+    friendBtn = `<button type="button" class="btn btn-secondary btn-sm" disabled>Pedido enviado</button>`;
+  } else if (relation === "incoming") {
+    friendBtn = `<button type="button" class="btn btn-success btn-sm" data-action="accept-friend" data-user-id="${escapeHtml(u.id)}">Aceitar amizade</button>`;
+  } else if (relation !== "blocked") {
+    friendBtn = `<button type="button" class="btn btn-secondary btn-sm" data-action="send-friend-req-id" data-user-id="${escapeHtml(u.id)}" data-testid="popout-add-friend-btn">Adicionar amigo</button>`;
+  } else {
+    friendBtn = "";
+  }
+
+  let banBtn = "";
+  if (guild && guild.ownerId !== u.id && (guild.memberIds || []).includes(u.id) && canModerate(guild, meId, u.id, "BAN_MEMBERS")) {
+    banBtn = `<button type="button" class="btn btn-danger btn-sm" data-action="ban-member" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-testid="popout-ban-btn">Banir</button>`;
+  }
+
+  return `
+    <div class="profile-actions-row">
+      <button type="button" class="btn btn-primary btn-sm" data-action="popout-message" data-user-id="${escapeHtml(u.id)}" data-testid="popout-message-btn">Mensagem</button>
+      ${friendBtn}
+      ${banBtn}
+    </div>
+  `;
+}
+
+// Owner, or a role with the permission (or ADMINISTRATOR) placed above the target's roles
+function canModerate(guild, actorId, targetId, permission) {
+  if (guild.ownerId === actorId) return true;
+  const rolesOf = (uid) => (guild.members || []).find((m) => m.userId === uid)?.roles || [];
+  const myRoles = guild.roles.filter((r) => rolesOf(actorId).includes(r.id));
+  const allowed = myRoles.some((r) => (r.permissions || []).includes(permission) || (r.permissions || []).includes("ADMINISTRATOR"));
+  if (!allowed) return false;
+  const top = (roles) => Math.max(0, ...roles.map((r) => r.position || 0));
+  return top(myRoles) > top(guild.roles.filter((r) => rolesOf(targetId).includes(r.id)));
+}
+
 function renderUserPopout(state) {
   if (!uiState.userPopout) return "";
   const u = state.users[uiState.userPopout.userId];
@@ -2080,7 +2196,12 @@ function renderUserPopout(state) {
             <div style="font-size:13px;color:var(--text-muted);" data-testid="popout-username">@${escapeHtml(u.username)}</div>
             <button class="link-btn" style="margin-top:4px;" data-action="open-profile-view" data-user-id="${escapeHtml(u.id)}">Ver perfil completo</button>
           </div>
+          ${renderProfileActions(state, u, guild)}
           ${u.customStatus ? `<div style="font-size:13px;color:var(--text-normal);">${escapeHtml(u.customStatus)}</div>` : ""}
+          ${(() => {
+            const cards = renderLiveActivityCards(u.id);
+            return cards ? `<div class="activity-card-list compact">${cards}</div>` : "";
+          })()}
           <div style="height:1px;background:var(--divider-subtle);"></div>
           <div>
             <div class="form-label" style="margin-bottom:4px;">Sobre Mim</div>
@@ -2171,27 +2292,9 @@ function renderUserPopout(state) {
   `;
 }
 
+// The emoji picker lives outside the app tree (src/ui/emojiPicker.js)
 function renderEmojiPickerPopover() {
-  if (!uiState.emojiPickerForMessageId) return "";
-  const target = uiState.emojiPickerForMessageId;
-  return `
-    <div class="floating-popout" style="bottom:80px;right:260px;padding:10px;width:240px;" data-testid="emoji-picker">
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Selecionar Emoji</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
-        ${EMOJI_PALETTE.map(
-          (e) => `
-          <button
-            class="btn btn-secondary"
-            style="font-size:20px;padding:0;"
-            data-action="select-emoji"
-            data-target="${target}"
-            data-emoji="${e}"
-          >${e}</button>
-        `
-        ).join("")}
-      </div>
-    </div>
-  `;
+  return "";
 }
 
 // ==========================================================================
@@ -2456,19 +2559,28 @@ function renderActiveModal(state) {
               <div class="form-group" style="flex:1;">
                 <label class="form-label">Qualidade da Transmissão</label>
                 <select class="form-input" id="screenshare-res-select" style="height:34px;">
-                  <option value="720p" ${uiState.screenShareResolution === "720p" ? "selected" : ""}>720p HD</option>
-                  <option value="1080p" ${uiState.screenShareResolution === "1080p" ? "selected" : ""}>1080p Full HD</option>
+                  ${[
+                    ["720p", "720p HD"],
+                    ["1080p", "1080p Full HD"],
+                    ["1440p", "1440p Quad HD"],
+                    ["source", "Original (resolução da tela)"]
+                  ]
+                    .map(([v, label]) => `<option value="${v}" ${uiState.screenShareResolution === v ? "selected" : ""}>${label}</option>`)
+                    .join("")}
                 </select>
               </div>
               <div class="form-group" style="flex:1;">
                 <label class="form-label">Taxa de Quadros</label>
                 <select class="form-input" id="screenshare-fps-select" style="height:34px;">
-                  <option value="15" ${uiState.screenShareFps === 15 ? "selected" : ""}>15 FPS</option>
-                  <option value="30" ${uiState.screenShareFps === 30 ? "selected" : ""}>30 FPS</option>
-                  <option value="60" ${uiState.screenShareFps === 60 ? "selected" : ""}>60 FPS</option>
+                  ${[15, 30, 60, 120].map((f) => `<option value="${f}" ${uiState.screenShareFps === f ? "selected" : ""}>${f} FPS</option>`).join("")}
                 </select>
               </div>
             </div>
+            <label class="screenshare-audio-toggle">
+              <input type="checkbox" id="screenshare-audio-check" ${uiState.screenShareAudio ? "checked" : ""} />
+              <span>Transmitir o som do PC junto (só ao compartilhar uma tela inteira)</span>
+            </label>
+            <p class="screenshare-quality-hint">Quanto maior a qualidade, mais internet de upload é usada (1080p a 60 FPS ≈ 9 Mbps; 120 FPS ≈ 17 Mbps por pessoa assistindo). A transmissão se ajusta sozinha se a conexão não aguentar.</p>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
@@ -3172,6 +3284,18 @@ function renderServerOverview(guild, me) {
           Convidar Pessoas
         </button>
       </div>
+
+      ${
+        guild.ownerId === me.id
+          ? `<div class="danger-zone">
+               <div>
+                 <div class="danger-zone-title">Apagar servidor</div>
+                 <div class="danger-zone-sub">Remove o servidor para todos: canais, mensagens, cargos e convites. Não dá para desfazer.</div>
+               </div>
+               <button type="button" class="btn btn-danger" data-action="delete-guild" data-guild-id="${escapeHtml(guild.id)}" data-testid="delete-guild-btn">Apagar Servidor</button>
+             </div>`
+          : ""
+      }
     </div>
   `;
 }
@@ -3886,6 +4010,23 @@ function renderSettingsOverlay(state) {
             }).join("")}
           </div>
         </div>
+        <div class="scale-settings">
+          <div class="settings-slider">
+            <div class="settings-slider-head">
+              <label class="form-label" for="ui-zoom-range">Tamanho da interface (tudo: textos, ícones e botões)</label>
+              <span class="settings-slider-value" id="ui-zoom-label">${Math.round((window.DiscordNative?.app?.getZoomFactor?.() || 1) * 100)}%</span>
+            </div>
+            <input type="range" class="range-input" id="ui-zoom-range" data-testid="ui-zoom-range" min="70" max="150" step="5" value="${Math.round((window.DiscordNative?.app?.getZoomFactor?.() || 1) * 100)}" />
+          </div>
+          <div class="settings-slider">
+            <div class="settings-slider-head">
+              <label class="form-label" for="font-scale-range">Tamanho do texto das mensagens</label>
+              <span class="settings-slider-value" id="font-scale-label">${Math.round((s.fontScale || 1) * 100)}%</span>
+            </div>
+            <input type="range" class="range-input" id="font-scale-range" data-testid="font-scale-range" min="80" max="160" step="5" value="${Math.round((s.fontScale || 1) * 100)}" />
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="reset-ui-scale">Voltar ao padrão</button>
+        </div>
         <div>
           <div class="form-label" style="margin-bottom:8px;">Densidade das Mensagens</div>
           <div style="display:flex;gap:10px;">
@@ -3914,6 +4055,28 @@ function renderSettingsOverlay(state) {
         <h2>Windows & Memória</h2>
         <p>Como o ${escapeHtml(getAppName())} inicia, fecha e usa a memória do computador.</p>
       </div>
+      <section class="settings-card" data-testid="updates-card">
+        <div class="settings-card-head">
+          <div>
+            <h3>Atualizações</h3>
+            <p>Versão instalada: <strong>${escapeHtml(window.DiscordNative?.app?.getVersion?.() || "")}</strong>${
+              uiState.updateInfo?.ok
+                ? uiState.updateInfo.available
+                  ? ` · Nova versão disponível: <strong>${escapeHtml(uiState.updateInfo.latest)}</strong>`
+                  : " · Você está na versão mais recente."
+                : uiState.updateInfo?.error
+                  ? ` · ${escapeHtml(uiState.updateInfo.error)}`
+                  : ""
+            }</p>
+          </div>
+          ${
+            uiState.updateInfo?.available
+              ? `<button class="btn btn-success btn-sm" data-action="install-update" data-testid="install-update-btn">Atualizar agora</button>`
+              : `<button class="btn btn-primary btn-sm" data-action="check-updates" data-testid="check-updates-btn">${uiState.checkingUpdates ? "Verificando..." : "Verificar atualizações"}</button>`
+          }
+        </div>
+        ${uiState.updateInfo?.available && uiState.updateInfo.notes ? `<p class="setting-desc update-notes">${escapeHtml(uiState.updateInfo.notes)}</p>` : ""}
+      </section>
       <section class="settings-card">
         <div class="settings-card-head"><h3>Inicialização e encerramento</h3></div>
         ${checkboxRow({
@@ -3948,6 +4111,47 @@ function renderSettingsOverlay(state) {
         })}
       </section>
     `;
+  } else if (tab === "activity") {
+    const toggle = ({ id, checked, title, desc, testid }) => `
+      <label class="checkbox-row" for="${id}">
+        <input type="checkbox" class="checkbox-input" id="${id}" data-testid="${testid}" ${checked ? "checked" : ""} />
+        <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+        <span class="checkbox-text">
+          <span class="setting-title">${title}</span>
+          <span class="setting-desc">${desc}</span>
+        </span>
+      </label>`;
+    const myCards = renderLiveActivityCards(me.id);
+    panelHtml = `
+      <div class="settings-page-head">
+        <h2>Atividade</h2>
+        <p>O que aparece no seu perfil e em "Ativo agora" para seus amigos.</p>
+      </div>
+      <section class="settings-card">
+        <div class="settings-card-head"><h3>Jogos</h3></div>
+        ${toggle({
+          id: "setting-show-game-activity",
+          checked: NativeBridge.getSettingSync("SHOW_GAME_ACTIVITY", true) !== false,
+          title: "Mostrar o jogo que estou jogando",
+          desc: "O app reconhece o jogo pela janela aberta e mostra o nome, o ícone e há quanto tempo você está jogando.",
+          testid: "show-game-activity-checkbox"
+        })}
+      </section>
+      <section class="settings-card">
+        <div class="settings-card-head"><h3>${SPOTIFY_ICON} Spotify</h3></div>
+        ${toggle({
+          id: "setting-spotify-sync",
+          checked: Boolean(NativeBridge.getSettingSync("SPOTIFY_SYNC", false)),
+          title: "Sincronizar com o Spotify",
+          desc: "Mostra a música que está tocando no app do Spotify deste PC (nome, artista, capa e tempo) no seu card de perfil. Não precisa entrar com a conta do Spotify.",
+          testid: "spotify-sync-checkbox"
+        })}
+      </section>
+      <section class="settings-card">
+        <div class="settings-card-head"><h3>Agora</h3></div>
+        ${myCards ? `<div class="activity-card-list">${myCards}</div>` : `<p class="setting-desc">Nenhuma atividade detectada agora. Abra um jogo ou dê play no Spotify.</p>`}
+      </section>
+    `;
   } else if (tab === "profile") {
     panelHtml = renderProfileSettingsPanel(me);
   } else {
@@ -3961,6 +4165,7 @@ function renderSettingsOverlay(state) {
           <div class="settings-section-label">Configurações de Usuário</div>
           <button class="settings-nav-item ${tab === "account" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="account" data-testid="settings-tab-account">Minha Conta</button>
           <button class="settings-nav-item ${tab === "profile" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="profile" data-testid="settings-tab-profile">Perfil</button>
+          <button class="settings-nav-item ${tab === "activity" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="activity" data-testid="settings-tab-activity">Atividade</button>
           <div class="settings-section-label">Configurações do App</div>
           <button class="settings-nav-item ${tab === "appearance" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="appearance" data-testid="settings-tab-appearance">Aparência (10 Temas)</button>
           <button class="settings-nav-item ${tab === "voice" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="voice" data-testid="settings-tab-voice">Voz, Vídeo & Sons</button>
@@ -4032,6 +4237,105 @@ function formatPlayTime(seconds) {
   return `${h} h${min % 60 ? ` ${min % 60} min` : ""}`;
 }
 
+// ==========================================================================
+// Live activity: the game being played and the song on Spotify
+// ==========================================================================
+const SPOTIFY_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#1ed760"/><path d="M17.3 16.6a.75.75 0 0 1-1 .25c-2.8-1.7-6.3-2.1-10.4-1.2a.75.75 0 1 1-.33-1.46c4.5-1 8.4-.56 11.5 1.36.35.22.46.69.24 1.05zm1.4-3.1a.94.94 0 0 1-1.3.31c-3.2-2-8.1-2.5-11.9-1.4a.94.94 0 1 1-.54-1.8c4.3-1.3 9.7-.68 13.4 1.6.44.27.58.85.31 1.29zm.12-3.2C15 8 8.6 7.8 4.9 8.9a1.13 1.13 0 1 1-.66-2.16c4.3-1.3 11.3-1.05 15.7 1.56a1.13 1.13 0 0 1-1.16 1.95z" fill="#000"/></svg>`;
+
+function formatClock(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function gameIconHtml(game, size = 40) {
+  const style = `width:${size}px;height:${size}px;--game-color:${escapeHtml(game.color || "#5865f2")};`;
+  if (game.iconDataUrl) return `<img class="activity-app-icon" style="${style}" src="${escapeHtml(game.iconDataUrl)}" alt="" />`;
+  if (game.coverUrl) return `<img class="activity-app-icon cover" style="${style}" src="${escapeHtml(game.coverUrl)}" alt="" referrerpolicy="no-referrer" />`;
+  return `<span class="activity-app-icon initials" style="${style}">${escapeHtml(getInitials(game.name))}</span>`;
+}
+
+// One line for friend lists and the member list ("Jogando X" / "Ouvindo ...")
+function activitySummaryHtml(userId) {
+  const live = store.getLiveActivity(userId);
+  if (live?.game) return `<span class="activity-line">${Icons.signal}<span>Jogando <strong>${escapeHtml(live.game.name)}</strong></span></span>`;
+  if (live?.listening) {
+    return `<span class="activity-line spotify">${SPOTIFY_ICON}<span>${escapeHtml(live.listening.artist || live.listening.title)}</span></span>`;
+  }
+  return "";
+}
+
+// "Atividade atual" cards (profile card, full profile, Ativo agora)
+function renderLiveActivityCards(userId) {
+  const live = store.getLiveActivity(userId);
+  if (!live) return "";
+  let html = "";
+  if (live.game) {
+    html += `
+      <div class="activity-card" data-testid="activity-card-game">
+        <div class="activity-card-label">Jogando</div>
+        <div class="activity-card-body">
+          ${gameIconHtml(live.game, 56)}
+          <div class="activity-card-text">
+            <div class="activity-card-title">${escapeHtml(live.game.name)}</div>
+            <div class="activity-card-sub" data-activity-since="${Number(live.game.since) || 0}">${escapeHtml(formatPlayTime((Date.now() - live.game.since) / 1000))}</div>
+          </div>
+        </div>
+      </div>`;
+  }
+  if (live.listening) {
+    const t = live.listening;
+    const elapsed = Math.min(t.durationMs || Infinity, Date.now() - t.startedAt);
+    const pct = t.durationMs ? Math.min(100, (elapsed / t.durationMs) * 100) : 0;
+    const searchUrl = `https://open.spotify.com/search/${encodeURIComponent(`${t.title} ${t.artist}`)}`;
+    html += `
+      <div class="activity-card spotify" data-testid="activity-card-spotify">
+        <div class="activity-card-label">Ouvindo Spotify ${SPOTIFY_ICON}</div>
+        <div class="activity-card-body">
+          ${
+            t.albumArtUrl
+              ? `<img class="activity-album-art" src="${escapeHtml(t.albumArtUrl)}" alt="" referrerpolicy="no-referrer" />`
+              : `<span class="activity-album-art placeholder">${SPOTIFY_ICON}</span>`
+          }
+          <div class="activity-card-text">
+            <div class="activity-card-title">${escapeHtml(t.title)}</div>
+            <div class="activity-card-sub">${escapeHtml(t.artist)}</div>
+            ${
+              t.durationMs
+                ? `<div class="activity-progress" data-track-start="${Number(t.startedAt)}" data-track-duration="${Number(t.durationMs)}">
+                    <span data-track-elapsed>${formatClock(elapsed)}</span>
+                    <div class="activity-progress-bar"><div class="activity-progress-fill" style="width:${pct.toFixed(1)}%;"></div></div>
+                    <span>${formatClock(t.durationMs)}</span>
+                  </div>`
+                : ""
+            }
+            <div class="activity-card-actions">
+              <button type="button" class="btn btn-secondary btn-sm" data-action="open-link" data-url="${escapeHtml(searchUrl)}">Ouvir no Spotify</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+  return html;
+}
+
+// Song progress and "playing for" times tick in place, without re-rendering
+setInterval(() => {
+  const now = Date.now();
+  for (const el of document.querySelectorAll("[data-track-start]")) {
+    const start = Number(el.getAttribute("data-track-start"));
+    const duration = Number(el.getAttribute("data-track-duration"));
+    const elapsed = Math.min(duration, now - start);
+    const label = el.querySelector("[data-track-elapsed]");
+    const fill = el.querySelector(".activity-progress-fill");
+    if (label) label.textContent = formatClock(elapsed);
+    if (fill) fill.style.width = `${Math.min(100, (elapsed / duration) * 100).toFixed(1)}%`;
+  }
+  for (const el of document.querySelectorAll("[data-activity-since]")) {
+    const since = Number(el.getAttribute("data-activity-since"));
+    if (since) el.textContent = formatPlayTime((now - since) / 1000);
+  }
+}, 1000);
+
 function renderActivityList(activities) {
   if (activities === null) return `<div class="profile-activity-empty">Carregando atividades...</div>`;
   if (!activities.length) {
@@ -4045,7 +4349,7 @@ function renderActivityList(activities) {
         <div class="profile-activity-card ${a.playingNow ? "playing" : ""}" title="${escapeHtml(a.name)}">
           <div class="profile-activity-cover" style="--game-color:${escapeHtml(a.color || "#5865f2")};">
             <span class="profile-activity-initials">${escapeHtml(getInitials(a.name))}</span>
-            ${a.coverUrl ? `<img src="${escapeHtml(a.coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ""}
+            ${a.coverUrl ? `<img src="${escapeHtml(a.coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : a.iconDataUrl ? `<img class="contain" src="${escapeHtml(a.iconDataUrl)}" alt="" />` : ""}
             ${a.playingNow ? `<span class="profile-activity-live">Jogando</span>` : ""}
           </div>
           <div class="profile-activity-name">${escapeHtml(a.name)}</div>
@@ -4178,7 +4482,7 @@ function renderProfileView(state) {
   const user = state.users[view.userId];
   if (!user) return "";
   const isMe = user.id === state.auth.currentUserId;
-  const playing = (view.activities || []).find((a) => a.playingNow);
+  const liveCards = renderLiveActivityCards(user.id);
 
   return `
     <div class="profile-view-backdrop" data-action="close-profile-view-backdrop" data-testid="profile-view">
@@ -4199,7 +4503,6 @@ function renderProfileView(state) {
                     : `<button class="btn btn-primary btn-sm" data-action="message-friend" data-user-id="${escapeHtml(user.id)}">${Icons.chat}<span>Mensagem</span></button>`
                 }
               </div>
-              ${playing ? `<div class="profile-view-playing">${Icons.signal}<span>Jogando <strong>${escapeHtml(playing.name)}</strong></span></div>` : ""}
               ${user.aboutMe ? `<div class="profile-view-about">${formatMessageMarkdown(user.aboutMe)}</div>` : ""}
               <div class="profile-view-field">
                 <div class="profile-view-label">Membro desde</div>
@@ -4210,6 +4513,7 @@ function renderProfileView(state) {
           <section class="profile-view-side">
             <div class="profile-view-tabs" role="tablist"><span class="profile-view-tab active" role="tab" aria-selected="true">Atividade</span></div>
             <div class="profile-view-panel">
+              ${liveCards ? `<div class="profile-view-panel-title">Atividade atual</div><div class="activity-card-list">${liveCards}</div>` : ""}
               <div class="profile-view-panel-title">Jogou recentemente</div>
               ${renderActivityList(view.activities)}
             </div>
@@ -4283,14 +4587,14 @@ export function renderApp() {
   if (!root) return;
 
   if (!state.auth.isAuthenticated) {
-    root.innerHTML = renderAuthScreen(state);
-    bindFormEvents();
+    morphInnerHTML(root, renderAuthScreen(state));
+    bindReplacingDuplicates(bindFormEvents);
     return;
   }
 
   if (state.auth.emailGate) {
-    root.innerHTML = renderEmailGateScreen(state);
-    bindFormEvents();
+    morphInnerHTML(root, renderEmailGateScreen(state));
+    bindReplacingDuplicates(bindFormEvents);
     return;
   }
 
@@ -4309,7 +4613,7 @@ export function renderApp() {
     mainStageHtml = callChannel ? renderCallStage(state, callChannel) : renderChatStage(state);
   }
 
-  root.innerHTML = `
+  morphInnerHTML(root, `
     <div class="app-root" data-theme="${escapeHtml(state.settings.theme)}" style="--font-scale:${state.settings.fontScale || 1};">
       ${renderTitlebar(state)}
       <div class="workspace">
@@ -4332,10 +4636,10 @@ export function renderApp() {
       ${renderConfirmDialog()}
       ${renderSwitchAccountPrompt()}
     </div>
-  `;
+  `);
 
-
-  bindFormEvents();
+  bindReplacingDuplicates(bindFormEvents);
+  syncEmojiPicker(uiState.emojiPickerForMessageId, uiState.emojiPickerAnchor);
   attachLiveScreenShareVideo();
   syncMediaEditor(state);
 }
@@ -4397,23 +4701,45 @@ function bindMediaEditorSliders(root) {
 // The preview <video> is created once per capture (ScreenShare) and moved into
 // the current render's slot: recreating it on every render restarted the
 // stream, which made the preview stutter
-function attachLiveScreenShareVideo() {
-  const video = ScreenShare.getPreviewElement();
-  const slot = document.querySelector("[data-share-video-slot]");
+// Live <video> elements are created once and moved into their slots after
+// each render (re-creating them would flash black and restart decoding)
+function mountVideo(video, slot) {
   if (!video || !slot) return;
-  if (video.parentElement !== slot) slot.appendChild(video);
+  if (video.parentElement !== slot) slot.replaceChildren(video);
   if (video.paused) video.play().catch(() => {});
 }
 
-// Live numbers on the stats overlay, updated in place (no re-render)
-setInterval(() => {
-  if (!ScreenShare.getStream()) return;
-  const stats = ScreenShare.getStats();
-  for (const el of document.querySelectorAll("[data-share-stat]")) {
-    const key = el.getAttribute("data-share-stat");
-    const value = key === "capturedFps" ? stats.capturedFps || "—" : stats[key] || "—";
+function attachLiveScreenShareVideo() {
+  mountVideo(ScreenShare.getPreviewElement(), document.querySelector("[data-share-video-slot]"));
+  mountVideo(Camera.getPreviewElement(), document.querySelector("[data-local-camera]"));
+  for (const slot of document.querySelectorAll("[data-remote-video]")) {
+    const [userId, kind] = slot.getAttribute("data-remote-video").split(":");
+    mountVideo(Voice.getRemoteVideo(userId, kind), slot);
+  }
+}
+
+function setShareStat(key, value) {
+  for (const el of document.querySelectorAll(`[data-share-stat="${key}"]`)) {
     if (el.textContent !== String(value)) el.textContent = String(value);
   }
+}
+
+// Live numbers on the stats overlay, updated in place (no re-render)
+setInterval(async () => {
+  if (ScreenShare.getStream()) {
+    const stats = ScreenShare.getStats();
+    setShareStat("capturedFps", stats.capturedFps || "—");
+    setShareStat("resolution", stats.resolution || "—");
+    const out = await Voice.getOutboundVideoStats("screen");
+    setShareStat("sent", out ? `${out.width}x${out.height} @ ${out.fps}` : "—");
+    return;
+  }
+  const slot = document.querySelector('[data-remote-video$=":screen"]');
+  if (!slot) return;
+  const inbound = await Voice.getInboundVideoStats(slot.getAttribute("data-remote-video").split(":")[0], "screen");
+  if (!inbound) return;
+  setShareStat("capturedFps", inbound.fps || "—");
+  setShareStat("resolution", inbound.width ? `${inbound.width}x${inbound.height}` : "—");
 }, 1000);
 
 async function openInviteModalForGuild(guildId, channelId = null) {
@@ -4579,6 +4905,20 @@ function bindFormEvents() {
       renderApp();
       const scroller = document.getElementById("messages-scroller");
       if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+  }
+
+  // Typing pings (throttled in the store)
+  const composerInput = document.getElementById("composer-text-input");
+  if (composerInput) {
+    composerInput.addEventListener("input", () => {
+      if (composerInput.value.trim()) store.notifyTyping(store.getActiveChannel()?.id);
+    });
+  }
+  const callChatInput = document.querySelector("#call-chat-form input[name=message]");
+  if (callChatInput) {
+    callChatInput.addEventListener("input", () => {
+      if (callChatInput.value.trim()) store.notifyTyping(document.getElementById("call-chat-form")?.getAttribute("data-channel-id"));
     });
   }
 
@@ -5059,6 +5399,12 @@ function bindFormEvents() {
       uiState.screenShareFps = Number(ssFps.value);
     });
   }
+  const ssAudio = document.getElementById("screenshare-audio-check");
+  if (ssAudio) {
+    ssAudio.addEventListener("change", () => {
+      uiState.screenShareAudio = ssAudio.checked;
+    });
+  }
 
   // Create Channel Form
   const createChannelForm = document.getElementById("create-channel-form");
@@ -5333,6 +5679,41 @@ function bindFormEvents() {
       await store.updateSetting("minimizeToTray", !quitOnCloseBox.checked);
     });
   }
+  const zoomRange = document.getElementById("ui-zoom-range");
+  if (zoomRange) {
+    // Applied on release: zooming while dragging would move the slider under the mouse
+    zoomRange.addEventListener("input", () => {
+      document.getElementById("ui-zoom-label").textContent = `${zoomRange.value}%`;
+    });
+    zoomRange.addEventListener("change", () => {
+      window.DiscordNative?.app?.setZoomFactor?.(Number(zoomRange.value) / 100);
+    });
+  }
+  const fontRange = document.getElementById("font-scale-range");
+  if (fontRange) {
+    fontRange.addEventListener("input", () => {
+      document.getElementById("font-scale-label").textContent = `${fontRange.value}%`;
+      document.querySelector(".app-root")?.style.setProperty("--font-scale", String(Number(fontRange.value) / 100));
+    });
+    fontRange.addEventListener("change", () => store.updateSettings({ fontScale: Number(fontRange.value) / 100 }));
+  }
+
+  const gameActivityBox = document.getElementById("setting-show-game-activity");
+  if (gameActivityBox) {
+    gameActivityBox.addEventListener("change", () => {
+      NativeBridge.setSetting("SHOW_GAME_ACTIVITY", gameActivityBox.checked);
+      showToast(gameActivityBox.checked ? "Seus jogos vão aparecer no perfil." : "Seus jogos não vão mais aparecer.");
+    });
+  }
+  const spotifyBox = document.getElementById("setting-spotify-sync");
+  if (spotifyBox) {
+    spotifyBox.addEventListener("change", () => {
+      NativeBridge.setSetting("SPOTIFY_SYNC", spotifyBox.checked);
+      if (!spotifyBox.checked) store.reportListening({ kind: "spotify", state: "stopped" });
+      showToast(spotifyBox.checked ? "Spotify sincronizado: dê play e a música aparece no seu perfil." : "Spotify desconectado do perfil.");
+    });
+  }
+
   const hwAccelBox = document.getElementById("setting-hardware-acceleration");
   if (hwAccelBox) {
     hwAccelBox.addEventListener("change", () => {
@@ -5470,6 +5851,23 @@ const truncate = (text, max = 120) => {
 };
 
 const DESTRUCTIVE_ACTIONS = {
+  "ban-member": (btn) => {
+    const u = store.getState().users[btn.getAttribute("data-user-id")];
+    return {
+      title: "Banir membro",
+      message: `Banir <strong>@${escapeHtml(u?.username || "membro")}</strong> do servidor? A pessoa sai na hora e não consegue voltar por convite.`,
+      confirmLabel: "Banir"
+    };
+  },
+  "delete-guild": (btn) => {
+    const g = store.getState().guilds.find((x) => x.id === btn.getAttribute("data-guild-id"));
+    return {
+      title: "Apagar servidor",
+      message: `Apagar <strong>${escapeHtml(g?.name || "este servidor")}</strong> para todos os membros? Canais, mensagens, cargos e convites serão perdidos. Esta ação não pode ser desfeita.`,
+      confirmLabel: "Apagar Servidor",
+      requirePassword: true
+    };
+  },
   "delete-channel": (btn) => {
     const ch = store.getActiveGuild()?.channels.find((c) => c.id === btn.getAttribute("data-channel-id"));
     return {
@@ -5981,6 +6379,56 @@ async function handleGlobalClick(e) {
       }
       renderApp();
       break;
+    case "open-link": {
+      e.preventDefault();
+      const url = btn.getAttribute("data-url");
+      // Our own invite links join the server right here in the app
+      const base = (store.getState().appConfig?.publicUrl || "").replace(/\/+$/, "");
+      if (base && url.startsWith(`${base}/convite/`)) {
+        const res = await store.acceptServerInvite(url);
+        showToast(res.ok ? (res.alreadyMember ? "Você já está nesse servidor." : `Você entrou em ${res.guildName || "um servidor"}!`) : res.error || "Convite inválido.");
+        renderApp();
+      } else if (/^https?:\/\//i.test(url)) {
+        window.open(url, "_blank", "noopener"); // main process opens it in the browser
+      }
+      break;
+    }
+    case "check-updates":
+      await checkForUpdates({ quiet: false });
+      break;
+    case "install-update": {
+      const res = await window.DiscordNative?.app?.installUpdate?.();
+      showToast(res?.ok ? "Baixando a atualização... o app vai fechar e abrir de novo sozinho." : res?.error || "Não foi possível atualizar.");
+      break;
+    }
+    case "reset-ui-scale":
+      window.DiscordNative?.app?.setZoomFactor?.(1);
+      await store.updateSettings({ fontScale: 1 });
+      renderApp();
+      break;
+    case "popout-message": {
+      const dm = await store.openOrCreateDm(btn.getAttribute("data-user-id"));
+      closeAllFloatingMenus();
+      uiState.profileView = null;
+      if (!dm) showToast("Não foi possível abrir a conversa.");
+      renderApp();
+      break;
+    }
+    case "ban-member": {
+      const res = await store.banMember(btn.getAttribute("data-guild-id"), btn.getAttribute("data-user-id"));
+      closeAllFloatingMenus();
+      showToast(res.ok ? "Membro banido do servidor." : res.error || "Não foi possível banir.");
+      renderApp();
+      break;
+    }
+    case "delete-guild": {
+      const res = await store.deleteGuild(btn.getAttribute("data-guild-id"), btn.getAttribute("data-password") || "");
+      closeAllFloatingMenus();
+      uiState.settingsOverlay = null;
+      showToast(res.ok ? "Servidor apagado." : res.error || "Não foi possível apagar o servidor.");
+      renderApp();
+      break;
+    }
     case "send-friend-req-id": {
       const uid = btn.getAttribute("data-user-id");
       const res = await store.sendFriendRequestToUser(uid);
@@ -6043,10 +6491,11 @@ async function handleGlobalClick(e) {
     case "toggle-deafen":
       store.toggleDeafen();
       break;
-    case "toggle-video":
-      state.voice.videoEnabled = !state.voice.videoEnabled;
-      store.notify();
+    case "toggle-video": {
+      const res = await store.toggleCamera();
+      if (!res.ok) showToast(res.error);
       break;
+    }
     case "toggle-screenshare":
       if (state.voice.screenShareEnabled) {
         await store.stopScreenShare();
@@ -6071,7 +6520,8 @@ async function handleGlobalClick(e) {
       const res = await store.startScreenShare(srcId, {
         sourceName: srcName,
         resolution: uiState.screenShareResolution,
-        fps: uiState.screenShareFps
+        fps: uiState.screenShareFps,
+        includeAudio: uiState.screenShareAudio
       });
       if (res.ok) {
         showToast(`Transmitindo "${srcName}" ao vivo!`);
@@ -6516,18 +6966,26 @@ async function handleGlobalClick(e) {
       const isSame = uiState.emojiPickerForMessageId === msgId;
       closeAllFloatingMenus("emojiPicker");
       uiState.emojiPickerForMessageId = isSame ? null : msgId;
+      // Opened from the message's right-click menu the toolbar button is hidden: anchor at the message
+      const r = (btn.offsetParent ? btn : btn.closest("[data-message-id]") || btn).getBoundingClientRect();
+      uiState.emojiPickerAnchor = { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
       renderApp();
       break;
     }
     case "select-emoji": {
-      const target = btn.getAttribute("data-target");
+      const target = btn.getAttribute("data-target") || btn.closest("[data-emoji-target]")?.getAttribute("data-emoji-target");
       const emoji = btn.getAttribute("data-emoji");
       uiState.emojiPickerForMessageId = null;
+      recordEmojiUse(emoji);
       if (target === "composer") {
         const inp = document.getElementById("composer-text-input");
         if (inp) {
-          inp.value += emoji;
+          // Inserted where the cursor is, not always at the end
+          const start = inp.selectionStart ?? inp.value.length;
+          const end = inp.selectionEnd ?? inp.value.length;
+          inp.value = inp.value.slice(0, start) + emoji + inp.value.slice(end);
           inp.focus();
+          inp.setSelectionRange(start + emoji.length, start + emoji.length);
         }
       } else {
         const ch = store.getActiveChannel();
@@ -6635,7 +7093,49 @@ function channelIdOrFallback(ch) {
 }
 
 // Right-click Context Menu on Servers
+// Right-click on a message: small menu with the same actions as its toolbar
+// (each item clicks the toolbar button, so deleting still asks to confirm)
+function openMessageContextMenu(e, row) {
+  const id = row.getAttribute("data-message-id");
+  const toolbarButton = (action) => document.querySelector(`.message-row[data-message-id="${CSS.escape(id)}"] [data-action="${action}"][data-message-id="${CSS.escape(id)}"]`);
+  const all = Object.values(store.getState().messages).flat();
+  const msg = all.find((m) => m && m.id === id);
+  const items = [];
+  const add = (action, label, extra = {}) => {
+    if (toolbarButton(action)) items.push({ label, ...extra, onClick: () => toolbarButton(action)?.click() });
+  };
+  add("reply-message", "Responder");
+  add("open-emoji-picker", "Adicionar reação");
+  add("start-edit-message", "Editar mensagem");
+  if (msg?.content) {
+    items.push({
+      label: "Copiar texto",
+      onClick: () => {
+        NativeBridge.copyText(msg.content);
+        showToast("Texto copiado!");
+      }
+    });
+  }
+  add("pin-message", msg?.pinned ? "Desafixar" : "Fixar mensagem");
+  add("delete-message", "Excluir mensagem", { danger: true });
+  if (!items.length) return;
+  e.preventDefault();
+  closeAllFloatingMenus("contextMenu");
+  uiState.contextMenu = {
+    x: Math.min(e.clientX, window.innerWidth - 220),
+    y: Math.min(e.clientY, window.innerHeight - items.length * 38 - 16),
+    items
+  };
+  renderApp();
+}
+
 document.addEventListener("contextmenu", (e) => {
+  // Text boxes and selected text get the standard menu (Copiar/Colar...) from the main process
+  const row = e.target.closest(".message-row[data-message-id], .call-chat-msg[data-message-id]");
+  if (row && !e.target.closest("input, textarea, [contenteditable]") && !String(window.getSelection?.() || "").trim()) {
+    openMessageContextMenu(e, row);
+    return;
+  }
   const guildWrap = e.target.closest("[data-guild-context]");
   if (guildWrap) {
     e.preventDefault();
@@ -6750,6 +7250,38 @@ document.addEventListener("keydown", (e) => {
 store.subscribe(() => renderApp());
 store.subscribeGifPicker((state) => syncGifPicker(state));
 
+// eco://convite/<code>: joins the server once the user is logged in
+let pendingInviteCode = null;
+
+async function consumeInviteDeepLink() {
+  if (!pendingInviteCode || !store.getState().auth.isAuthenticated) return;
+  const code = pendingInviteCode;
+  pendingInviteCode = null;
+  const res = await store.acceptServerInvite(code);
+  showToast(res.ok ? (res.alreadyMember ? "Você já está nesse servidor." : `Você entrou em ${res.guildName || "um servidor"}!`) : res.error || "Convite inválido.");
+  renderApp();
+}
+
+function handleDeepLink(url) {
+  const match = /^eco:\/\/+(?:convite|invite)\/([A-Za-z0-9_-]+)/i.exec(String(url || ""));
+  if (!match) return;
+  pendingInviteCode = match[1];
+  consumeInviteDeepLink();
+}
+
+NativeBridge.subscribeIpc("DEEP_LINK", (url) => {
+  window.DiscordNative?.ipc?.invoke("DEEP_LINK_TAKE"); // already handled here
+  handleDeepLink(url);
+});
+window.DiscordNative?.ipc?.invoke("DEEP_LINK_TAKE").then(handleDeepLink).catch(() => {});
+store.subscribe(() => {
+  if (pendingInviteCode) consumeInviteDeepLink();
+});
+
+NativeBridge.subscribeIpc("SPOTIFY_ACTIVITY", (activity) => {
+  store.reportListening(activity);
+});
+
 NativeBridge.subscribeIpc("GAME_ACTIVITY", (activity) => {
   store.reportGameActivity(activity).then(() => {
     // Keep an open profile's "Atividade" list current
@@ -6773,19 +7305,25 @@ NativeBridge.subscribeIpc("SYSTEM_TRAY_OPEN_VOICE_SETTINGS", () => {
   renderApp();
 });
 
-NativeBridge.subscribeIpc("CHECK_FOR_UPDATES", () => {
-  showToast("Discord v1.0.9262 está atualizado!");
-});
+// Checks the server for a newer version; on startup only speaks up when there is one
+async function checkForUpdates({ quiet = true } = {}) {
+  if (!window.DiscordNative?.app?.checkForUpdates) return;
+  uiState.checkingUpdates = true;
+  if (!quiet) renderApp();
+  const info = await window.DiscordNative.app.checkForUpdates().catch(() => null);
+  uiState.checkingUpdates = false;
+  uiState.updateInfo = info || { ok: false, error: "Não foi possível verificar." };
+  if (info?.available) showToast(`Nova versão do ${getAppName()} disponível (${info.latest}). Atualize em Configurações > Windows & Memória.`);
+  else if (!quiet) showToast(info?.ok ? "Você já está na versão mais recente." : uiState.updateInfo.error);
+  renderApp();
+}
 
-// Screen share frames go straight into the visible <img> (no full re-render
-// per frame). Returns true when nothing else needs to redraw.
-store.onScreenFrame = (channelId, frameDataUrl) => {
-  const imgs = document.querySelectorAll(`[data-share-frame="${CSS.escape(channelId)}"]`);
-  imgs.forEach((img) => {
-    img.src = frameDataUrl;
-  });
-  return imgs.length > 0 || Boolean(uiState.stoppedWatching[channelId]);
-};
+NativeBridge.subscribeIpc("CHECK_FOR_UPDATES", () => {
+  checkForUpdates({ quiet: false });
+  uiState.settingsOverlay = { type: "user", tab: "windows" };
+  renderApp();
+});
+setTimeout(() => checkForUpdates({ quiet: true }), 15000);
 
 // Game covers come from the Steam CDN; if one fails, the card keeps its initials
 document.addEventListener(

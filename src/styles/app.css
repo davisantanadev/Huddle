@@ -5041,3 +5041,622 @@ a.message-file-box:hover {
 .user-popout.themed .link-btn {
   color: #c9d1ff;
 }
+
+/* Profile card actions (Message / Add friend / Ban) */
+.profile-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-menu-item.danger {
+  color: var(--status-red);
+}
+
+.context-menu-item.danger:hover {
+  background-color: var(--status-red);
+  color: #ffffff;
+}
+
+/* Server settings: delete server */
+.danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--status-red);
+  border-radius: 8px;
+}
+
+.danger-zone-title {
+  font-weight: 700;
+  color: var(--header-primary);
+}
+
+.danger-zone-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* Clickable links in messages */
+.chat-link {
+  color: var(--link-color, #00a8fc);
+  text-decoration: none;
+  word-break: break-all;
+  cursor: pointer;
+}
+
+.chat-link:hover {
+  text-decoration: underline;
+}
+
+/* The member list always sits to the right of the chat, never below it */
+.stage-content-split {
+  flex-direction: row;
+  flex-wrap: nowrap;
+}
+
+.stage-content-split > .members-sidebar {
+  flex: 0 0 var(--members-width);
+  align-self: stretch;
+  height: auto;
+  max-height: 100%;
+}
+
+/* Live video (screen share / camera) inside call tiles and the stream banner */
+.call-tile-stream video,
+.screenshare-remote-slot video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #000;
+}
+
+.screenshare-remote-slot {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 60vh;
+  background: #000;
+}
+
+.call-tile-stream.camera video {
+  object-fit: cover;
+}
+
+.camera-video.mirrored {
+  transform: scaleX(-1);
+}
+
+.screenshare-audio-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.screenshare-quality-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ===== Live activity (game / Spotify) ===== */
+.activity-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.activity-line svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.activity-line strong {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.activity-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.activity-card-list.compact {
+  margin-bottom: 0;
+}
+
+.activity-card {
+  background: color-mix(in srgb, var(--bg-floating, #111214) 70%, transparent);
+  border: 1px solid var(--border-faint);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.activity-card-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--header-primary);
+  margin-bottom: 10px;
+}
+
+.activity-card-body {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.activity-card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.activity-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-card-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-card-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 8px;
+}
+
+.activity-app-icon {
+  flex: 0 0 auto;
+  border-radius: 10px;
+  object-fit: contain;
+  background: var(--game-color, #5865f2);
+}
+
+.activity-app-icon[src] {
+  background: transparent;
+}
+
+.activity-app-icon.cover {
+  object-fit: cover;
+}
+
+.activity-app-icon.initials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.activity-album-art {
+  width: 88px;
+  height: 88px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #1db954;
+}
+
+.activity-album-art.small {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+}
+
+.activity-album-art.placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #191414;
+}
+
+.activity-album-art.placeholder svg {
+  width: 40%;
+  height: 40%;
+}
+
+.activity-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-family: var(--font-code, monospace);
+  color: var(--text-normal);
+}
+
+.activity-progress-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+  overflow: hidden;
+}
+
+.activity-progress-fill {
+  height: 100%;
+  background: var(--header-primary);
+  border-radius: 2px;
+  transition: width 0.9s linear;
+}
+
+.profile-activity-cover img.contain {
+  object-fit: contain;
+  padding: 18%;
+}
+
+/* "Ativo agora" (Friends) */
+.active-now-card {
+  margin-top: 12px;
+  border: 1px solid var(--border-faint);
+  border-radius: 10px;
+  background: var(--bg-channels);
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.active-now-card:hover {
+  border-color: var(--border-strong, var(--text-muted));
+}
+
+.active-now-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.active-now-who {
+  flex: 1;
+  min-width: 0;
+}
+
+.active-now-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-now-what {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.active-now-what span + span::before {
+  content: "– ";
+}
+
+.active-now-app svg {
+  width: 26px;
+  height: 26px;
+}
+
+.active-now-detail {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-faint);
+  background: color-mix(in srgb, var(--bg-floating, #111214) 45%, transparent);
+}
+
+.active-now-detail > div {
+  min-width: 0;
+}
+
+.active-now-detail-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-now-detail-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Avatar on profile cards: no thick cut-out ring, only the thin profile border */
+.profile-view-avatar,
+.user-popout-avatar,
+.profile-view-card.themed .profile-view-avatar,
+.user-popout.themed .user-popout-avatar {
+  border: 0;
+  background-color: transparent;
+}
+
+.profile-view-card.has-border .profile-view-avatar,
+.user-popout.has-border .user-popout-avatar {
+  box-shadow: 0 0 0 1px var(--profile-border);
+}
+
+/* Profile theme on: the banner fades into the card's gradient instead of
+   ending in a hard line */
+.profile-view-card.themed .profile-banner-box,
+.user-popout.themed .profile-banner-box {
+  position: relative;
+}
+
+.profile-view-card.themed .profile-banner-box::after,
+.user-popout.themed .profile-banner-box::after {
+  content: "";
+  position: absolute;
+  inset: 35% 0 0 0;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--theme-primary) 82%, #000000));
+  pointer-events: none;
+}
+
+/* Long profile cards scroll instead of running off the window */
+.user-popout {
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+}
+
+/* "Fulano está digitando..." */
+.typing-indicator {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.typing-indicator strong {
+  color: var(--text-normal);
+  font-weight: 700;
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.typing-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-normal);
+  opacity: 0.4;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+/* Sits in the space under the box, so showing it never moves the layout */
+.composer-area .typing-indicator {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 2px;
+}
+
+.call-chat-composer {
+  position: relative;
+  padding-bottom: 20px;
+}
+
+.call-chat-composer .typing-indicator {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 0;
+}
+
+/* ===== Emoji picker (reactions and chat box) ===== */
+.emoji-picker {
+  position: fixed;
+  z-index: 3000;
+  width: 420px;
+  height: 440px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.emoji-picker-head {
+  padding: 10px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.emoji-search {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-normal);
+  border: 1px solid var(--border-faint);
+  font-size: 14px;
+}
+
+.emoji-picker-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.emoji-cats {
+  width: 48px;
+  flex: 0 0 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  background: var(--bg-channels);
+  overflow-y: auto;
+}
+
+.emoji-cat-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 20px;
+  line-height: 1;
+  background: transparent;
+  filter: grayscale(0.6);
+}
+
+.emoji-cat-btn:hover {
+  background: var(--bg-modifier-hover, rgba(255, 255, 255, 0.06));
+  filter: none;
+}
+
+.emoji-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+.emoji-section h4 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 8px 4px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-floating);
+}
+
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 2px;
+}
+
+.emoji-btn {
+  aspect-ratio: 1;
+  border-radius: 6px;
+  font-size: 26px;
+  line-height: 1;
+  background: transparent;
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+}
+
+.emoji-btn:hover {
+  background: var(--bg-modifier-hover, rgba(255, 255, 255, 0.08));
+}
+
+.emoji-btn[hidden],
+.emoji-section[hidden] {
+  display: none;
+}
+
+.emoji-empty {
+  padding: 30px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.emoji-picker-foot {
+  height: 44px;
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-top: 1px solid var(--border-faint);
+  background: var(--bg-channels);
+}
+
+.emoji-foot-preview {
+  font-size: 24px;
+}
+
+.emoji-foot-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--header-primary);
+}
+
+/* Message text follows "Tamanho do texto" (Aparência) */
+.message-text,
+.composer-input,
+.call-chat-input,
+.call-chat-msg-body {
+  font-size: calc(15px * var(--font-scale, 1));
+}
+
+.scale-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.scale-settings .settings-slider {
+  width: 100%;
+}
+
+.update-notes {
+  white-space: pre-line;
+  margin-top: 8px;
+}
