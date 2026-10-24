@@ -307,6 +307,16 @@ class Store {
 
       if (event === "SCREEN_SHARE_FRAME") return; // older clients; video now goes over WebRTC
 
+      // Someone opened/closed the app: only their dot changes
+      if (event === "PRESENCE_UPDATED" && payload?.userId) {
+        const u = this.state.users[payload.userId];
+        if (u && payload.userId !== this.state.auth.currentUserId && u.status !== payload.status) {
+          u.status = payload.status;
+          this.notify({ skipPersist: true });
+        }
+        return;
+      }
+
       if (event === "TYPING_STARTED" && payload?.channelId && payload.userId) {
         this.setTyping(payload.channelId, payload.userId, true);
         return;

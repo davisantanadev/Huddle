@@ -2323,6 +2323,26 @@ async function runVerification() {
     store.selectGuild("g_rea", "c_general");
     const badgeCleared = guild().unreadCount === 0;
 
+    // Presence: Maria's app is closed. "Disponível" shows as offline, "Não
+    // perturbe" stays, "Invisível" is offline (and I always see my own choice)
+    const seen = async () => {
+      await store.syncFromBackend({ silent: true });
+      return store.getState().users[mariaId]?.status;
+    };
+    await as("updateProfile", { status: "online" });
+    const t0 = Date.now();
+    let closedOnline = await seen();
+    while (closedOnline !== "offline" && Date.now() - t0 < 15000) {
+      await wait(500);
+      closedOnline = await seen();
+    }
+    await as("updateProfile", { status: "dnd" });
+    const closedDnd = await seen();
+    await as("updateProfile", { status: "invisible" });
+    const closedInvisible = await seen();
+    await as("updateProfile", { status: "online" });
+    const myOwn = store.getCurrentUser().status;
+
     // Kick: gone from the server, but an invite brings her back (not a ban)
     const kicked = await store.kickMember("g_rea", mariaId);
     const goneAfterKick = !guild().memberIds.includes(mariaId);
@@ -2355,7 +2375,11 @@ async function runVerification() {
       kicked: kicked.ok && goneAfterKick,
       rejoinAfterKick: rejoin.ok,
       dmHidden,
-      dmBack: Boolean(dmBack)
+      dmBack: Boolean(dmBack),
+      presenceClosedOnlineIsOffline: closedOnline === "offline",
+      presenceClosedDndKept: closedDnd === "dnd",
+      presenceInvisibleIsOffline: closedInvisible === "offline",
+      presenceMineAsChosen: myOwn === "online"
     };
   })()`);
   recordTest(

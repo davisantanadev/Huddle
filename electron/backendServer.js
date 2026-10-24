@@ -32,6 +32,8 @@ const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // A playing game re-reports itself every scan; silence longer than this means it stopped
 const ACTIVITY_STALE_MS = 3 * 60 * 1000;
+// How long a closed app still counts as open (a reconnect in between is not "offline")
+const PRESENCE_GRACE_MS = 10 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 // Actions anyone may call without a session
@@ -319,6 +321,9 @@ class DiscordBackendServer {
     this.dbPath = path.join(dataDir, "discord_platform_v2.sqlite");
     this.db = new DatabaseSync(this.dbPath);
     this.sseClients = new Set();
+    // Presence: who has the app open (live event streams per user)
+    this.openStreams = new Map(); // userId -> number of open streams
+    this.offlineTimers = new Map(); // userId -> pending "went offline" timer
     this.voiceRooms = new Map();
     this.listening = new Map(); // userId -> song playing on Spotify (reportListening)
     this.screenShares = new Map();
@@ -823,7 +828,50 @@ class DiscordBackendServer {
     if (!full) return null;
     delete full.email;
     delete full.emailVerified;
+    full.status = this.visibleStatus(row.id, row.status);
     return full;
+  }
+
+  isAppOpen(userId) {
+    return (this.openStreams.get(userId) || 0) > 0 || this.offlineTimers.has(userId);
+  }
+
+  // The status other people see. Invisible is always offline; with the app
+  // closed "Ausente" and "Não perturbe" stay as chosen, "Disponível" becomes
+  // offline.
+  visibleStatus(userId, chosen) {
+    const status = chosen || "online";
+    if (status === "invisible") return "offline";
+    if (this.isAppOpen(userId)) return status;
+    return status === "idle" || status === "dnd" ? status : "offline";
+  }
+
+  presenceChanged(userId) {
+    const row = this.db.prepare(`SELECT status FROM users WHERE id = ?`).get(userId);
+    if (!row) return;
+    this.broadcastEvent("PRESENCE_UPDATED", { userId, status: this.visibleStatus(userId, row.status) });
+  }
+
+  streamOpened(userId) {
+    const wasOpen = this.isAppOpen(userId);
+    clearTimeout(this.offlineTimers.get(userId));
+    this.offlineTimers.delete(userId);
+    this.openStreams.set(userId, (this.openStreams.get(userId) || 0) + 1);
+    if (!wasOpen) this.presenceChanged(userId);
+  }
+
+  // A short grace period: a dropped connection that comes right back is not "offline"
+  streamClosed(userId) {
+    const left = Math.max(0, (this.openStreams.get(userId) || 0) - 1);
+    if (left) return this.openStreams.set(userId, left);
+    this.openStreams.delete(userId);
+    clearTimeout(this.offlineTimers.get(userId));
+    const timer = setTimeout(() => {
+      this.offlineTimers.delete(userId);
+      if (!this.openStreams.get(userId)) this.presenceChanged(userId);
+    }, PRESENCE_GRACE_MS);
+    timer.unref?.();
+    this.offlineTimers.set(userId, timer);
   }
 
   getPreferences(userId) {
@@ -3955,7 +4003,11 @@ class DiscordBackendServer {
           res.write(`data: ${JSON.stringify({ event: "CONNECTED", type: "CONNECTED", timestamp: Date.now() })}\n\n`);
           res.ecoUserId = streamUserId;
           this.sseClients.add(res);
-          req.on("close", () => this.sseClients.delete(res));
+          this.streamOpened(streamUserId);
+          req.on("close", () => {
+            this.sseClients.delete(res);
+            this.streamClosed(streamUserId);
+          });
           return;
         }
 
