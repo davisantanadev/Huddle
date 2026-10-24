@@ -13,7 +13,8 @@ const {
   desktopCapturer,
   session,
   powerMonitor,
-  net
+  net,
+  nativeImage
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -32,6 +33,11 @@ const SHARED_DISCORD_DATA_DIR = path.join(app.getPath("appData"), "discord");
 // ECO_USER_DATA_DIR lets tests run against a throwaway profile
 const APP_DATA_DIR = process.env.ECO_USER_DATA_DIR || path.join(app.getPath("appData"), "Eco");
 const DB_FILE = "discord_platform_v2.sqlite";
+// Shown everywhere: window and taskbar titles, tray, notifications (the
+// executable's own name/description is set by scripts/build-exe.js)
+const APP_DISPLAY_NAME = loadAppConfig().appName || "Invadominio zak' zak";
+app.setName(APP_DISPLAY_NAME);
+if (process.platform === "win32") app.setAppUserModelId("com.invadominio.zakzak");
 
 function migrateFromSharedDiscordFolder() {
   if (fs.existsSync(path.join(APP_DATA_DIR, DB_FILE))) return;
@@ -359,21 +365,51 @@ function webContentsSend(event, ...options) {
   mainWindow.webContents.send(`${DISCORD_NAMESPACE}${event}`, ...options);
 }
 
+// Buttons on the taskbar preview while in a call: microphone, audio, leave.
+// The page sends the state and the icons (drawn from its own SVGs).
+let callThumbar = null; // { muted, deafened, icons: { mic, micOff, headphones, deafenOff, leave } } or null
+function applyCallThumbar() {
+  if (process.platform !== "win32" || !mainWindow || mainWindow.isDestroyed()) return;
+  if (!callThumbar) {
+    mainWindow.setThumbarButtons([]);
+    return;
+  }
+  const img = (dataUrl) => nativeImage.createFromDataURL(dataUrl);
+  const { muted, deafened, icons } = callThumbar;
+  mainWindow.setThumbarButtons([
+    {
+      tooltip: muted ? "Ativar microfone" : "Silenciar microfone",
+      icon: img(muted ? icons.micOff : icons.mic),
+      click: () => webContentsSend("SYSTEM_TRAY_TOGGLE_MUTE")
+    },
+    {
+      tooltip: deafened ? "Ativar áudio" : "Desativar áudio",
+      icon: img(deafened ? icons.deafenOff : icons.headphones),
+      click: () => webContentsSend("SYSTEM_TRAY_TOGGLE_DEAFEN")
+    },
+    {
+      tooltip: "Sair da call",
+      icon: img(icons.leave),
+      click: () => webContentsSend("CALL_LEAVE")
+    }
+  ]);
+}
+
 function setupSystemTray() {
   try {
     const iconPath = path.join(__dirname, "..", "assets", "app.ico");
     if (!fs.existsSync(iconPath)) return;
     tray = new Tray(iconPath);
-    tray.setToolTip("Discord");
+    tray.setToolTip(APP_DISPLAY_NAME);
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: "Discord (v" + BUILD_INFO.version + ")",
+        label: `${APP_DISPLAY_NAME} (v${BUILD_INFO.version})`,
         enabled: false
       },
       { type: "separator" },
       {
-        label: "Open Discord",
+        label: `Abrir ${APP_DISPLAY_NAME}`,
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.show();
@@ -382,19 +418,19 @@ function setupSystemTray() {
         }
       },
       {
-        label: "Mute",
+        label: "Silenciar microfone",
         type: "checkbox",
         checked: false,
         click: () => webContentsSend("SYSTEM_TRAY_TOGGLE_MUTE")
       },
       {
-        label: "Deafen",
+        label: "Desativar áudio",
         type: "checkbox",
         checked: false,
         click: () => webContentsSend("SYSTEM_TRAY_TOGGLE_DEAFEN")
       },
       {
-        label: "Voice & Video Settings",
+        label: "Configurações de voz e vídeo",
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.show();
@@ -405,7 +441,7 @@ function setupSystemTray() {
       },
       { type: "separator" },
       {
-        label: "Check for Updates...",
+        label: "Verificar atualizações...",
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.show();
@@ -416,7 +452,7 @@ function setupSystemTray() {
       },
       { type: "separator" },
       {
-        label: "Quit Discord",
+        label: `Sair do ${APP_DISPLAY_NAME}`,
         click: () => {
           isQuitting = true;
           app.quit();
@@ -448,7 +484,7 @@ function launchMainWindow(showImmediately = false) {
 
   const iconPath = path.join(__dirname, "..", "assets", "app.ico");
   const mainWindowOptions = {
-    title: "Discord",
+    title: APP_DISPLAY_NAME,
     backgroundColor: getBackgroundColor(),
     width: DEFAULT_WIDTH,
     height: DEFAULT_HEIGHT,
@@ -499,6 +535,8 @@ function launchMainWindow(showImmediately = false) {
   mainWindow.on("minimize", () => setTimeout(() => trimProcessWorkingSets(), 300));
   mainWindow.on("focus", cancelIdleTrim);
   mainWindow.on("show", () => {
+    // Windows forgets the preview buttons while the window is hidden
+    setTimeout(applyCallThumbar, 100);
     if (mainWindow.isFocused()) cancelIdleTrim();
   });
 
@@ -557,6 +595,8 @@ function launchMainWindow(showImmediately = false) {
   });
 
   const indexPath = path.join(__dirname, "..", "src", "index.html");
+  // The page's own <title> would replace the app name in the taskbar
+  mainWindow.on("page-title-updated", (e) => e.preventDefault());
   mainWindow.loadFile(indexPath);
 
   // Interface size chosen in Configurações > Aparência
@@ -596,6 +636,7 @@ function launchMainWindow(showImmediately = false) {
 function launchSplashWindow() {
   const iconPath = path.join(__dirname, "..", "assets", "app.ico");
   splashWindow = new BrowserWindow({
+    title: APP_DISPLAY_NAME,
     width: 300,
     height: 300,
     transparent: false,
@@ -614,6 +655,7 @@ function launchSplashWindow() {
   });
 
   const splashHtml = path.join(__dirname, "..", "assets", "splash", "index.html");
+  splashWindow.on("page-title-updated", (e) => e.preventDefault());
   splashWindow.loadFile(splashHtml);
 
   splashWindow.once("ready-to-show", () => {
@@ -976,6 +1018,12 @@ function registerIpcHandlers(backend) {
   });
 
   // "Salvar" on images and files: Windows' save dialog, then a normal download
+  ipcMain.on("DISCORD_CALL_THUMBAR", (_e, payload) => {
+    const valid = payload && payload.icons && ["mic", "micOff", "headphones", "deafenOff", "leave"].every((k) => /^data:image\/png;base64,/.test(String(payload.icons[k] || "")));
+    callThumbar = valid ? { muted: Boolean(payload.muted), deafened: Boolean(payload.deafened), icons: payload.icons } : null;
+    applyCallThumbar();
+  });
+
   ipcMain.on("DISCORD_DOWNLOAD_URL", (_e, url) => {
     if (!mainWindow || mainWindow.isDestroyed() || !/^https?:\/\//i.test(String(url || ""))) return;
     mainWindow.webContents.downloadURL(String(url));

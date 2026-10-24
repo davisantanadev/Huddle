@@ -14,9 +14,20 @@ async function build() {
   const iconPath = path.join(rootDir, "assets", "app.ico");
 
   console.log("[1/3] Packaging Electron application with @electron/packager...");
+  const appName = loadAppConfig().appName;
   const appPaths = await packager({
     dir: rootDir,
-    name: "Discord",
+    // The .exe and the Task Manager entry carry the app's name
+    name: appName,
+    executableName: appName,
+    appCopyright: appName,
+    win32metadata: {
+      FileDescription: appName,
+      ProductName: appName,
+      CompanyName: appName,
+      InternalName: appName,
+      OriginalFilename: `${appName}.exe`
+    },
     platform: "win32",
     arch: "x64",
     out: outDir,
@@ -35,14 +46,13 @@ async function build() {
   });
 
   const packagedDir = appPaths[0];
-  const packagedExe = path.join(packagedDir, "Discord.exe");
+  const packagedExe = path.join(packagedDir, `${appName}.exe`);
   console.log("Packaged Electron binary at:", packagedExe);
 
   if (process.env.NO_SHORTCUT === "1") return;
 
   // Desktop shortcut (.lnk) to the packaged app, named after app.config.json →
   // appName. DESKTOP_DIR overrides the folder.
-  const appName = loadAppConfig().appName;
   const desktopDir = process.env.DESKTOP_DIR || path.join(os.homedir(), "Desktop");
   const shortcutPath = path.join(desktopDir, `${appName}.lnk`);
   console.log(`[2/3] Creating Desktop shortcut ${shortcutPath}...`);

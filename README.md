@@ -1,4 +1,4 @@
-# Eco — cliente de chat e voz (Discord REA)
+# Invadominio zak' zak — cliente de chat e voz (Discord REA)
 
 Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord, feito em **Electron** com backend próprio em **SQLite**. Projeto pessoal, sem vínculo com a Discord Inc.
 
@@ -30,7 +30,7 @@ No **PowerShell** (tecla Windows → digite `powershell` → Enter), cole:
 irm https://129-159-51-96.sslip.io/download/install.ps1 | iex
 ```
 
-Isso baixa o Eco do servidor, confere o arquivo, instala em `%LOCALAPPDATA%\Eco`, cria o atalho **Eco** na Área de Trabalho e no Menu Iniciar e abre o app. Não precisa de administrador nem de Node.js.
+Isso baixa o app do servidor, confere o arquivo, instala em `%LOCALAPPDATA%\Invadominio`, cria o atalho **Invadominio zak' zak** na Área de Trabalho e no Menu Iniciar e abre o app. Não precisa de administrador nem de Node.js.
 
 **Atualizar:** o app avisa quando sai uma versão nova; em *Configurações → Windows & Memória → Atualizações* clique em **Atualizar agora** (ou rode o mesmo comando de novo). Suas contas não são apagadas.
 
@@ -135,7 +135,6 @@ Em *Supabase → Edge Functions → Secrets* (ou *Project Settings → Edge Func
 | --- | --- |
 | `BREVO_API_KEY` | a chave `xkeysib-...` |
 | `BREVO_SENDER_EMAIL` | o e-mail confirmado como remetente no Brevo |
-| `BREVO_SENDER_NAME` | `Eco` (opcional) |
 
 Pronto: em *Configurações → Minha Conta → Verificar*, o código chega por e-mail. Limites da função: 1 código por minuto e 5 por hora para cada e-mail, até 250 por dia no total.
 
@@ -201,7 +200,7 @@ npm run build:exe
 Isso cria:
 
 - `dist\Discord-win32-x64\Discord.exe` — o app completo empacotado
-- Um atalho na sua **Área de Trabalho** com o nome do `appName` do `app.config.json` (padrão `Eco`) que abre o app acima (use `$env:DESKTOP_DIR="C:\outra\pasta"` para mudar o local)
+- Um atalho na sua **Área de Trabalho** com o nome do `appName` do `app.config.json` (`Invadominio zak' zak`) que abre o app acima (use `$env:DESKTOP_DIR="C:\outra\pasta"` para mudar o local)
 
 > Feche o app antes de rodar o build, senão a pasta `dist` fica travada (erro `EBUSY`).
 
@@ -215,6 +214,8 @@ $env:VERIFY_REMOTE = "1"; npm test   # mesma suíte falando com o servidor por H
 Roda as suítes de ponta a ponta dentro do Electron (login, servidores, chamadas, sons, convites, conta etc.) usando um banco temporário — seus dados não são tocados. O resultado fica em `docs/verification-results.json`.
 
 ## 7. Onde ficam os dados
+
+O nome do app (janelas, atalhos, executável, Gerenciador de Tarefas, convites e e-mails) vem de `appName` no `app.config.json`; o nome dos e-mails fica em `APP_NAME` na função `supabase/functions/email-otp`. A pasta de dados manteve o nome interno `Eco`, para ninguém perder o login ao atualizar.
 
 Banco de dados, uploads e configurações locais ficam em:
 

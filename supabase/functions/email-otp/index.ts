@@ -1,4 +1,4 @@
-// E-mail verification codes for the Eco app, sent through Brevo's API.
+// E-mail verification codes for the Invadominio zak' zak app, sent through Brevo's API.
 //
 //   POST { action: "send",   email }        -> e-mails a 6-digit code
 //   POST { action: "verify", email, code }  -> { valid: true } when it matches
@@ -9,8 +9,8 @@
 // verify_jwt is off because the app calls it with the publishable key, which is
 // not a JWT; abuse is limited by the per-address and daily caps below.
 //
-// Secrets: BREVO_API_KEY, BREVO_SENDER_EMAIL (a sender verified in Brevo),
-// optional BREVO_SENDER_NAME and APP_NAME (default "Eco").
+// Secrets: BREVO_API_KEY, BREVO_SENDER_EMAIL (a sender verified in Brevo).
+// The app's name (subject, sender name and body) is APP_NAME below.
 // Deploy: supabase functions deploy email-otp --no-verify-jwt
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -21,6 +21,7 @@ const MAX_PER_EMAIL_PER_HOUR = 5;
 const MAX_PER_DAY = 250; // Brevo free plan allows 300/day
 const MAX_ATTEMPTS = 5;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const APP_NAME = "Invadominio zak' zak";
 
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false }
@@ -65,7 +66,7 @@ async function countSince(email: string | null, sinceMs: number) {
 async function sendCode(email: string) {
   const apiKey = Deno.env.get("BREVO_API_KEY");
   const senderEmail = Deno.env.get("BREVO_SENDER_EMAIL");
-  const appName = Deno.env.get("APP_NAME") || "Eco";
+  const appName = APP_NAME;
   if (!apiKey || !senderEmail) {
     return json(503, { ok: false, code: "not_configured", error: "O envio de e-mail ainda não foi configurado no servidor." });
   }
@@ -103,7 +104,7 @@ async function sendCode(email: string) {
     method: "POST",
     headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
-      sender: { name: Deno.env.get("BREVO_SENDER_NAME") || appName, email: senderEmail },
+      sender: { name: appName, email: senderEmail },
       to: [{ email }],
       subject: `${appName}: seu código é ${code}`,
       htmlContent: emailHtml(appName, code),

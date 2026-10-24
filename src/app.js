@@ -116,6 +116,14 @@ const uiState = {
   channelsWidth: readStoredWidth("eco_channels_width", 240, 180, 420),
   membersWidth: readStoredWidth("eco_members_width", 240, 180, 420),
   stoppedWatching: {}, // channelId -> true when the viewer chose "Parar de assistir"
+  streamAspect: {}, // "userId" -> width/height of their stream, so the tile has its exact shape
+  callStripHidden: (() => {
+    try {
+      return localStorage.getItem("eco_call_strip_hidden") === "1";
+    } catch {
+      return false;
+    }
+  })(),
   streamPopup: (() => {
     try {
       const saved = JSON.parse(localStorage.getItem("eco_stream_popup") || "null");
@@ -349,6 +357,24 @@ function animatedImageHtml(url, { cls = "", style = "", alt = "", mode = "animat
   return `<img class="${cls}" src="${escapeHtml(r.still)}" alt="${escapeHtml(alt)}" style="${style}" decoding="async" ${extra} /><video class="${cls} hover-anim" data-anim-src="${escapeHtml(video)}" data-morph-keep-src style="${style}" loop muted playsinline disablepictureinpicture preload="none"></video>`;
 }
 
+// Animated banners/avatars must never freeze. The browser pauses a <video>
+// when it is moved in the page (and "autoplay" only acts once), and a network
+// hiccup can stall it: resume/reload anything meant to loop.
+function keepAnimating(video) {
+  if (!video.isConnected || !video.autoplay || !video.loop) return;
+  if (video.error) {
+    const src = video.getAttribute("src");
+    video.removeAttribute("src");
+    video.load();
+    video.src = src;
+  }
+  if (video.paused) video.play().catch(() => {});
+}
+document.addEventListener("pause", (e) => e.target instanceof HTMLVideoElement && setTimeout(() => keepAnimating(e.target), 50), true);
+document.addEventListener("error", (e) => e.target instanceof HTMLVideoElement && setTimeout(() => keepAnimating(e.target), 2000), true);
+document.addEventListener("stalled", (e) => e.target instanceof HTMLVideoElement && setTimeout(() => keepAnimating(e.target), 3000), true);
+setInterval(() => document.querySelectorAll("video[autoplay][loop]").forEach(keepAnimating), 2000);
+
 // Hover-to-play for the still avatars above (delegated once)
 document.addEventListener("mouseover", (e) => {
   const host = e.target.closest?.(".avatar-wrap, .guild-btn");
@@ -465,7 +491,7 @@ function formatMessageMarkdown(rawText) {
 // ==========================================================================
 
 function getAppName() {
-  return store.getState().appConfig?.appName || "Eco";
+  return store.getState().appConfig?.appName || "Invadominio zak' zak";
 }
 
 // Mirrors the backend's buildInviteUrl so placeholders show the real link format
@@ -1639,8 +1665,8 @@ function renderCallTile(state, ch, userId, { focused = false, small = false, noS
 
   return `
     <div
-      class="call-tile ${watching || (cameraOn && !media.includes("call-tile-avatar")) ? "has-stream" : ""} ${speaking ? "speaking" : ""} ${focused ? "focused" : ""} ${small ? "small" : ""}"
-      style="${user.callTileColor ? `--tile-bg:${escapeHtml(user.callTileColor)};` : `--tile-color:${escapeHtml(user.avatarColor || "#5865f2")};`}"
+      class="call-tile ${watching || (cameraOn && !media.includes("call-tile-avatar")) ? "has-stream" : ""} ${focused && watching ? "fit-stream" : ""} ${speaking ? "speaking" : ""} ${focused ? "focused" : ""} ${small ? "small" : ""}"
+      style="${user.callTileColor ? `--tile-bg:${escapeHtml(user.callTileColor)};` : `--tile-color:${escapeHtml(user.avatarColor || "#5865f2")};`}${focused && watching ? `--stream-ar:${Number(uiState.streamAspect[userId]) || 16 / 9};` : ""}"
       data-action="focus-call-tile"
       data-user-id="${escapeHtml(userId)}"
       data-testid="call-tile"
@@ -1742,10 +1768,16 @@ function renderCallStage(state, ch) {
   const stripIds = focusIsStream ? participants : participants.filter((id) => id !== focusId);
   const chatOpen = uiState.callChatOpen;
 
+  const stripHidden = uiState.callStripHidden;
   const tilesHtml = focusId
     ? `
       <div class="call-focus">${renderCallTile(state, ch, focusId, { focused: true })}</div>
-      ${stripIds.length ? `<div class="call-strip">${stripIds.map((id) => renderCallTile(state, ch, id, { small: true, noStream: focusIsStream && id === focusId })).join("")}</div>` : ""}
+      ${
+        stripIds.length
+          ? `<button type="button" class="call-strip-toggle ${stripHidden ? "collapsed" : ""}" data-action="toggle-call-strip" title="${stripHidden ? "Mostrar os participantes" : "Esconder os participantes e ampliar"}" aria-label="${stripHidden ? "Mostrar os participantes" : "Esconder os participantes"}" data-testid="call-strip-toggle">${Icons.chevronDown}</button>
+             ${stripHidden ? "" : `<div class="call-strip">${stripIds.map((id) => renderCallTile(state, ch, id, { small: true, noStream: focusIsStream && id === focusId })).join("")}</div>`}`
+          : ""
+      }
     `
     : `<div class="call-grid" style="--call-cols:${participants.length <= 1 ? 1 : participants.length <= 4 ? 2 : 3};">${participants.map((id) => renderCallTile(state, ch, id)).join("")}</div>`;
 
@@ -2485,7 +2517,7 @@ function renderUserPopout(state) {
           <div style="height:1px;background:var(--divider-subtle);"></div>
           <div>
             <div class="form-label" style="margin-bottom:4px;">Sobre Mim</div>
-            <div style="font-size:13px;color:var(--text-normal);">${escapeHtml(u.aboutMe || "Membro do Discord Desktop.")}</div>
+            <div style="font-size:13px;color:var(--text-normal);">${escapeHtml(u.aboutMe || "")}</div>
           </div>
           <div>
             <div class="form-label" style="margin-bottom:4px;">Membro Desde</div>
@@ -5036,6 +5068,24 @@ function mountVideo(video, slot) {
   if (!video || !slot) return;
   if (video.parentElement !== slot) slot.replaceChildren(video);
   if (video.paused) video.play().catch(() => {});
+  // Who is on this video: "<userId>:screen" slots, or my own preview
+  const owner = slot.getAttribute("data-remote-video")?.split(":")[0] || (slot.hasAttribute("data-share-video-slot") ? store.getState().auth.currentUserId : null);
+  if (owner && !video.dataset.aspectWatch) {
+    video.dataset.aspectWatch = "1";
+    const learn = () => {
+      if (!video.videoWidth || !video.videoHeight) return;
+      const ar = video.videoWidth / video.videoHeight;
+      const key = video.dataset.aspectOwner;
+      if (Math.abs((uiState.streamAspect[key] || 0) - ar) > 0.01) {
+        uiState.streamAspect[key] = ar;
+        renderApp();
+      }
+    };
+    video.addEventListener("loadedmetadata", learn);
+    video.addEventListener("resize", learn);
+  }
+  video.dataset.aspectOwner = owner || "";
+  if (owner && video.videoWidth && !uiState.streamAspect[owner]) uiState.streamAspect[owner] = video.videoWidth / video.videoHeight;
 }
 
 function attachLiveScreenShareVideo() {
@@ -6595,6 +6645,14 @@ async function handleGlobalClick(e) {
       uiState.stoppedWatching[btn.getAttribute("data-channel-id")] = true;
       renderApp();
       break;
+    case "toggle-call-strip":
+      e.stopPropagation();
+      uiState.callStripHidden = !uiState.callStripHidden;
+      try {
+        localStorage.setItem("eco_call_strip_hidden", uiState.callStripHidden ? "1" : "0");
+      } catch {}
+      renderApp();
+      break;
     case "watch-stream-popup":
       delete uiState.stoppedWatching[btn.getAttribute("data-channel-id")];
       renderApp();
@@ -7823,6 +7881,49 @@ NativeBridge.subscribeIpc("GAME_ACTIVITY", (activity) => {
     // Keep an open profile's "Atividade" list current
     if (uiState.profileView?.userId === store.getState().auth.currentUserId) loadProfileActivities(uiState.profileView.userId);
   });
+});
+
+// Taskbar preview buttons (Windows) while in a call
+const thumbarIcons = { ready: null, last: "" };
+function svgToPng(svg, color) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = 32;
+      c.height = 32;
+      c.getContext("2d").drawImage(img, 4, 4, 24, 24);
+      resolve(c.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve("");
+    // As an image an SVG needs its namespace (the inline icons don't carry it)
+    const colored = (svg.includes("xmlns") ? svg : svg.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"')).replace(/currentColor/g, color).replace(/width="\d+"/, 'width="24"').replace(/height="\d+"/, 'height="24"');
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(colored)}`;
+  });
+}
+async function syncCallThumbar() {
+  const v = store.getState().voice;
+  const inCall = Boolean(v.connectedChannelId);
+  const key = inCall ? `${v.muted}|${v.deafened}` : "off";
+  if (key === thumbarIcons.last) return;
+  thumbarIcons.last = key;
+  if (!inCall) return window.DiscordNative?.ipc?.send("CALL_THUMBAR", null);
+  if (!thumbarIcons.ready) {
+    const [mic, micOff, headphones, deafenOff, leave] = await Promise.all([
+      svgToPng(Icons.mic, "#ffffff"),
+      svgToPng(Icons.micOff, "#f23f43"),
+      svgToPng(Icons.headphones, "#ffffff"),
+      svgToPng(Icons.deafenOff, "#f23f43"),
+      svgToPng(Icons.phoneOff, "#f23f43")
+    ]);
+    thumbarIcons.ready = { mic, micOff, headphones, deafenOff, leave };
+  }
+  window.DiscordNative?.ipc?.send("CALL_THUMBAR", { muted: v.muted, deafened: v.deafened, icons: thumbarIcons.ready });
+}
+store.subscribe(() => syncCallThumbar());
+
+NativeBridge.subscribeIpc("CALL_LEAVE", () => {
+  store.leaveVoiceChannel();
 });
 
 NativeBridge.subscribeIpc("SYSTEM_TRAY_TOGGLE_MUTE", () => {

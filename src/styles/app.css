@@ -6557,3 +6557,53 @@ video.server-header-banner {
   justify-content: space-between;
   gap: 12px;
 }
+
+/* ===== Call: no black bars around a stream ===== */
+/* The call takes the app's background instead of black */
+.call-stage {
+  background-color: var(--bg-chat);
+}
+
+/* The enlarged stream tile has the stream's own shape, as big as fits */
+.call-focus {
+  container-type: size;
+  align-items: center;
+  justify-content: center;
+}
+
+.call-focus .call-tile.fit-stream {
+  flex: 0 0 auto;
+  aspect-ratio: var(--stream-ar, 1.7778);
+  width: min(100cqw, calc(100cqh * var(--stream-ar, 1.7778)));
+  height: auto;
+  max-height: 100%;
+}
+
+/* ˅ / ˄ between the stream and the participant cards */
+.call-strip-toggle {
+  align-self: center;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 20px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--interactive-normal);
+  background: var(--bg-channels);
+  border: 1px solid var(--border-faint);
+}
+
+.call-strip-toggle:hover {
+  color: var(--header-primary);
+}
+
+.call-strip-toggle svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.15s;
+}
+
+.call-strip-toggle.collapsed svg {
+  transform: rotate(180deg);
+}

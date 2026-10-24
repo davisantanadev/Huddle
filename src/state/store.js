@@ -207,7 +207,7 @@ function createEmptyState() {
     dms: [],
     guilds: [],
     discoverableGuilds: [],
-    appConfig: { appName: "Eco", publicUrl: "" },
+    appConfig: { appName: "Invadominio zak' zak", publicUrl: "" },
     messages: {}
   };
 }
