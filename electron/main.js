@@ -22,7 +22,7 @@ const { DiscordBackendServer } = require("./backendServer");
 const { registerScreenCaptureHandlers } = require("./screenCapture");
 const { loadAppConfig } = require("./appConfig");
 const { startGameDetector } = require("./gameDetector");
-const { prepareHelper, trimProcesses, isLightTrimAvailable } = require("./memTrimmer");
+const { prepareHelper, trimProcesses, capProcesses, isLightTrimAvailable } = require("./memTrimmer");
 
 // productName "Discord" made Electron use %APPDATA%\discord, the official
 // Discord client's folder: both apps then shared settings.json, caches and
@@ -137,17 +137,34 @@ let remoteServerUrl = null;
 let mediaSessionActive = false;
 let lastTrimAt = 0;
 
-// Emptying the working set keeps the "Memory" column of Task Manager low
-// (under 50 MB), but the next frames fault those pages back in, a small
-// hitch. So: never during a call or screen share (voice/video stay smooth);
-// with the window open, only at quiet moments (see startSystemIdleWatch);
-// minimized or in the tray, right away and periodically.
+// Memory: every app process gets a hard working-set ceiling (MemTrim --cap).
+// Windows keeps it under that by moving the least-used pages out a few at a
+// time, so the "Memory" column of Task Manager stays under ~80 MB in every
+// situation (chat, GIFs, calls, screen share) with no all-at-once trim and
+// no stutter. Measured with 1080p/60 video sent and received: 58-70 MB, same
+// frame rate as without the ceiling. The ceiling counts shared DLL pages too,
+// which Task Manager leaves out, hence the numbers above 80.
+const MAIN_PROCESS_CAP_MB = 85; // app + GPU + capture/encoding (in-process)
+const PAGE_PROCESS_CAP_MB = 30; // each page (window)
+let cappedPids = "";
+
+function applyMemoryCaps() {
+  const metrics = app.getAppMetrics();
+  const key = metrics.map((m) => m.pid).sort().join(",");
+  if (key === cappedPids) return;
+  const entries = metrics.map((m) => ({ pid: m.pid, mb: m.type === "Browser" ? MAIN_PROCESS_CAP_MB : PAGE_PROCESS_CAP_MB }));
+  if (capProcesses(entries)) cappedPids = key;
+}
+
+// Emptying the working set entirely is only done while the app is out of
+// sight (tray/minimized) or right after a call: the next frames would fault
+// all those pages back in, a visible hitch.
 function appInView() {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized());
 }
 
 function trimProcessWorkingSets({ force = false } = {}) {
-  if (!force && mediaSessionActive) return;
+  if (!force && (mediaSessionActive || appInView())) return;
   const light = mediaSessionActive;
   if (light && !isLightTrimAvailable()) return;
   if (!light) {
@@ -186,25 +203,15 @@ function cancelIdleTrim() {
   idleTrimTimer = null;
 }
 
-// Window open: trim at most every IN_VIEW_TRIM_INTERVAL_MS, only after a few
-// seconds without keyboard/mouse input (never in the middle of typing or
-// scrolling). Out of sight: every HIDDEN_TRIM_INTERVAL_MS.
-const IN_VIEW_TRIM_INTERVAL_MS = 20 * 1000;
+// Out of sight: empty the working sets every HIDDEN_TRIM_INTERVAL_MS. Also
+// re-applies the ceilings when a process was replaced (e.g. a page reload).
 const HIDDEN_TRIM_INTERVAL_MS = 60 * 1000;
-const QUIET_SECONDS = 3;
 function startSystemIdleWatch() {
   setInterval(() => {
-    if (mediaSessionActive) return;
-    let idleSeconds = 0;
-    try {
-      idleSeconds = powerMonitor.getSystemIdleTime();
-    } catch (_) {
-      return;
-    }
-    const inView = appInView();
-    if (inView && idleSeconds < QUIET_SECONDS) return;
-    if (Date.now() - lastTrimAt >= (inView ? IN_VIEW_TRIM_INTERVAL_MS : HIDDEN_TRIM_INTERVAL_MS)) trimProcessWorkingSets();
-  }, 4 * 1000).unref();
+    applyMemoryCaps();
+    if (mediaSessionActive || appInView()) return;
+    if (Date.now() - lastTrimAt >= HIDDEN_TRIM_INTERVAL_MS) trimProcessWorkingSets();
+  }, 10 * 1000).unref();
 }
 
 function getSettingsPath() {
@@ -552,7 +559,21 @@ function launchMainWindow(showImmediately = false) {
   const indexPath = path.join(__dirname, "..", "src", "index.html");
   mainWindow.loadFile(indexPath);
 
+  // Interface size chosen in Configurações > Aparência
+  mainWindow.webContents.on("did-finish-load", () => {
+    const zoom = Math.min(1.75, Math.max(0.7, Number(getSetting("UI_ZOOM", 1)) || 1));
+    if (zoom !== 1) mainWindow.webContents.setZoomFactor(zoom);
+  });
+
+  // Never stay stuck on the splash: if the page takes too long to paint, show it anyway
+  let shown = false;
+  const showFallback = setTimeout(() => {
+    if (!shown && mainWindow && !mainWindow.isDestroyed()) mainWindow.emit("ready-to-show");
+  }, 10000);
+
   mainWindow.once("ready-to-show", () => {
+    shown = true;
+    clearTimeout(showFallback);
     if (splashWindow && !splashWindow.isDestroyed()) {
       splashWindow.destroy();
       splashWindow = null;
@@ -568,7 +589,7 @@ function launchMainWindow(showImmediately = false) {
     }
     mainWindow.show();
     mainWindow.focus();
-    setTimeout(() => trimProcessWorkingSets(), 400);
+    setTimeout(() => applyMemoryCaps(), 400);
   });
 }
 
@@ -780,13 +801,31 @@ function registerIpcHandlers(backend) {
   ipcMain.handle("DISCORD_UPDATE_INSTALL", async () => {
     const base = updateBase();
     if (!/^https:\/\//.test(base) || !app.isPackaged) return { ok: false, error: "Atualização automática só funciona no app instalado." };
-    const { spawn } = require("child_process");
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${base}/download/install.ps1' | iex`],
-      { detached: true, stdio: "ignore", windowsHide: false }
-    );
-    child.unref();
+    // The installer is saved with a small .cmd next to it, opened like a
+    // double-click (shell.openPath): a visible window that keeps running after
+    // this app closes. (Spawning PowerShell straight from the app died silently.)
+    try {
+      const res = await net.fetch(`${base}/download/install.ps1`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const dir = path.join(app.getPath("temp"), "eco-update");
+      fs.mkdirSync(dir, { recursive: true });
+      // BOM: Windows PowerShell 5 reads the accents correctly
+      fs.writeFileSync(path.join(dir, "install.ps1"), "\ufeff" + (await res.text()), "utf8");
+      const cmd = path.join(dir, "atualizar-eco.cmd");
+      fs.writeFileSync(
+        cmd,
+        '@echo off\r\ntitle Atualizando o Eco\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"\r\n',
+        "utf8"
+      );
+      const err = await shell.openPath(cmd);
+      if (err) throw new Error(err);
+    } catch (_) {
+      return { ok: false, error: "Não foi possível baixar a atualização. Tente de novo em instantes." };
+    }
+    setTimeout(() => {
+      isQuitting = true;
+      app.quit();
+    }, 1500);
     return { ok: true };
   });
 
@@ -936,6 +975,12 @@ function registerIpcHandlers(backend) {
     return dialog.showOpenDialog(mainWindow, options || {});
   });
 
+  // "Salvar" on images and files: Windows' save dialog, then a normal download
+  ipcMain.on("DISCORD_DOWNLOAD_URL", (_e, url) => {
+    if (!mainWindow || mainWindow.isDestroyed() || !/^https?:\/\//i.test(String(url || ""))) return;
+    mainWindow.webContents.downloadURL(String(url));
+  });
+
   ipcMain.handle("DISCORD_FILE_MANAGER_SHOW_SAVE_DIALOG", async (_e, options) => {
     if (!mainWindow || mainWindow.isDestroyed()) return { canceled: true };
     return dialog.showSaveDialog(mainWindow, options || {});
@@ -996,7 +1041,9 @@ app.whenReady().then(async () => {
   registerIpcHandlers(backendServer);
   setupSystemTray();
   // Compiles the tiny memory helper the first time (a second or two, in the background)
-  prepareHelper(app.getPath("userData")).catch(() => null);
+  prepareHelper(app.getPath("userData"))
+    .then(() => applyMemoryCaps())
+    .catch(() => null);
   startSystemIdleWatch();
   // Running games feed the profile's "Atividade" tab (the renderer reports them for the signed-in account)
   startGameDetector((activity) => webContentsSend(activity.kind === "spotify" ? "SPOTIFY_ACTIVITY" : "GAME_ACTIVITY", activity), {

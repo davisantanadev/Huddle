@@ -5660,3 +5660,900 @@ a.message-file-box:hover {
   white-space: pre-line;
   margin-top: 8px;
 }
+
+/* The layout itself never scrolls: "hidden" still lets focus()/jumps scroll a
+   container, which pushed the member list and the whole screen down.
+   "clip" cannot be scrolled at all; only the inner lists scroll. */
+html,
+body,
+#app,
+.app-root,
+.workspace,
+.main-stage,
+.stage-content-split,
+.chat-column {
+  overflow: clip;
+}
+
+/* Drag handles on the edges of the channel list and the member list */
+.secondary-sidebar,
+.members-sidebar {
+  position: relative;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 20;
+  cursor: col-resize;
+}
+
+.sidebar-resizer.right {
+  right: 0;
+}
+
+.sidebar-resizer.left {
+  left: 0;
+}
+
+.sidebar-resizer:hover,
+body.is-resizing .sidebar-resizer {
+  background: color-mix(in srgb, var(--brand-purple, #5865f2) 55%, transparent);
+}
+
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* The member list scrolls, so its handle sits just outside it */
+.members-resizer-anchor {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  z-index: 20;
+}
+
+.members-resizer-anchor .sidebar-resizer.left {
+  left: -3px;
+}
+
+/* ===== Roles (server settings) ===== */
+.roles-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 760px;
+}
+
+.roles-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--header-primary);
+  margin: 0;
+}
+
+.roles-subtitle {
+  margin: 12px 0 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.roles-back {
+  align-self: flex-start;
+}
+
+.roles-locked {
+  font-size: 13px;
+  color: var(--status-red);
+}
+
+.roles-toolbar {
+  display: flex;
+  gap: 10px;
+}
+
+.roles-toolbar .form-input {
+  flex: 1;
+  height: 36px;
+}
+
+.role-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: inline-block;
+}
+
+.role-row {
+  display: grid;
+  grid-template-columns: 16px 1fr 90px 76px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-channels);
+  text-align: left;
+  color: var(--text-normal);
+}
+
+.role-row[hidden] {
+  display: none;
+}
+
+.role-row.everyone {
+  grid-template-columns: 16px 1fr 30px;
+  cursor: pointer;
+}
+
+.role-row.everyone:hover,
+.role-row:hover {
+  background: var(--bg-modifier-hover, rgba(255, 255, 255, 0.05));
+}
+
+.role-row-name {
+  font-weight: 600;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-row-name span {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.role-row-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.role-row-count svg {
+  width: 14px;
+  height: 14px;
+}
+
+.role-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.roles-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.roles-table-head {
+  display: grid;
+  grid-template-columns: 1fr 90px 76px;
+  padding: 0 12px 0 38px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.roles-edit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.role-color-row {
+  display: flex;
+  gap: 8px;
+}
+
+.role-color-row input[type="color"] {
+  width: 44px;
+  height: 36px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--bg-input);
+}
+
+.role-color-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.role-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.perm-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 8px;
+}
+
+.perm-group h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 6px;
+}
+
+.perm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-faint);
+  cursor: pointer;
+}
+
+.perm-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.perm-text strong {
+  color: var(--header-primary);
+  font-size: 14px;
+}
+
+.perm-text span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* On/off switch */
+.perm-switch {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 24px;
+  border-radius: 12px;
+  background: #80848e;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.perm-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+
+.perm-switch:checked {
+  background: var(--status-green, #23a55a);
+}
+
+.perm-switch:checked::after {
+  transform: translateX(16px);
+}
+
+.perm-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.roles-edit-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 0;
+  margin-top: 8px;
+  background: var(--bg-chat);
+  border-top: 1px solid var(--border-faint);
+}
+
+.role-members-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.role-member-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-channels);
+  width: 100%;
+  text-align: left;
+  color: var(--text-normal);
+}
+
+.role-member-row.add:hover {
+  background: var(--bg-modifier-hover, rgba(255, 255, 255, 0.05));
+}
+
+.role-member-name {
+  flex: 1;
+  font-weight: 600;
+  color: var(--header-primary);
+}
+
+.role-member-name span {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.role-member-add svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ===== Roles on a profile card ===== */
+.popout-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.role-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--header-primary);
+  background: color-mix(in srgb, var(--bg-floating) 60%, var(--bg-channels));
+  border: 1px solid var(--border-faint);
+}
+
+.role-pill .role-dot {
+  width: 10px;
+  height: 10px;
+}
+
+.role-pill-x {
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 0 0 2px;
+}
+
+.role-pill-x:hover {
+  color: var(--status-red);
+}
+
+.role-pill.add {
+  width: 24px;
+  justify-content: center;
+  padding: 0;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.role-pill.add:hover {
+  border-color: var(--text-muted);
+}
+
+.role-picker {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-floating);
+  border: 1px solid var(--border-faint);
+  box-shadow: var(--elevation-medium);
+}
+
+.role-picker .form-input {
+  height: 30px;
+  font-size: 12px;
+}
+
+.role-picker-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+.role-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text-normal);
+  text-align: left;
+}
+
+.role-picker-item:hover {
+  background: var(--bg-modifier-hover, rgba(255, 255, 255, 0.06));
+}
+
+.role-picker-item[hidden] {
+  display: none;
+}
+
+.popout-edit-profile {
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.popout-edit-profile svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The name on a profile card can be selected and copied */
+.selectable,
+.user-popout .popout-display-name,
+.profile-view-name,
+.profile-view-username {
+  user-select: text;
+  cursor: text;
+}
+
+/* ===== Channel list ===== */
+.channel-item.connected {
+  color: var(--header-primary);
+}
+
+.channel-item.connected > .channel-item-left > span:first-child {
+  color: var(--status-green) !important;
+}
+
+.channel-item.unread .channel-item-name {
+  color: var(--header-primary);
+  font-weight: 700;
+}
+
+.channel-category-actions {
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.channel-category:hover .channel-category-actions {
+  opacity: 1;
+}
+
+.channel-category-actions svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Unread: red badge at the top of the server / DM icon */
+.guilds-rail .guild-btn {
+  position: relative;
+}
+
+.guilds-rail .guild-badge {
+  top: -4px;
+  right: -4px;
+  bottom: auto;
+}
+
+.guild-btn.rail-dm {
+  overflow: visible;
+  background: transparent;
+}
+
+/* DM list: ✕ shows on hover */
+.dm-item {
+  position: relative;
+}
+
+.dm-close-btn {
+  display: none;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border-radius: 4px;
+  color: var(--text-muted);
+  align-items: center;
+  justify-content: center;
+}
+
+.dm-close-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.dm-item:hover .dm-close-btn {
+  display: inline-flex;
+}
+
+.dm-close-btn:hover {
+  color: var(--header-primary);
+}
+
+/* ===== Attachments ===== */
+.message-attachment-card.image {
+  position: relative;
+  display: inline-block;
+  max-width: min(420px, 100%);
+}
+
+.message-attachment-img {
+  cursor: zoom-in;
+}
+
+.attachment-save-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+
+.message-attachment-card.image:hover .attachment-save-btn {
+  display: inline-flex;
+}
+
+.message-file-box {
+  text-align: left;
+  cursor: pointer;
+}
+
+.message-attachment-card.spoiler img {
+  filter: blur(40px);
+}
+
+.spoiler-cover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+}
+
+/* File waiting in the message box */
+.staged-attachment {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: var(--bg-channels);
+  border: 1px solid var(--border-faint);
+}
+
+.staged-attachment-preview {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-input);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.staged-attachment-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.staged-attachment-preview.spoiler img {
+  filter: blur(10px);
+}
+
+.staged-spoiler-tag {
+  position: absolute;
+  font-size: 10px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.staged-attachment-file svg {
+  width: 32px;
+  height: 32px;
+  color: var(--text-muted);
+}
+
+.staged-attachment-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--header-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.staged-attachment-name span {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.staged-attachment-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.staged-attachment-actions button {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--interactive-normal);
+  background: var(--bg-input);
+}
+
+.staged-attachment-actions button:hover {
+  color: var(--header-primary);
+}
+
+.staged-attachment-actions button.danger:hover {
+  color: var(--status-red);
+}
+
+.staged-attachment-actions svg {
+  width: 16px;
+  height: 16px;
+}
+
+.edit-attachment-preview {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 8px;
+  display: block;
+  margin: 0 auto 12px;
+}
+
+/* Full-size image */
+.media-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 40px;
+}
+
+.media-viewer img {
+  max-width: 100%;
+  max-height: calc(100% - 60px);
+  object-fit: contain;
+  border-radius: 6px;
+  cursor: default;
+}
+
+.media-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.media-viewer-bar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.media-viewer-bar svg {
+  width: 16px;
+  height: 16px;
+}
+
+.media-viewer-name {
+  color: #fff;
+  font-size: 13px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== Stream video fills its tile (the old 360px limit kept it small) ===== */
+.call-tile.has-stream > .call-tile-stream {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+
+.call-tile-stream video,
+.call-tile-stream .screenshare-video,
+.stream-popup-body video,
+.stream-popup-body .screenshare-video {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+}
+
+.call-tile.has-stream .call-tile-footer,
+.call-tile.has-stream .call-tile-live,
+.call-tile.has-stream .call-tile-actions {
+  z-index: 2;
+}
+
+/* ===== Floating stream window (chat view) ===== */
+.stream-popup {
+  position: fixed;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  min-width: 320px;
+  min-height: 200px;
+}
+
+.stream-popup-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: #111214;
+  color: #fff;
+  font-size: 12px;
+  cursor: move;
+  user-select: none;
+  flex: 0 0 auto;
+}
+
+.stream-popup-title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.stream-popup-stats {
+  margin-left: auto;
+  color: #b5bac1;
+  white-space: nowrap;
+}
+
+.stream-popup-head .icon-btn {
+  color: #dbdee1;
+}
+
+.stream-popup-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stream-popup-body > .screenshare-video-slot,
+.stream-popup-body > .screenshare-remote-slot {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+}
+
+.stream-popup-note {
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.stream-popup-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.35) 50%);
+}
+
+body.is-dragging {
+  cursor: move;
+  user-select: none;
+}
+
+.stream-mini-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg-channels);
+  font-size: 13px;
+  color: var(--text-normal);
+}
+
+.stream-mini-bar .btn:first-of-type {
+  margin-left: auto;
+}
+
+/* Animated avatars: still frame + video on top that plays on hover */
+.avatar-clip,
+.guild-avatar-inner {
+  position: relative;
+}
+
+video.avatar-img,
+video.guild-icon-img,
+video.profile-banner-img,
+video.server-header-banner {
+  object-fit: cover;
+  display: block;
+}
+
+.hover-anim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.hover-anim.playing {
+  opacity: 1;
+}
+
+.roles-edit-footer {
+  position: static;
+}
+
+.roles-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

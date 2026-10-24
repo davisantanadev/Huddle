@@ -112,7 +112,17 @@ const uiState = {
       return 340;
     }
   })(),
+  // Widths of the channel list and the member list (dragged by their edge)
+  channelsWidth: readStoredWidth("eco_channels_width", 240, 180, 420),
+  membersWidth: readStoredWidth("eco_members_width", 240, 180, 420),
   stoppedWatching: {}, // channelId -> true when the viewer chose "Parar de assistir"
+  streamPopup: (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("eco_stream_popup") || "null");
+      if (saved && saved.w >= 320) return saved;
+    } catch {}
+    return { x: 380, y: 90, w: 640, h: 400 };
+  })(),
   callStagedAttachment: null, // file waiting to be sent in the call chat
   composerMenu: null, // null | "chat" | "call" — the "+" menu next to a message box
 
@@ -145,6 +155,81 @@ let friendSearchDebounceTimer = null;
 // ==========================================================================
 // Phase 4: Unified Lifecycle Management for Pop-ups, Popovers & Menus
 // ==========================================================================
+function readStoredWidth(key, fallback, min, max) {
+  try {
+    return Math.min(max, Math.max(min, Number(localStorage.getItem(key)) || fallback));
+  } catch {
+    return fallback;
+  }
+}
+
+// Sidebar edges: drag to resize (delegated once; the handles are re-rendered)
+const SIDEBAR_LIMITS = { channels: [180, 420, "eco_channels_width", "--channels-width", 1], members: [180, 420, "eco_members_width", "--members-width", -1] };
+document.addEventListener("mousedown", (downEvent) => {
+  const handle = downEvent.target.closest?.("[data-sidebar-resizer]");
+  if (!handle || downEvent.button !== 0) return;
+  const which = handle.getAttribute("data-sidebar-resizer");
+  const [min, max, storageKey, cssVar, direction] = SIDEBAR_LIMITS[which];
+  const stateKey = which === "channels" ? "channelsWidth" : "membersWidth";
+  downEvent.preventDefault();
+  const root = document.querySelector(".app-root");
+  const startX = downEvent.clientX;
+  const startWidth = uiState[stateKey];
+  document.body.classList.add("is-resizing");
+  const onMove = (moveEvent) => {
+    uiState[stateKey] = Math.round(Math.min(max, Math.max(min, startWidth + direction * (moveEvent.clientX - startX))));
+    root?.style.setProperty(cssVar, `${uiState[stateKey]}px`);
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("is-resizing");
+    try {
+      localStorage.setItem(storageKey, String(uiState[stateKey]));
+    } catch {}
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
+// Floating stream window: drag by the header, resize from the corner
+document.addEventListener("mousedown", (downEvent) => {
+  const drag = downEvent.target.closest?.("[data-stream-drag]");
+  const resize = downEvent.target.closest?.("[data-stream-resize]");
+  if ((!drag && !resize) || downEvent.button !== 0 || downEvent.target.closest("button")) return;
+  const popup = downEvent.target.closest("[data-stream-popup]");
+  if (!popup) return;
+  downEvent.preventDefault();
+  const start = { ...uiState.streamPopup, mx: downEvent.clientX, my: downEvent.clientY };
+  document.body.classList.add(resize ? "is-resizing" : "is-dragging");
+  const onMove = (e) => {
+    const dx = e.clientX - start.mx;
+    const dy = e.clientY - start.my;
+    const box = uiState.streamPopup;
+    if (resize) {
+      box.w = Math.round(Math.min(window.innerWidth - 20, Math.max(320, start.w + dx)));
+      box.h = Math.round(Math.min(window.innerHeight - 20, Math.max(200, start.h + dy)));
+    } else {
+      box.x = Math.round(Math.min(window.innerWidth - 80, Math.max(-box.w + 80, start.x + dx)));
+      box.y = Math.round(Math.min(window.innerHeight - 40, Math.max(0, start.y + dy)));
+    }
+    popup.style.left = `${box.x}px`;
+    popup.style.top = `${box.y}px`;
+    popup.style.width = `${box.w}px`;
+    popup.style.height = `${box.h}px`;
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("is-resizing", "is-dragging");
+    try {
+      localStorage.setItem("eco_stream_popup", JSON.stringify(uiState.streamPopup));
+    } catch {}
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
 export function closeAllFloatingMenus(except = null) {
   let changed = false;
   if (except !== "userPopout" && uiState.userPopout !== null) {
@@ -234,6 +319,54 @@ function getInitials(name) {
 
 // The green speaking ring is opt-in ({ speaking: true }): it belongs to the
 // voice spots (channel list, account bar, call view), not to chat messages
+// ==========================================================================
+// Animated images (GIF avatars/banners)
+// ==========================================================================
+// GIFs from the Giphy library are played as MP4 (what Giphy serves for every
+// GIF): a fraction of the size, decoded by the GPU at the clip's own frame
+// rate. GIF files themselves can't be smooth: Chromium plays frames shorter
+// than 20 ms as 100 ms. In chat and lists an animated avatar shows a still
+// frame and plays on hover (like Discord), so a long chat doesn't run dozens
+// of videos at once; profile cards and banners always play.
+const GIPHY_MEDIA = /^(https:\/\/media\d*\.giphy\.com\/media\/(?:[^/?#]+\/)?[A-Za-z0-9]+)\/[^/?#]+\.(?:gif|webp)(?:\?.*)?$/i;
+
+function giphyRenditions(url) {
+  const m = GIPHY_MEDIA.exec(String(url || ""));
+  if (!m) return null;
+  return { still: `${m[1]}/giphy_s.gif`, small: `${m[1]}/200w.mp4`, full: `${m[1]}/giphy.mp4` };
+}
+
+// mode: "animate" (always plays), "hover" (still frame, plays on hover)
+function animatedImageHtml(url, { cls = "", style = "", alt = "", mode = "animate", size = "small", extra = "" } = {}) {
+  const r = giphyRenditions(url);
+  if (!r) {
+    return `<img class="${cls}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" style="${style}" decoding="async" ${extra} />`;
+  }
+  const video = size === "full" ? r.full : r.small;
+  if (mode === "animate") {
+    return `<video class="${cls}" src="${escapeHtml(video)}" poster="${escapeHtml(r.still)}" style="${style}" autoplay loop muted playsinline disablepictureinpicture preload="auto" ${extra}></video>`;
+  }
+  return `<img class="${cls}" src="${escapeHtml(r.still)}" alt="${escapeHtml(alt)}" style="${style}" decoding="async" ${extra} /><video class="${cls} hover-anim" data-anim-src="${escapeHtml(video)}" data-morph-keep-src style="${style}" loop muted playsinline disablepictureinpicture preload="none"></video>`;
+}
+
+// Hover-to-play for the still avatars above (delegated once)
+document.addEventListener("mouseover", (e) => {
+  const host = e.target.closest?.(".avatar-wrap, .guild-btn");
+  const video = host?.querySelector("video.hover-anim");
+  if (!video || video.dataset.playing) return;
+  video.dataset.playing = "1";
+  if (!video.getAttribute("src")) video.src = video.dataset.animSrc;
+  video.play().then(() => video.classList.add("playing")).catch(() => {});
+  const leave = (ev) => {
+    if (host.contains(ev.relatedTarget)) return;
+    host.removeEventListener("mouseout", leave);
+    delete video.dataset.playing;
+    video.pause();
+    video.classList.remove("playing");
+  };
+  host.addEventListener("mouseout", leave);
+});
+
 function renderAvatar(user, sizeClass = "", includeStatus = false, extraStyle = "", options = {}) {
   const u = user || { displayName: "User", avatarColor: "#5865f2", avatarUrl: "", status: "offline" };
   const avatarUrl = u.avatarUrl || "";
@@ -250,7 +383,7 @@ function renderAvatar(user, sizeClass = "", includeStatus = false, extraStyle = 
     : "";
 
   const inner = avatarUrl
-    ? `<span class="avatar-clip"><img class="avatar-img" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(u.displayName)}" style="${transformStyle}" /></span>`
+    ? `<span class="avatar-clip">${animatedImageHtml(avatarUrl, { cls: "avatar-img", style: transformStyle, alt: u.displayName, mode: options.animate ? "animate" : "hover" })}</span>`
     : escapeHtml(getInitials(u.displayName));
   const dot = includeStatus ? `<span class="status-dot ${escapeHtml(u.status || "offline")}"></span>` : "";
   return `
@@ -276,12 +409,7 @@ function renderBanner(user, heightPx = 100, override = {}) {
   if (bannerUrl) {
     return `
       <div class="profile-banner-box" style="height:${heightPx}px;background-color:${escapeHtml(bannerColor)};" data-testid="profile-banner">
-        <img
-          class="profile-banner-img"
-          src="${escapeHtml(bannerUrl)}"
-          style="object-position:center ${Number(posY)}%;${bannerTransform}"
-          alt="Profile Banner"
-        />
+        ${animatedImageHtml(bannerUrl, { cls: "profile-banner-img", style: `object-position:center ${Number(posY)}%;${bannerTransform}`, alt: "Profile Banner", size: "full" })}
       </div>
     `;
   }
@@ -562,9 +690,10 @@ function renderGuildsRail(state) {
           >
             <div class="guild-avatar-inner">${
               g.iconUrl
-                ? `<img class="guild-icon-img" src="${escapeHtml(g.iconUrl)}" alt="${escapeHtml(g.name)}" />`
+                ? animatedImageHtml(g.iconUrl, { cls: "guild-icon-img", alt: g.name, mode: "hover" })
                 : escapeHtml(g.shortName)
             }</div>
+            ${g.unreadCount > 0 && !isActive ? `<span class="guild-badge" data-testid="guild-unread-badge">${g.unreadCount > 99 ? "99+" : g.unreadCount}</span>` : ""}
             ${hasVoice ? `<span class="guild-voice-badge" title="Conectado em Voz">${Icons.speaker}</span>` : ""}
             ${g.mentions > 0 ? `<span class="guild-badge">${g.mentions}</span>` : ""}
           </button>
@@ -585,6 +714,21 @@ function renderGuildsRail(state) {
           ${homeBadge > 0 ? `<span class="guild-badge">${homeBadge}</span>` : ""}
         </button>
       </div>
+
+      ${state.dms
+        .filter((dm) => dm.unreadCount > 0 && state.users[dm.userId])
+        .map((dm) => {
+          const u = state.users[dm.userId];
+          return `
+            <div class="guild-item-wrap unread">
+              <div class="guild-pill"></div>
+              <button class="guild-btn rail-dm" data-action="open-dm" data-dm-id="${escapeHtml(dm.id)}" title="${escapeHtml(u.displayName)}" data-testid="rail-unread-dm">
+                ${renderAvatar(u, "", false, "width:48px;height:48px;min-width:48px;")}
+                <span class="guild-badge">${dm.unreadCount > 99 ? "99+" : dm.unreadCount}</span>
+              </button>
+            </div>`;
+        })
+        .join("")}
 
       <div class="guild-separator"></div>
 
@@ -730,6 +874,7 @@ function renderSecondarySidebar(state) {
                     <div class="dm-item-sub">@${escapeHtml(u.username)}</div>
                   </div>
                   ${dm.unreadCount > 0 ? `<span class="guild-badge" style="position:static;border:none;">${dm.unreadCount}</span>` : ""}
+                  <button type="button" class="dm-close-btn" data-action="close-dm" data-dm-id="${escapeHtml(dm.id)}" title="Fechar conversa" aria-label="Fechar conversa com ${escapeHtml(u.displayName)}" data-testid="close-dm-btn">${Icons.close}</button>
                 </div>
               `;
             })
@@ -737,6 +882,7 @@ function renderSecondarySidebar(state) {
 
     return `
       <aside class="secondary-sidebar" data-testid="secondary-sidebar">
+        <div class="sidebar-resizer right" data-sidebar-resizer="channels" title="Arraste para mudar a largura" role="separator" aria-orientation="vertical"></div>
         <div class="sidebar-header" style="cursor:default;">
           <button class="sidebar-search-btn" data-action="open-modal" data-modal="quick-switcher">
             <span>Encontrar ou iniciar conversa</span>
@@ -765,6 +911,8 @@ function renderSecondarySidebar(state) {
   const guild = store.getActiveGuild();
   if (!guild) return "";
 
+  const canManageChannels = store.can("MANAGE_CHANNELS", guild);
+  const canInvite = store.can("CREATE_INSTANT_INVITE", guild);
   const categoriesHtml = (guild.categories || [])
     .map((cat) => {
       const isCollapsed = Boolean(guild.collapsedCategories?.[cat.id]);
@@ -774,7 +922,11 @@ function renderSecondarySidebar(state) {
         ? ""
         : catChannels
             .map((ch) => {
-              const isActive = state.navigation.activeChannelId === ch.id && ch.type !== "voice";
+              // Gray = the channel on screen. A voice channel only when its call
+              // panel is open; being connected while reading another channel
+              // just tints its icon.
+              const callOnScreen = getCallChannel(state)?.id;
+              const isActive = ch.type === "voice" ? callOnScreen === ch.id : state.navigation.activeChannelId === ch.id && !callOnScreen;
               const isVoiceConnected =
                 state.voice.connectedGuildId === guild.id && state.voice.connectedChannelId === ch.id;
               const activeShare = state.screenShares[ch.id];
@@ -813,7 +965,7 @@ function renderSecondarySidebar(state) {
               return `
                 <div>
                   <div
-                    class="channel-item ${isActive || isVoiceConnected ? "active" : ""}"
+                    class="channel-item ${isActive ? "active" : ""} ${isVoiceConnected && !isActive ? "connected" : ""} ${ch.unread && !isActive ? "unread" : ""}"
                     data-action="select-channel"
                     data-channel-id="${ch.id}"
                   >
@@ -822,15 +974,31 @@ function renderSecondarySidebar(state) {
                       <span class="channel-item-name">${escapeHtml(ch.name)}</span>
                     </div>
                     <div class="channel-item-actions">
-                      <button
+                      ${
+                        canInvite
+                          ? `<button
                         class="channel-action-btn"
                         data-action="open-invite-modal"
                         data-channel-id="${ch.id}"
                         title="Criar Convite"
                         aria-label="Criar Convite"
-                      >${Icons.userPlus}</button>
+                      >${Icons.userPlus}</button>`
+                          : ""
+                      }
                       ${
-                        guild.channels.length > 1
+                        canManageChannels
+                          ? `<button
+                        class="channel-action-btn"
+                        data-action="edit-channel"
+                        data-channel-id="${ch.id}"
+                        title="Editar canal"
+                        aria-label="Editar canal"
+                        data-testid="edit-channel-btn"
+                      >${Icons.edit}</button>`
+                          : ""
+                      }
+                      ${
+                        canManageChannels && guild.channels.length > 1
                           ? `<button
                               class="channel-action-btn danger"
                               data-action="delete-channel"
@@ -855,12 +1023,14 @@ function renderSecondarySidebar(state) {
               ${isCollapsed ? Icons.chevronRight : Icons.chevronDown}
               <span>${escapeHtml(cat.name)}</span>
             </div>
-            <button
-              style="color:inherit;"
-              data-action="open-create-channel"
-              data-category-id="${cat.id}"
-              title="Criar Canal"
-            >${Icons.plus}</button>
+            ${
+              canManageChannels
+                ? `<span class="channel-category-actions">
+                    <button style="color:inherit;" data-action="edit-category" data-category-id="${cat.id}" title="Renomear categoria" aria-label="Renomear categoria">${Icons.edit}</button>
+                    <button style="color:inherit;" data-action="open-create-channel" data-category-id="${cat.id}" title="Criar canal nesta categoria" aria-label="Criar canal">${Icons.plus}</button>
+                  </span>`
+                : ""
+            }
           </div>
           ${channelsList}
         </div>
@@ -870,10 +1040,11 @@ function renderSecondarySidebar(state) {
 
   return `
     <aside class="secondary-sidebar" data-testid="secondary-sidebar">
+        <div class="sidebar-resizer right" data-sidebar-resizer="channels" title="Arraste para mudar a largura" role="separator" aria-orientation="vertical"></div>
       <div class="server-header ${guild.bannerUrl ? "has-banner" : ""}" data-testid="server-header">
         ${
           guild.bannerUrl
-            ? `<img class="server-header-banner" src="${escapeHtml(guild.bannerUrl)}" alt="" data-testid="guild-sidebar-banner" />`
+            ? animatedImageHtml(guild.bannerUrl, { cls: "server-header-banner", size: "full", extra: 'data-testid="guild-sidebar-banner"' })
             : ""
         }
         <div class="server-header-bar">
@@ -1231,6 +1402,9 @@ function renderDiscoveryStage(state) {
 // ==========================================================================
 // Phase 9: Live Screen Share Stage & Chat Stage
 // ==========================================================================
+// A screen share while reading a text channel: a floating window you can
+// drag by its header, resize from the corner and close (✕ only stops it for
+// you; the person sharing keeps sharing). Closed, a small bar offers "Assistir".
 function renderScreenShareBannerAndStage(state) {
   const voiceChannelId = state.voice.connectedChannelId;
   const activeShare =
@@ -1240,50 +1414,50 @@ function renderScreenShareBannerAndStage(state) {
 
   if (!activeShare && !state.voice.screenShareEnabled) return "";
 
+  const channelId = activeShare?.channelId || voiceChannelId || "";
   const sharerUser = activeShare ? state.users[activeShare.userId] : store.getCurrentUser();
   const isMeSharing = state.voice.screenShareEnabled || activeShare?.userId === state.auth.currentUserId;
-  const sourceTitle = activeShare?.sourceName || state.voice.screenShareSourceName || "Tela Principal";
-
+  const sourceTitle = activeShare?.sourceName || state.voice.screenShareSourceName || "Tela";
   const stats = ScreenShare.getStats ? ScreenShare.getStats() : {};
   const displayFps = stats.requestedFps || activeShare?.fps || 30;
-  const displayRes = stats.resolution || activeShare?.resolution || "720p";
+  const displayRes = stats.resolution || activeShare?.resolution || "";
+
+  if (uiState.stoppedWatching[channelId]) {
+    return `
+      <div class="stream-mini-bar" data-testid="screenshare-stage">
+        <span class="screenshare-live-badge">AO VIVO</span>
+        <span>${escapeHtml(sharerUser?.displayName || "Alguém")} está transmitindo ${escapeHtml(sourceTitle)}</span>
+        <button type="button" class="btn btn-primary btn-sm" data-action="watch-stream-popup" data-channel-id="${escapeHtml(channelId)}">${isMeSharing ? "Mostrar prévia" : "Assistir"}</button>
+        ${isMeSharing ? `<button class="btn btn-danger btn-sm" data-action="stop-screenshare" data-testid="stop-screenshare-btn">Parar Transmissão</button>` : ""}
+      </div>`;
+  }
+
+  const box = uiState.streamPopup;
+  const media =
+    isMeSharing && ScreenShare.getStream()
+      ? `<div class="screenshare-video-slot" data-share-video-slot></div>`
+      : activeShare && Voice.getRemoteVideo(activeShare.userId, "screen")
+        ? `<div class="screenshare-remote-slot" data-remote-video="${escapeHtml(activeShare.userId)}:screen" data-keep-children data-testid="screenshare-remote-slot"></div>`
+        : activeShare && activeShare.channelId !== voiceChannelId
+          ? `<div class="stream-popup-note">Entre na call para assistir à transmissão.</div>`
+          : `<div class="stream-popup-note">Conectando à transmissão...</div>`;
 
   return `
-    <div style="padding:12px 16px 0 16px;" data-testid="screenshare-stage">
-      <div class="screenshare-stage">
-        <div style="padding:10px 14px;background:#111214;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border-faint);">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <span class="screenshare-live-badge">AO VIVO</span>
-            <span style="font-size:13px;font-weight:700;color:#fff;">
-              ${escapeHtml(sharerUser?.displayName || "Usuário")} (@${escapeHtml(sharerUser?.username || "user")}) está transmitindo: ${escapeHtml(sourceTitle)}
-            </span>
-            <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(displayRes)} • ${escapeHtml(String(displayFps))} FPS</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            ${
-              isMeSharing
-                ? `<button class="btn btn-danger" style="height:28px;font-size:12px;" data-action="stop-screenshare" data-testid="stop-screenshare-btn">Parar Transmissão</button>`
-                : ""
-            }
-          </div>
-        </div>
-        <div style="position:relative;background:#000;display:flex;align-items:center;justify-content:center;min-height:200px;">
-          ${
-            isMeSharing && ScreenShare.getStream()
-              ? `<div class="screenshare-video-slot" data-share-video-slot></div>`
-              : activeShare && Voice.getRemoteVideo(activeShare.userId, "screen")
-                ? `<div class="screenshare-remote-slot" data-remote-video="${escapeHtml(activeShare.userId)}:screen" data-keep-children data-testid="screenshare-remote-slot"></div>`
-                : activeShare && activeShare.channelId !== voiceChannelId
-                  ? `<div style="color:#9ca3af;font-size:13px;padding:40px;">Entre na call para assistir à transmissão.</div>`
-                  : `<div style="color:#9ca3af;font-size:13px;padding:40px;">Conectando à transmissão...</div>`
-          }
-          <div class="stream-stats-overlay" data-testid="stream-stats-overlay" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);padding:6px 10px;border-radius:6px;font-size:11px;color:#fff;display:flex;gap:10px;pointer-events:none;z-index:10;border:1px solid rgba(255,255,255,0.1);">
-            <div><span style="color:var(--text-muted);">${isMeSharing ? "Captura" : "Recebendo"}:</span> <strong data-share-stat="capturedFps">${stats.capturedFps || "—"}</strong> / ${displayFps} FPS</div>
-            <div><span style="color:var(--text-muted);">Res:</span> <strong data-share-stat="resolution">${escapeHtml(displayRes)}</strong></div>
-            ${isMeSharing ? `<div><span style="color:var(--text-muted);">Enviando:</span> <strong data-share-stat="sent">—</strong></div>` : ""}
-          </div>
-        </div>
+    <div class="stream-popup" data-testid="screenshare-stage" data-stream-popup
+      style="left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px;">
+      <div class="stream-popup-head" data-stream-drag title="Arraste para mover">
+        <span class="screenshare-live-badge">AO VIVO</span>
+        <span class="stream-popup-title">${escapeHtml(sharerUser?.displayName || "Usuário")} · ${escapeHtml(sourceTitle)}</span>
+        <span class="stream-popup-stats" data-testid="stream-stats-overlay">
+          <strong data-share-stat="capturedFps">${stats.capturedFps || "—"}</strong>/${escapeHtml(String(displayFps))} FPS ·
+          <strong data-share-stat="resolution">${escapeHtml(displayRes || "—")}</strong>
+          ${isMeSharing ? ` · enviando <strong data-share-stat="sent">—</strong>` : ""}
+        </span>
+        ${isMeSharing ? `<button class="btn btn-danger btn-sm" data-action="stop-screenshare" data-testid="stop-screenshare-btn">Parar</button>` : ""}
+        <button type="button" class="icon-btn" data-action="stop-watching-stream" data-channel-id="${escapeHtml(channelId)}" title="${isMeSharing ? "Fechar a prévia (a transmissão continua)" : "Fechar (para de assistir só para você)"}" aria-label="Fechar">${Icons.close}</button>
       </div>
+      <div class="stream-popup-body">${media}</div>
+      <div class="stream-popup-resize" data-stream-resize title="Arraste para redimensionar"></div>
     </div>
   `;
 }
@@ -1295,7 +1469,13 @@ function renderAttachment(att) {
   if (!att) return "";
   const url = att.url || att.dataUrl || "";
   if (att.isImage && url) {
-    return `<div class="message-attachment-card"><img class="message-attachment-img" src="${escapeHtml(url)}" alt="${escapeHtml(att.name)}" /></div>`;
+    return `
+      <div class="message-attachment-card image ${att.spoiler ? "spoiler" : ""}">
+        <img class="message-attachment-img" src="${escapeHtml(url)}" alt="${escapeHtml(att.name)}" loading="lazy" decoding="async"
+          data-action="open-media-viewer" data-url="${escapeHtml(url)}" data-name="${escapeHtml(att.name)}" title="Clique para ampliar" />
+        ${att.spoiler ? `<button type="button" class="spoiler-cover" data-action="reveal-spoiler">SPOILER</button>` : ""}
+        <button type="button" class="attachment-save-btn" data-action="download-file" data-url="${escapeHtml(url)}" title="Salvar imagem" aria-label="Salvar imagem">${Icons.download}</button>
+      </div>`;
   }
   const inner = `
     <span class="message-file-icon">${Icons.file}</span>
@@ -1307,7 +1487,7 @@ function renderAttachment(att) {
   `;
   return `<div class="message-attachment-card">${
     url
-      ? `<a class="message-file-box" href="${escapeHtml(url)}" download="${escapeHtml(att.name)}" title="Baixar ${escapeHtml(att.name)}">${inner}</a>`
+      ? `<button type="button" class="message-file-box" data-action="download-file" data-url="${escapeHtml(url)}" title="Salvar ${escapeHtml(att.name)}">${inner}</button>`
       : `<div class="message-file-box">${inner}</div>`
   }</div>`;
 }
@@ -1346,6 +1526,10 @@ function renderPollCard(m, channelId) {
 // "+" next to the message box: attach a file or start a poll
 function renderComposerPlus(target, channelId) {
   const open = uiState.composerMenu === target;
+  const guild = store.getState().guilds.find((g) => g.channels.some((c) => c.id === channelId)) || null;
+  const canAttach = store.can("ATTACH_FILES", guild);
+  const canPoll = store.can("CREATE_POLLS", guild);
+  if (!canAttach && !canPoll) return "";
   const inputId = target === "call" ? "call-chat-file-input" : "composer-file-input";
   return `
     <div class="composer-plus ${open ? "open" : ""}">
@@ -1353,12 +1537,12 @@ function renderComposerPlus(target, channelId) {
       ${
         open
           ? `<div class="composer-plus-menu" data-testid="${target}-plus-menu">
-              <label class="composer-plus-item" for="${inputId}">
+              ${canAttach ? `<label class="composer-plus-item" for="${inputId}">
                 ${Icons.upload}<span>Enviar arquivo</span>
-              </label>
-              <button type="button" class="composer-plus-item" data-action="open-poll-modal" data-channel-id="${escapeHtml(channelId)}" data-testid="${target}-create-poll-btn">
+              </label>` : ""}
+              ${canPoll ? `<button type="button" class="composer-plus-item" data-action="open-poll-modal" data-channel-id="${escapeHtml(channelId)}" data-testid="${target}-create-poll-btn">
                 ${Icons.poll}<span>Criar enquete</span>
-              </button>
+              </button>` : ""}
             </div>`
           : ""
       }
@@ -1367,12 +1551,39 @@ function renderComposerPlus(target, channelId) {
   `;
 }
 
+// The file waiting in the message box: preview, edit (name / spoiler), remove.
+// It is only sent with the message, so text can be written with it.
 function renderStagedAttachmentBanner(att, clearAction) {
   if (!att) return "";
+  const target = clearAction === "clear-call-attachment" ? "call" : "chat";
   return `
-    <div class="composer-banner">
-      <span>📎 Arquivo anexado: <strong style="color:var(--header-primary);">${escapeHtml(att.name)}</strong> (${escapeHtml(att.size)})</span>
-      <button type="button" style="color:var(--interactive-normal);" data-action="${clearAction}" aria-label="Remover anexo">${Icons.close}</button>
+    <div class="staged-attachment" data-testid="staged-attachment">
+      <div class="staged-attachment-preview ${att.spoiler ? "spoiler" : ""}">
+        ${att.isImage ? `<img src="${escapeHtml(att.url)}" alt="" />` : `<span class="staged-attachment-file">${Icons.file}</span>`}
+        ${att.spoiler ? `<span class="staged-spoiler-tag">SPOILER</span>` : ""}
+      </div>
+      <div class="staged-attachment-name" title="${escapeHtml(att.name)}">${escapeHtml(att.name)}<span>${escapeHtml(att.size || "")}</span></div>
+      <div class="staged-attachment-actions">
+        <button type="button" data-action="edit-staged-attachment" data-target="${target}" title="Editar anexo" aria-label="Editar anexo">${Icons.edit}</button>
+        <button type="button" class="danger" data-action="${clearAction}" title="Remover anexo" aria-label="Remover anexo">${Icons.trash}</button>
+      </div>
+    </div>
+  `;
+}
+
+// Full-size image with Salvar / Abrir no navegador
+function renderMediaViewer() {
+  const v = uiState.mediaViewer;
+  if (!v) return "";
+  return `
+    <div class="media-viewer" data-action="close-media-viewer" data-testid="media-viewer">
+      <img src="${escapeHtml(v.url)}" alt="${escapeHtml(v.name || "")}" data-media-viewer-img />
+      <div class="media-viewer-bar">
+        <span class="media-viewer-name">${escapeHtml(v.name || "")}</span>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="download-file" data-url="${escapeHtml(v.url)}">${Icons.download}<span>Salvar</span></button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="open-link" data-url="${escapeHtml(v.url)}">Abrir no navegador</button>
+        <button type="button" class="icon-btn" data-action="close-media-viewer" title="Fechar" aria-label="Fechar">${Icons.close}</button>
+      </div>
     </div>
   `;
 }
@@ -1414,7 +1625,8 @@ function renderCallTile(state, ch, userId, { focused = false, small = false, noS
       ? `<div class="call-tile-stream camera" data-local-camera data-keep-children></div>`
       : `<div class="call-tile-stream camera" data-remote-video="${escapeHtml(userId)}:camera" data-keep-children></div>`;
   } else {
-    media = `<div class="call-tile-avatar">${renderAvatar(user, "", false, small ? "width:48px;height:48px;min-width:48px;font-size:18px;" : "width:84px;height:84px;min-width:84px;font-size:30px;", { speaking: true })}</div>`;
+    // Speaking shows as the tile's green frame; the avatar itself stays plain here
+    media = `<div class="call-tile-avatar">${renderAvatar(user, "", false, small ? "width:48px;height:48px;min-width:48px;font-size:18px;" : "width:84px;height:84px;min-width:84px;font-size:30px;", { speaking: false })}</div>`;
   }
 
   const shareControls = isSharing && !noStream
@@ -1555,8 +1767,12 @@ function renderCallStage(state, ch) {
             <button class="call-ctrl ${v.deafened ? "danger" : ""}" data-action="toggle-deafen" title="${v.deafened ? "Ativar áudio" : "Desativar áudio"}">${v.deafened ? Icons.deafenOff : Icons.headphones}</button>
           </div>
           <div class="call-controls-group">
-            <button class="call-ctrl ${v.videoEnabled ? "active" : ""}" data-action="toggle-video" title="Câmera">${Icons.video}</button>
-            <button class="call-ctrl ${v.screenShareEnabled ? "active" : ""}" data-action="toggle-screenshare" title="${v.screenShareEnabled ? "Parar de compartilhar a tela" : "Compartilhar a tela"}" data-testid="call-screenshare-btn">${Icons.screenShare}</button>
+            ${
+              store.can("STREAM_VIDEO", store.getState().guilds.find((g) => g.id === v.connectedGuildId) || null)
+                ? `<button class="call-ctrl ${v.videoEnabled ? "active" : ""}" data-action="toggle-video" title="Câmera">${Icons.video}</button>
+            <button class="call-ctrl ${v.screenShareEnabled ? "active" : ""}" data-action="toggle-screenshare" title="${v.screenShareEnabled ? "Parar de compartilhar a tela" : "Compartilhar a tela"}" data-testid="call-screenshare-btn">${Icons.screenShare}</button>`
+                : ""
+            }
           </div>
           <button class="call-ctrl leave" data-action="leave-voice" title="Sair da call" data-testid="call-leave-btn">${Icons.phoneOff}</button>
         </div>
@@ -1581,6 +1797,14 @@ function renderChatStage(state) {
   }
   const isDm = channel.type === "dm";
   const allMessages = state.messages[channel.id] || [];
+  // What I can do here (DMs: everything)
+  const chatGuild = isDm ? null : store.getActiveGuild();
+  const perms = {
+    send: store.can("SEND_MESSAGES", chatGuild),
+    react: store.can("ADD_REACTIONS", chatGuild),
+    pin: store.can("PIN_MESSAGES", chatGuild) || store.can("MANAGE_MESSAGES", chatGuild),
+    manageMessages: store.can("MANAGE_MESSAGES", chatGuild)
+  };
   const searchQuery = (state.navigation.searchQuery || "").trim().toLowerCase();
   const pinnedList = allMessages.filter((m) => m.pinned);
 
@@ -1716,7 +1940,7 @@ function renderChatStage(state) {
                   ${
                     !isGrouped || isCompact
                       ? `<div class="message-header">
-                          <span class="message-author" data-action="open-user-popout" data-user-id="${author.id}">
+                          <span class="message-author" data-action="open-user-popout" data-user-id="${author.id}" style="${nameColorStyle(store.getActiveGuild(), author.id)}">
                             ${escapeHtml(author.displayName)}
                           </span>
                           <span style="font-size:11px;color:var(--text-muted);">@${escapeHtml(author.username)}</span>
@@ -1732,18 +1956,26 @@ function renderChatStage(state) {
                 </div>
 
                 <div class="message-toolbar">
-                  <button class="toolbar-btn" data-action="toggle-reaction" data-message-id="${m.id}" data-emoji="👍" title="Curtir">👍</button>
+                  ${
+                    perms.react
+                      ? `<button class="toolbar-btn" data-action="toggle-reaction" data-message-id="${m.id}" data-emoji="👍" title="Curtir">👍</button>
                   <button class="toolbar-btn" data-action="toggle-reaction" data-message-id="${m.id}" data-emoji="🔥" title="Fogo">🔥</button>
-                  <button class="toolbar-btn" data-action="open-emoji-picker" data-message-id="${m.id}" title="Adicionar Reação">${Icons.smile}</button>
-                  <button class="toolbar-btn" data-action="reply-message" data-message-id="${m.id}" title="Responder">${Icons.reply}</button>
+                  <button class="toolbar-btn" data-action="open-emoji-picker" data-message-id="${m.id}" title="Adicionar Reação">${Icons.smile}</button>`
+                      : ""
+                  }
+                  ${perms.send ? `<button class="toolbar-btn" data-action="reply-message" data-message-id="${m.id}" title="Responder">${Icons.reply}</button>` : ""}
                   <button class="toolbar-btn" data-action="open-thread" data-message-id="${m.id}" title="Tópico">${Icons.thread}</button>
-                  <button class="toolbar-btn" data-action="pin-message" data-message-id="${m.id}" title="${m.pinned ? "Desafixar" : "Fixar"}">${Icons.pin}</button>
+                  ${perms.pin ? `<button class="toolbar-btn" data-action="pin-message" data-message-id="${m.id}" title="${m.pinned ? "Desafixar" : "Fixar"}">${Icons.pin}</button>` : ""}
                   ${
                     m.authorId === state.auth.currentUserId
                       ? `<button class="toolbar-btn" data-action="start-edit-message" data-message-id="${m.id}" title="Editar">${Icons.edit}</button>`
                       : ""
                   }
-                  <button class="toolbar-btn danger" data-action="delete-message" data-message-id="${m.id}" title="Excluir">${Icons.trash}</button>
+                  ${
+                    m.authorId === state.auth.currentUserId || perms.manageMessages
+                      ? `<button class="toolbar-btn danger" data-action="delete-message" data-message-id="${m.id}" title="Excluir">${Icons.trash}</button>`
+                      : ""
+                  }
                 </div>
               </div>
             `;
@@ -1807,6 +2039,7 @@ function renderChatStage(state) {
     const offlineUsers = guildUsers.filter((u) => u.status === "offline");
 
     rightSidebarHtml = `
+      <div class="members-resizer-anchor"><div class="sidebar-resizer left" data-sidebar-resizer="members" title="Arraste para mudar a largura" role="separator" aria-orientation="vertical"></div></div>
       <aside class="members-sidebar" data-testid="members-sidebar">
         <div class="member-role-title">Online — ${onlineUsers.length}</div>
         ${onlineUsers
@@ -1815,7 +2048,7 @@ function renderChatStage(state) {
           <div class="member-item" data-action="open-user-popout" data-user-id="${u.id}">
             ${renderAvatar(u, "", true)}
             <div style="min-width:0;flex:1;">
-              <div class="member-name" style="color:var(--header-primary);">
+              <div class="member-name" style="color:var(--header-primary);${nameColorStyle(guild, u.id)}">
                 ${escapeHtml(u.displayName)}
               </div>
               <div class="member-activity">${activitySummaryHtml(u.id) || `@${escapeHtml(u.username)}`}</div>
@@ -1833,7 +2066,7 @@ function renderChatStage(state) {
                 <div class="member-item offline" data-action="open-user-popout" data-user-id="${u.id}">
                   ${renderAvatar(u)}
                   <div style="min-width:0;flex:1;">
-                    <div class="member-name">${escapeHtml(u.displayName)}</div>
+                    <div class="member-name" style="${nameColorStyle(guild, u.id)}">${escapeHtml(u.displayName)}</div>
                   </div>
                 </div>
               `
@@ -1859,14 +2092,9 @@ function renderChatStage(state) {
         <button style="color:var(--interactive-normal);" data-action="cancel-reply">${Icons.close}</button>
       </div>
     `;
-  } else if (uiState.stagedAttachment) {
-    bannerHtml = `
-      <div class="composer-banner">
-        <span>📎 Arquivo anexado: <strong style="color:var(--header-primary);">${escapeHtml(uiState.stagedAttachment.name)}</strong> (${escapeHtml(uiState.stagedAttachment.size)})</span>
-        <button style="color:var(--interactive-normal);" data-action="clear-attachment">${Icons.close}</button>
-      </div>
-    `;
   }
+  // The attached file shows above (works together with a reply)
+  const stagedHtml = renderStagedAttachmentBanner(uiState.stagedAttachment, "clear-attachment");
 
   return `
     <section class="main-stage" data-testid="chat-stage">
@@ -1941,6 +2169,7 @@ function renderChatStage(state) {
           </div>
 
           <div class="composer-area">
+            ${stagedHtml}
             ${bannerHtml}
             <form id="message-composer-form" class="composer-box ${bannerHtml ? "has-banner" : ""}">
               ${renderComposerPlus("chat", channel.id)}
@@ -1949,7 +2178,8 @@ function renderChatStage(state) {
                 id="composer-text-input"
                 data-testid="composer-input"
                 class="composer-input"
-                placeholder="Conversar em ${isDm ? `@${channel.name}` : `#${channel.name}`}"
+                ${perms.send ? "" : "disabled"}
+                placeholder="${perms.send ? `Conversar em ${isDm ? `@${channel.name}` : `#${channel.name}`}` : "Você não tem permissão para enviar mensagens neste canal"}"
                 autocomplete="off"
               />
               <button type="button" class="icon-btn" data-action="insert-slash-shrug" title="Inserir /shrug">¯\\_(ツ)_/¯</button>
@@ -1975,18 +2205,30 @@ function renderServerDropdownMenu(state) {
   if (!guild) return "";
   return `
     <div class="floating-popout" style="top:54px;left:80px;width:224px;padding:6px;" data-testid="server-dropdown-menu">
-      <button class="context-menu-item" data-action="open-invite-modal">
+      ${
+        store.can("CREATE_INSTANT_INVITE", guild)
+          ? `<button class="context-menu-item" data-action="open-invite-modal">
         <span>Convidar Pessoas</span>
         <span>📨</span>
-      </button>
+      </button>`
+          : ""
+      }
       <button class="context-menu-item" data-action="open-server-settings">
         <span>Configurações do Servidor</span>
         <span>⚙️</span>
       </button>
-      <button class="context-menu-item" data-action="open-create-channel">
+      ${
+        store.can("MANAGE_CHANNELS", guild)
+          ? `<button class="context-menu-item" data-action="open-create-channel">
         <span>Criar Canal</span>
         <span>＋</span>
       </button>
+      <button class="context-menu-item" data-action="edit-category" data-testid="create-category-btn">
+        <span>Criar Categoria</span>
+        <span>🗂️</span>
+      </button>`
+          : ""
+      }
       ${
         guild.ownerId === state.auth.currentUserId
           ? `<button class="context-menu-item danger" data-action="delete-guild" data-guild-id="${escapeHtml(guild.id)}" data-testid="delete-guild-menu-btn">
@@ -2123,8 +2365,12 @@ function renderProfileActions(state, u, guild) {
   }
 
   let banBtn = "";
-  if (guild && guild.ownerId !== u.id && (guild.memberIds || []).includes(u.id) && canModerate(guild, meId, u.id, "BAN_MEMBERS")) {
-    banBtn = `<button type="button" class="btn btn-danger btn-sm" data-action="ban-member" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-testid="popout-ban-btn">Banir</button>`;
+  const isMember = guild && guild.ownerId !== u.id && (guild.memberIds || []).includes(u.id);
+  if (isMember && canModerate(guild, meId, u.id, "KICK_MEMBERS")) {
+    banBtn += `<button type="button" class="btn btn-secondary btn-sm" data-action="kick-member" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-testid="popout-kick-btn">Expulsar</button>`;
+  }
+  if (isMember && canModerate(guild, meId, u.id, "BAN_MEMBERS")) {
+    banBtn += `<button type="button" class="btn btn-danger btn-sm" data-action="ban-member" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-testid="popout-ban-btn">Banir</button>`;
   }
 
   return `
@@ -2141,10 +2387,56 @@ function canModerate(guild, actorId, targetId, permission) {
   if (guild.ownerId === actorId) return true;
   const rolesOf = (uid) => (guild.members || []).find((m) => m.userId === uid)?.roles || [];
   const myRoles = guild.roles.filter((r) => rolesOf(actorId).includes(r.id));
-  const allowed = myRoles.some((r) => (r.permissions || []).includes(permission) || (r.permissions || []).includes("ADMINISTRATOR"));
-  if (!allowed) return false;
+  if (!store.can(permission, guild)) return false;
   const top = (roles) => Math.max(0, ...roles.map((r) => r.position || 0));
   return top(myRoles) > top(guild.roles.filter((r) => rolesOf(targetId).includes(r.id)));
+}
+
+// Roles on someone's card: coloured pills (× to take one off) and "+" with a
+// small searchable list of the roles that can be given
+function renderPopoutRoles(state, guild, u, memberRoles, assignableRoles, canManageRoles, isOwner, myHighestPos) {
+  const picker = uiState.rolePicker && uiState.rolePicker.userId === u.id ? uiState.rolePicker : null;
+  const q = (picker?.search || "").toLowerCase();
+  return `
+    <div style="height:1px;background:var(--divider-subtle);"></div>
+    <div>
+      <div class="form-label" style="margin-bottom:6px;">Cargos</div>
+      <div class="popout-roles" data-testid="user-popout-roles">
+        ${memberRoles
+          .map((r) => {
+            const canRemove = isOwner || (canManageRoles && (r.position || 0) < myHighestPos);
+            return `
+            <span class="role-pill" data-role-id="${escapeHtml(r.id)}">
+              <span class="role-dot" style="background:${escapeHtml(r.color || "#99aab5")};"></span>
+              <span>${escapeHtml(r.name)}</span>
+              ${canRemove ? `<button type="button" class="role-pill-x" data-action="remove-user-role" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-role-id="${escapeHtml(r.id)}" title="Tirar o cargo" aria-label="Tirar o cargo ${escapeHtml(r.name)}">×</button>` : ""}
+            </span>`;
+          })
+          .join("")}
+        ${
+          canManageRoles && assignableRoles.length
+            ? `<button type="button" class="role-pill add" data-action="toggle-role-picker" data-user-id="${escapeHtml(u.id)}" title="Dar um cargo" data-testid="popout-add-role-btn">+</button>`
+            : ""
+        }
+        ${!memberRoles.length && !(canManageRoles && assignableRoles.length) ? `<span class="setting-desc">Sem cargos.</span>` : ""}
+      </div>
+      ${
+        picker
+          ? `<div class="role-picker" data-testid="role-picker">
+              <input type="search" class="form-input" id="role-picker-search" placeholder="Pesquisar cargos" value="${escapeHtml(picker.search || "")}" autocomplete="off" />
+              <div class="role-picker-list">
+                ${assignableRoles
+                  .map(
+                    (r) => `<button type="button" class="role-picker-item" data-action="assign-role" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-role-id="${escapeHtml(r.id)}" data-role-name="${escapeHtml(r.name.toLowerCase())}" ${q && !r.name.toLowerCase().includes(q) ? "hidden" : ""}>
+                      <span class="role-dot" style="background:${escapeHtml(r.color || "#99aab5")};"></span>${escapeHtml(r.name)}
+                    </button>`
+                  )
+                  .join("")}
+              </div>
+            </div>`
+          : ""
+      }
+    </div>`;
 }
 
 function renderUserPopout(state) {
@@ -2156,22 +2448,10 @@ function renderUserPopout(state) {
   const guild = store.getActiveGuild();
   const me = store.getCurrentUser();
   const isOwner = guild && guild.ownerId === me.id;
-  let canManageRoles = isOwner;
-  let myHighestPos = isOwner ? 999999 : 0;
-  if (guild && !isOwner) {
-    const myRoleIds = guild.memberRoles?.[me.id] || [];
-    for (const rid of myRoleIds) {
-      const r = guild.roles.find((x) => x.id === rid);
-      if (r) {
-        if ((r.position || 0) > myHighestPos) myHighestPos = r.position;
-        if (Array.isArray(r.permissions) && (r.permissions.includes("ADMINISTRATOR") || r.permissions.includes("MANAGE_ROLES"))) {
-          canManageRoles = true;
-        }
-      }
-    }
-  }
+  const canManageRoles = Boolean(guild) && store.can("MANAGE_ROLES", guild);
+  const myHighestPos = guild ? myTopRolePosition(guild, me.id) : 0;
 
-  const memberRoleIds = guild ? (guild.memberRoles?.[u.id] || []) : [];
+  const memberRoleIds = guild ? ((guild.members || []).find((m) => m.userId === u.id)?.roles || []) : [];
   const memberRoles = guild ? guild.roles.filter((r) => memberRoleIds.includes(r.id)) : [];
   const assignableRoles = guild && canManageRoles
     ? guild.roles.filter((r) => !memberRoleIds.includes(r.id) && r.name !== "@everyone" && (isOwner || (r.position || 0) < myHighestPos))
@@ -2192,8 +2472,8 @@ function renderUserPopout(state) {
         </div>
         <div class="user-popout-inner">
           <div>
-            <div style="font-size:18px;font-weight:700;color:var(--header-primary);">${escapeHtml(u.displayName)}</div>
-            <div style="font-size:13px;color:var(--text-muted);" data-testid="popout-username">@${escapeHtml(u.username)}</div>
+            <div class="popout-display-name selectable" style="font-size:18px;font-weight:700;color:var(--header-primary);${nameColorStyle(guild, u.id)}">${escapeHtml(u.displayName)}</div>
+            <div class="selectable" style="font-size:13px;color:var(--text-muted);" data-testid="popout-username">@${escapeHtml(u.username)}</div>
             <button class="link-btn" style="margin-top:4px;" data-action="open-profile-view" data-user-id="${escapeHtml(u.id)}">Ver perfil completo</button>
           </div>
           ${renderProfileActions(state, u, guild)}
@@ -2223,58 +2503,12 @@ function renderUserPopout(state) {
             />
           </div>
 
-          ${guild ? `
-            <div style="height:1px;background:var(--divider-subtle);"></div>
-            <div>
-              <div class="form-label" style="margin-bottom:6px;">Cargos no Servidor (${memberRoles.length})</div>
-              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;" data-testid="user-popout-roles">
-                ${memberRoles.map(r => {
-                  const canRemove = isOwner || (canManageRoles && (r.position || 0) < myHighestPos && r.name !== "@everyone");
-                  return `
-                    <span
-                      class="role-badge-pill"
-                      style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:12px;background:rgba(255,255,255,0.06);border:1px solid ${r.color || "var(--text-muted)"};font-size:11px;font-weight:600;color:${r.color || "var(--header-primary)"};"
-                      data-role-id="${r.id}"
-                    >
-                      <span style="width:8px;height:8px;border-radius:50%;background:${r.color || "var(--text-muted)"};"></span>
-                      ${escapeHtml(r.name)}
-                      ${canRemove ? `
-                        <button
-                          type="button"
-                          class="role-remove-btn"
-                          data-action="remove-user-role"
-                          data-guild-id="${guild.id}"
-                          data-user-id="${u.id}"
-                          data-role-id="${r.id}"
-                          style="background:none;border:none;color:${r.color || "inherit"};cursor:pointer;font-size:13px;padding:0 2px;line-height:1;"
-                          title="Remover cargo"
-                        >×</button>
-                      ` : ""}
-                    </span>
-                  `;
-                }).join("")}
-                ${memberRoles.length === 0 ? `<span style="font-size:11px;color:var(--text-muted);">Nenhum cargo atribuído.</span>` : ""}
-              </div>
-
-              ${canManageRoles && assignableRoles.length > 0 ? `
-                <select
-                  class="form-input"
-                  style="height:30px;font-size:11px;padding:2px 8px;"
-                  data-action="assign-user-role-select"
-                  data-guild-id="${guild.id}"
-                  data-user-id="${u.id}"
-                  data-testid="assign-role-select"
-                >
-                  <option value="">+ Atribuir Cargo...</option>
-                  ${assignableRoles.map(r => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join("")}
-                </select>
-              ` : ""}
-            </div>
-          ` : ""}
+          ${guild && (guild.memberIds || []).includes(u.id) ? renderPopoutRoles(state, guild, u, memberRoles, assignableRoles, canManageRoles, isOwner, myHighestPos) : ""}
 
           ${
             u.id !== state.auth.currentUserId
-              ? `<form id="popout-dm-form" data-target-user="${u.id}">
+              ? `<form id="popout-dm-form" data-target-user="${u.id}" class="popout-dm-form">
+                  <label class="form-label">Conversar com ${escapeHtml(u.displayName)}</label>
                   <input
                     type="text"
                     name="quickDm"
@@ -2284,7 +2518,7 @@ function renderUserPopout(state) {
                     required
                   />
                 </form>`
-              : ""
+              : `<button type="button" class="btn btn-secondary btn-sm popout-edit-profile" data-action="open-profile-settings" data-testid="popout-edit-profile-btn">${Icons.edit} Editar perfil</button>`
           }
         </div>
       </div>
@@ -2385,6 +2619,114 @@ function renderActiveModal(state) {
             <div class="modal-footer">
               <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
               <button type="submit" class="btn btn-primary">Criar Canal</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  // Name / spoiler of the file waiting to be sent
+  if (modal === "edit-attachment") {
+    const att = uiState.modalPayload?.target === "call" ? uiState.callStagedAttachment : uiState.stagedAttachment;
+    if (!att) return "";
+    return `
+      <div class="modal-backdrop" data-action="close-modal-backdrop">
+        <div class="modal-card" data-testid="edit-attachment-modal">
+          <div class="modal-header">
+            <h2>Editar anexo</h2>
+            <button class="icon-btn" data-action="close-modal">${Icons.close}</button>
+          </div>
+          <form id="edit-attachment-form">
+            <div class="modal-body">
+              ${att.isImage ? `<img class="edit-attachment-preview" src="${escapeHtml(att.url)}" alt="" />` : ""}
+              <div class="form-group">
+                <label class="form-label">Nome do arquivo</label>
+                <input class="form-input" name="name" type="text" maxlength="120" value="${escapeHtml(att.name)}" required />
+              </div>
+              <label class="checkbox-row" for="attachment-spoiler">
+                <input type="checkbox" class="checkbox-input" id="attachment-spoiler" name="spoiler" ${att.spoiler ? "checked" : ""} />
+                <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+                <span class="checkbox-text"><span class="setting-title">Marcar como spoiler</span><span class="setting-desc">A imagem chega borrada e só aparece quando a pessoa clicar.</span></span>
+              </label>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+              <button type="submit" class="btn btn-primary">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  // Edit a channel: name, topic and the category it sits in
+  if (modal === "edit-channel") {
+    const guild = store.getActiveGuild();
+    const ch = guild?.channels.find((c) => c.id === uiState.modalPayload?.channelId);
+    if (!ch) return "";
+    return `
+      <div class="modal-backdrop" data-action="close-modal-backdrop">
+        <div class="modal-card" data-testid="edit-channel-modal">
+          <div class="modal-header">
+            <h2>Editar canal</h2>
+            <button class="icon-btn" data-action="close-modal">${Icons.close}</button>
+          </div>
+          <form id="edit-channel-form" data-channel-id="${escapeHtml(ch.id)}">
+            <div class="modal-body">
+              <div class="form-group">
+                <label class="form-label">Nome do canal</label>
+                <input class="form-input" name="name" type="text" maxlength="100" value="${escapeHtml(ch.name)}" required data-testid="edit-channel-name" />
+              </div>
+              ${
+                ch.type === "voice"
+                  ? ""
+                  : `<div class="form-group">
+                <label class="form-label">Tópico do canal</label>
+                <input class="form-input" name="topic" type="text" maxlength="300" value="${escapeHtml(ch.topic || "")}" />
+              </div>`
+              }
+              <div class="form-group">
+                <label class="form-label">Categoria</label>
+                <select class="form-input" name="categoryId">
+                  ${(guild.categories || []).map((c) => `<option value="${escapeHtml(c.id)}" ${c.id === ch.categoryId ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
+                </select>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-danger" data-action="delete-channel" data-channel-id="${escapeHtml(ch.id)}" style="margin-right:auto;">Excluir canal</button>
+              <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+              <button type="submit" class="btn btn-primary">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  // Create (no id) or rename a category
+  if (modal === "edit-category") {
+    const guild = store.getActiveGuild();
+    const cat = guild?.categories.find((c) => c.id === uiState.modalPayload?.categoryId) || null;
+    return `
+      <div class="modal-backdrop" data-action="close-modal-backdrop">
+        <div class="modal-card" data-testid="edit-category-modal">
+          <div class="modal-header">
+            <h2>${cat ? "Renomear categoria" : "Criar categoria"}</h2>
+            <button class="icon-btn" data-action="close-modal">${Icons.close}</button>
+          </div>
+          <form id="edit-category-form" data-category-id="${escapeHtml(cat?.id || "")}">
+            <div class="modal-body">
+              <p class="setting-desc">Categorias agrupam canais de texto e de voz. Depois de criar, use o <strong>+</strong> da categoria para adicionar canais dentro dela.</p>
+              <div class="form-group">
+                <label class="form-label">Nome da categoria</label>
+                <input class="form-input" name="name" type="text" maxlength="100" value="${escapeHtml(cat?.name || "")}" placeholder="Ex.: Jogos" required data-testid="category-name-input" />
+              </div>
+            </div>
+            <div class="modal-footer">
+              ${cat ? `<button type="button" class="btn btn-danger" data-action="delete-category" data-category-id="${escapeHtml(cat.id)}" style="margin-right:auto;">Excluir categoria</button>` : ""}
+              <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+              <button type="submit" class="btn btn-primary">${cat ? "Salvar" : "Criar categoria"}</button>
             </div>
           </form>
         </div>
@@ -2715,219 +3057,205 @@ function renderActiveModal(state) {
 // ==========================================================================
 // Phase 2: Role Permissions & Server Roles Hierarchy Manager
 // ==========================================================================
-const ROLE_PERMISSIONS = [
-  { flag: "ADMINISTRATOR", label: "Administrador (Acesso Total)", desc: "Membros com este cargo ignoram todas as restrições de canais e permissões." },
-  { flag: "MANAGE_GUILD", label: "Gerenciar Servidor", desc: "Permite alterar nome, ícone e configurações globais do servidor." },
-  { flag: "MANAGE_ROLES", label: "Gerenciar Cargos", desc: "Permite criar, editar e excluir cargos posicionados abaixo deste." },
-  { flag: "MANAGE_CHANNELS", label: "Gerenciar Canais", desc: "Permite criar, editar e excluir canais de texto e voz." },
-  { flag: "KICK_MEMBERS", label: "Expulsar Membros", desc: "Permite remover membros do servidor." },
-  { flag: "BAN_MEMBERS", label: "Banir Membros", desc: "Permite banir membros permanentemente do servidor." },
-  { flag: "SEND_MESSAGES", label: "Enviar Mensagens", desc: "Permite enviar mensagens de texto e mídia em canais." },
-  { flag: "CONNECT", label: "Conectar na Voz", desc: "Permite entrar e ouvir canais de voz." },
-  { flag: "SPEAK", label: "Falar na Voz", desc: "Permite transmitir áudio do microfone na chamada." },
-  { flag: "STREAM", label: "Transmitir Tela (Ao Vivo)", desc: "Permite transmitir telas e janelas em 60 FPS." },
-  { flag: "MENTION_EVERYONE", label: "Mencionar @everyone", desc: "Permite enviar notificações para todos os membros." }
-];
+// Highest role of a member that has a colour (names in chat and member list)
+function roleColorOf(guild, userId) {
+  if (!guild) return "";
+  const roleIds = (guild.members || []).find((m) => m.userId === userId)?.roles || [];
+  const role = (guild.roles || [])
+    .filter((r) => roleIds.includes(r.id) && r.color && r.color.toLowerCase() !== "#99aab5")
+    .sort((a, b) => (b.position || 0) - (a.position || 0))[0];
+  return role?.color || "";
+}
 
-function renderServerRolesManager(guild, me, state) {
+function nameColorStyle(guild, userId) {
+  const color = roleColorOf(guild, userId);
+  return color ? `color:${escapeHtml(color)};` : "";
+}
+
+function myTopRolePosition(guild, meId) {
+  if (guild.ownerId === meId) return Infinity;
+  const roleIds = (guild.members || []).find((m) => m.userId === meId)?.roles || [];
+  return Math.max(0, ...(guild.roles || []).filter((r) => roleIds.includes(r.id)).map((r) => r.position || 0));
+}
+
+const ROLE_COLOR_PRESETS = ["#99aab5", "#1abc9c", "#2ecc71", "#3498db", "#9b59b6", "#e91e63", "#f1c40f", "#e67e22", "#e74c3c", "#95a5a6", "#607d8b", "#ffffff"];
+
+function renderServerRolesManager(guild, me) {
+  const view = uiState.rolesView || { mode: "list" };
+  const canManage = store.can("MANAGE_ROLES", guild);
+  const myTop = myTopRolePosition(guild, me.id);
   const roles = [...(guild.roles || [])].sort((a, b) => (b.position || 0) - (a.position || 0));
-  const isOwner = guild.ownerId === me.id;
+  const membersWith = (roleId) => (guild.members || []).filter((m) => (m.roles || []).includes(roleId));
+  const catalog = store.getState().permissionCatalog || [];
 
-  let myHighestPos = isOwner ? 999999 : 0;
-  if (!isOwner) {
-    const myRoleIds = guild.memberRoles?.[me.id] || [];
-    for (const rid of myRoleIds) {
-      const r = guild.roles.find((x) => x.id === rid);
-      if (r && (r.position || 0) > myHighestPos) {
-        myHighestPos = r.position;
-      }
+  if (view.mode === "edit") {
+    const isEveryone = view.roleId === "everyone";
+    const role = isEveryone
+      ? { id: "everyone", name: "@everyone", color: "#99aab5", permissions: guild.everyonePermissions || [], position: 0 }
+      : roles.find((r) => r.id === view.roleId);
+    if (!role) {
+      uiState.rolesView = { mode: "list" };
+      return renderServerRolesManager(guild, me);
     }
+    const editable = canManage && (isEveryone || guild.ownerId === me.id || (role.position || 0) < myTop);
+    const dis = editable ? "" : "disabled";
+    return `
+      <div class="roles-page" data-testid="roles-manager-container">
+        <button type="button" class="link-btn roles-back" data-action="roles-back">← Voltar para cargos</button>
+        <div class="roles-edit-head">
+          <h2 class="roles-title"><span class="role-dot" style="background:${escapeHtml(role.color || "#99aab5")};"></span>Editar cargo — ${escapeHtml(role.name)}</h2>
+          ${editable ? `<button type="submit" form="edit-role-form" class="btn btn-success">Salvar alterações</button>` : ""}
+        </div>
+        ${editable ? "" : `<p class="roles-locked">🔒 Este cargo está acima do seu: você pode ver, mas não editar.</p>`}
+        <form id="edit-role-form" data-guild-id="${escapeHtml(guild.id)}" data-role-id="${escapeHtml(role.id)}" data-everyone="${isEveryone ? "1" : ""}">
+          ${
+            isEveryone
+              ? `<p class="setting-desc">Permissões que <strong>todos os membros</strong> do servidor têm, além das dos cargos deles.</p>`
+              : `
+            <div class="roles-edit-grid">
+              <div class="form-group">
+                <label class="form-label" for="role-name-input">Nome do cargo</label>
+                <input type="text" id="role-name-input" data-testid="role-name-input" class="form-input" name="name" maxlength="60" value="${escapeHtml(role.name)}" ${dis} required />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Cor do cargo</label>
+                <div class="role-color-row">
+                  <input type="color" id="role-color-picker" data-testid="role-color-picker" value="${escapeHtml(role.color || "#99aab5")}" ${dis} />
+                  <input type="text" id="role-color-hex" class="form-input" maxlength="7" value="${escapeHtml(role.color || "#99aab5")}" ${dis} />
+                </div>
+                <div class="role-color-presets">
+                  ${ROLE_COLOR_PRESETS.map((c) => `<button type="button" class="role-color-swatch" style="background:${c};" data-role-color="${c}" title="${c}" ${dis}></button>`).join("")}
+                </div>
+              </div>
+            </div>
+            <label class="checkbox-row" for="role-hoist-checkbox">
+              <input type="checkbox" class="checkbox-input" id="role-hoist-checkbox" data-testid="role-hoist-checkbox" ${role.hoist ? "checked" : ""} ${dis} />
+              <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+              <span class="checkbox-text"><span class="setting-title">Mostrar separado na lista de membros</span></span>
+            </label>`
+          }
+          <div class="perm-groups" data-testid="role-permissions-checklist">
+            ${catalog
+              .filter((group) => !isEveryone || group.perms.some((p) => p.flag !== "ADMINISTRATOR"))
+              .map(
+                (group) => `
+              <section class="perm-group">
+                <h4>${escapeHtml(group.title)}</h4>
+                ${group.perms
+                  .filter((p) => !(isEveryone && p.flag === "ADMINISTRATOR"))
+                  .map(
+                    (p) => `
+                  <label class="perm-row">
+                    <span class="perm-text">
+                      <strong>${escapeHtml(p.label)}</strong>
+                      <span>${escapeHtml(p.desc)}</span>
+                    </span>
+                    <input type="checkbox" class="role-perm-checkbox perm-switch" data-perm-flag="${p.flag}" data-testid="perm-checkbox-${p.flag}" ${(role.permissions || []).includes(p.flag) ? "checked" : ""} ${dis} />
+                  </label>`
+                  )
+                  .join("")}
+              </section>`
+              )
+              .join("")}
+          </div>
+          <div class="roles-edit-footer">
+            ${
+              !isEveryone && editable
+                ? `<button type="button" class="btn btn-danger" data-action="delete-role" data-guild-id="${escapeHtml(guild.id)}" data-role-id="${escapeHtml(role.id)}" data-testid="delete-role-btn">Excluir cargo</button>`
+                : "<span></span>"
+            }
+            ${editable ? `<button type="submit" class="btn btn-success" data-testid="save-role-btn">Salvar alterações</button>` : ""}
+          </div>
+        </form>
+      </div>`;
   }
 
-  let selectedRoleId = state.serverSettings?.selectedRoleId || (roles[0]?.id || null);
-  let selectedRole = roles.find((r) => r.id === selectedRoleId) || roles[0];
-  if (!selectedRole && roles.length > 0) selectedRole = roles[0];
+  if (view.mode === "members") {
+    const role = roles.find((r) => r.id === view.roleId);
+    if (!role) {
+      uiState.rolesView = { mode: "list" };
+      return renderServerRolesManager(guild, me);
+    }
+    const canTouch = canManage && (guild.ownerId === me.id || (role.position || 0) < myTop);
+    const withRole = membersWith(role.id).map((m) => store.getState().users[m.userId]).filter(Boolean);
+    const without = (guild.members || [])
+      .filter((m) => !(m.roles || []).includes(role.id))
+      .map((m) => store.getState().users[m.userId])
+      .filter(Boolean);
+    return `
+      <div class="roles-page">
+        <button type="button" class="link-btn roles-back" data-action="roles-back">← Voltar para cargos</button>
+        <h2 class="roles-title"><span class="role-dot" style="background:${escapeHtml(role.color || "#99aab5")};"></span>Membros com ${escapeHtml(role.name)} (${withRole.length})</h2>
+        <div class="role-members-list">
+          ${
+            withRole.length
+              ? withRole
+                  .map(
+                    (u) => `
+              <div class="role-member-row">
+                ${renderAvatar(u, "", false)}
+                <span class="role-member-name">${escapeHtml(u.displayName)} <span>@${escapeHtml(u.username)}</span></span>
+                ${canTouch ? `<button type="button" class="icon-btn" data-action="remove-user-role" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-role-id="${escapeHtml(role.id)}" title="Tirar o cargo">${Icons.close}</button>` : ""}
+              </div>`
+                  )
+                  .join("")
+              : `<p class="setting-desc">Ninguém tem este cargo ainda.</p>`
+          }
+        </div>
+        ${
+          canTouch && without.length
+            ? `<h4 class="roles-subtitle">Adicionar membro</h4>
+               <div class="role-members-list">
+                 ${without
+                   .map(
+                     (u) => `
+                   <button type="button" class="role-member-row add" data-action="role-add-member" data-guild-id="${escapeHtml(guild.id)}" data-user-id="${escapeHtml(u.id)}" data-role-id="${escapeHtml(role.id)}">
+                     ${renderAvatar(u, "", false)}
+                     <span class="role-member-name">${escapeHtml(u.displayName)} <span>@${escapeHtml(u.username)}</span></span>
+                     <span class="role-member-add">${Icons.plus}</span>
+                   </button>`
+                   )
+                   .join("")}
+               </div>`
+            : ""
+        }
+      </div>`;
+  }
 
-  const isEveryone = selectedRole?.name === "@everyone" || selectedRole?.id === guild.id;
-  const canManageThisRole = isOwner || (myHighestPos > (selectedRole?.position || 0) && !isEveryone);
-
+  // List
+  const q = (view.search || "").toLowerCase();
   return `
-    <div class="roles-manager-container" data-testid="roles-manager-container" style="display:flex;gap:20px;height:100%;min-height:500px;">
-      <div class="roles-sidebar" style="width:230px;background:var(--bg-card-secondary);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--border-faint);">
-          <strong style="color:var(--header-primary);font-size:12px;text-transform:uppercase;">Cargos (${roles.length})</strong>
-          ${isOwner || myHighestPos > 0 ? `
-            <button
-              class="btn btn-primary"
-              style="height:26px;font-size:11px;padding:0 8px;"
-              data-action="create-new-role"
-              data-guild-id="${guild.id}"
-              data-testid="create-role-btn"
-            >
-              + Criar Cargo
-            </button>
-          ` : ""}
-        </div>
-        <div style="display:flex;flex-direction:column;gap:4px;overflow-y:auto;flex:1;">
-          ${roles.map((r) => {
-            const isSel = selectedRole && selectedRole.id === r.id;
-            return `
-              <button
-                type="button"
-                class="role-list-item ${isSel ? "active" : ""}"
-                data-action="select-role-settings"
-                data-role-id="${r.id}"
-                data-testid="role-item-${r.id}"
-                style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:4px;border:none;background:${isSel ? "var(--bg-modifier-selected)" : "transparent"};cursor:pointer;width:100%;text-align:left;transition:background 0.15s;"
-              >
-                <span style="width:12px;height:12px;border-radius:50%;background:${r.color || "#99aab5"};flex-shrink:0;"></span>
-                <span style="font-size:13px;font-weight:600;color:${isSel ? "var(--header-primary)" : "var(--text-normal)"};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">
-                  ${escapeHtml(r.name)}
-                </span>
-                <span style="font-size:10px;color:var(--text-muted);">#${r.position || 0}</span>
-              </button>
-            `;
-          }).join("")}
-        </div>
+    <div class="roles-page" data-testid="roles-manager-container">
+      <h2 class="roles-title">Cargos</h2>
+      <p class="setting-desc">Use cargos para organizar os membros e dar permissões. A cor do cargo mais alto aparece no nome da pessoa.</p>
+      <div class="roles-toolbar">
+        <input type="search" class="form-input" id="roles-search-input" placeholder="Pesquisar cargos" value="${escapeHtml(view.search || "")}" autocomplete="off" />
+        ${canManage ? `<button type="button" class="btn btn-primary" data-action="create-new-role" data-guild-id="${escapeHtml(guild.id)}" data-testid="create-role-btn">Criar cargo</button>` : ""}
       </div>
-
-      <div class="role-edit-pane" style="flex:1;background:var(--bg-channels);border-radius:8px;padding:18px;display:flex;flex-direction:column;gap:16px;overflow-y:auto;" data-testid="role-editor-pane">
-        ${selectedRole ? `
-          <div style="display:flex;align-items:center;justify-content:space-between;">
-            <div>
-              <h3 style="font-size:18px;color:var(--header-primary);margin:0;display:flex;align-items:center;gap:8px;">
-                <span style="width:14px;height:14px;border-radius:50%;background:${selectedRole.color || "#99aab5"};"></span>
-                Editar Cargo — ${escapeHtml(selectedRole.name)}
-              </h3>
-              <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-                Posição hierárquica: #${selectedRole.position || 0} ${isEveryone ? "(Cargo base para todos os membros)" : ""}
-              </div>
-            </div>
-            ${!canManageThisRole && !isOwner ? `
-              <span class="hierarchy-badge" style="background:rgba(237,66,69,0.15);color:var(--status-red);padding:4px 8px;border-radius:4px;font-size:11px;font-weight:700;">
-                🔒 Nível superior ao seu (Somente Leitura)
-              </span>
-            ` : ""}
-          </div>
-
-          <form id="edit-role-form" data-guild-id="${guild.id}" data-role-id="${selectedRole.id}" style="display:flex;flex-direction:column;gap:14px;">
-            <div class="form-group">
-              <label class="form-label">Nome do Cargo *</label>
-              <input
-                type="text"
-                id="role-name-input"
-                data-testid="role-name-input"
-                class="form-input"
-                name="name"
-                value="${escapeHtml(selectedRole.name)}"
-                ${(!canManageThisRole && !isOwner) || isEveryone ? "disabled" : ""}
-                required
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">Cor do Cargo</label>
-              <div style="display:flex;align-items:center;gap:10px;">
-                <input
-                  type="color"
-                  id="role-color-picker"
-                  data-testid="role-color-picker"
-                  name="color"
-                  value="${selectedRole.color || "#99aab5"}"
-                  style="width:40px;height:36px;padding:2px;background:var(--bg-input);border-radius:4px;cursor:pointer;"
-                  ${(!canManageThisRole && !isOwner) ? "disabled" : ""}
-                />
-                <input
-                  type="text"
-                  id="role-color-hex"
-                  class="form-input"
-                  style="width:100px;"
-                  value="${selectedRole.color || "#99aab5"}"
-                  ${(!canManageThisRole && !isOwner) ? "disabled" : ""}
-                />
-              </div>
-            </div>
-
-            <div class="form-group" style="display:flex;align-items:center;gap:10px;">
-              <input
-                type="checkbox"
-                id="role-hoist-checkbox"
-                data-testid="role-hoist-checkbox"
-                name="hoist"
-                ${selectedRole.hoist ? "checked" : ""}
-                ${(!canManageThisRole && !isOwner) ? "disabled" : ""}
-                style="width:18px;height:18px;accent-color:var(--brand-purple);"
-              />
-              <label for="role-hoist-checkbox" class="form-label" style="margin:0;cursor:pointer;">
-                Exibir membros com este cargo separadamente na lista lateral
-              </label>
-            </div>
-
-            <div style="height:1px;background:var(--divider-subtle);margin:4px 0;"></div>
-
-            <div>
-              <div class="form-label" style="margin-bottom:10px;">Permissões do Cargo (${(selectedRole.permissions || []).length} Ativas)</div>
-              <div class="permissions-checklist" style="display:flex;flex-direction:column;gap:8px;" data-testid="role-permissions-checklist">
-                ${ROLE_PERMISSIONS.map((p) => {
-                  const hasPerm = Array.isArray(selectedRole.permissions)
-                    ? selectedRole.permissions.includes(p.flag) || selectedRole.permissions.includes("ADMINISTRATOR")
-                    : false;
-                  return `
-                    <div style="background:var(--bg-card-secondary);padding:10px 12px;border-radius:6px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
-                      <div>
-                        <strong style="font-size:13px;color:var(--header-primary);">${escapeHtml(p.label)}</strong>
-                        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${escapeHtml(p.desc)}</div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        class="role-perm-checkbox"
-                        data-perm-flag="${p.flag}"
-                        data-testid="perm-checkbox-${p.flag}"
-                        ${hasPerm ? "checked" : ""}
-                        ${(!canManageThisRole && !isOwner) ? "disabled" : ""}
-                        style="width:18px;height:18px;accent-color:var(--brand-purple);margin-top:2px;"
-                      />
-                    </div>
-                  `;
-                }).join("")}
-              </div>
-            </div>
-
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:12px;border-top:1px solid var(--border-faint);">
-              ${!isEveryone && (canManageThisRole || isOwner) ? `
-                <button
-                  type="button"
-                  class="btn btn-danger"
-                  style="font-size:12px;"
-                  data-action="delete-role"
-                  data-guild-id="${guild.id}"
-                  data-role-id="${selectedRole.id}"
-                  data-testid="delete-role-btn"
-                >
-                  Excluir Cargo
-                </button>
-              ` : `<span></span>`}
-
-              ${(canManageThisRole || isOwner) ? `
-                <button
-                  type="submit"
-                  class="btn btn-success"
-                  style="font-size:13px;"
-                  data-testid="save-role-btn"
-                >
-                  Salvar Alterações do Cargo
-                </button>
-              ` : ""}
-            </div>
-          </form>
-        ` : `
-          <div style="color:var(--text-muted);display:flex;align-items:center;justify-content:center;height:100%;">
-            Selecione um cargo à esquerda para gerenciar permissões.
-          </div>
-        `}
+      <button type="button" class="role-row everyone" data-action="role-edit" data-role-id="everyone">
+        <span class="role-dot" style="background:#99aab5;"></span>
+        <span class="role-row-name">@everyone<span>Permissões padrão de todos os membros</span></span>
+        <span class="role-row-icon" title="Permissões">${Icons.more || "⋯"}</span>
+      </button>
+      <div class="roles-table">
+        <div class="roles-table-head"><span>Cargos — ${roles.length}</span><span>Membros</span><span></span></div>
+        ${roles
+          .map(
+            (r) => `
+          <div class="role-row" data-role-row data-role-name="${escapeHtml(r.name.toLowerCase())}" data-testid="role-item-${escapeHtml(r.id)}" ${q && !r.name.toLowerCase().includes(q) ? "hidden" : ""}>
+            <span class="role-dot" style="background:${escapeHtml(r.color || "#99aab5")};"></span>
+            <span class="role-row-name">${escapeHtml(r.name)}</span>
+            <span class="role-row-count">${membersWith(r.id).length} ${Icons.friends}</span>
+            <span class="role-row-actions">
+              <button type="button" class="icon-btn" data-action="role-view-members" data-role-id="${escapeHtml(r.id)}" title="Ver membros com este cargo">👁</button>
+              <button type="button" class="icon-btn" data-action="role-edit" data-role-id="${escapeHtml(r.id)}" title="Permissões e edição">⋯</button>
+            </span>
+          </div>`
+          )
+          .join("")}
+        ${roles.length ? "" : `<p class="setting-desc">Nenhum cargo criado ainda.</p>`}
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
 // ==========================================================================
@@ -3304,7 +3632,7 @@ function renderServerOverview(guild, me) {
 // Profile photo lightbox & incoming DM call card
 // ==========================================================================
 function renderExpandableAvatar(user) {
-  const avatar = renderAvatar(user, "xl", true);
+  const avatar = renderAvatar(user, "xl", true, "", { animate: true });
   if (!user?.avatarUrl) return avatar;
   return `
     <div class="avatar-expandable" data-action="expand-avatar" data-url="${escapeHtml(user.avatarUrl)}" data-name="${escapeHtml(user.displayName || "")}" title="Ver foto inteira" data-testid="expand-avatar-btn">
@@ -3928,14 +4256,14 @@ function renderSettingsOverlay(state) {
             <div class="settings-section-label">${escapeHtml(guild.name)}</div>
             <button class="settings-nav-item ${tab === "overview" ? "active" : ""}" data-action="settings-tab" data-type="server" data-tab="overview">Visão Geral</button>
             <button class="settings-nav-item ${tab === "roles" ? "active" : ""}" data-action="settings-tab" data-type="server" data-tab="roles" data-testid="server-settings-roles-tab">Cargos (${guild.roles.length})</button>
-            <button class="settings-nav-item ${tab === "audit" ? "active" : ""}" data-action="settings-tab" data-type="server" data-tab="audit">Registro de Auditoria (${guild.auditLog.length})</button>
+            ${store.can("VIEW_AUDIT_LOG", guild) ? `<button class="settings-nav-item ${tab === "audit" ? "active" : ""}" data-action="settings-tab" data-type="server" data-tab="audit">Registro de Auditoria (${guild.auditLog.length})</button>` : ""}
           </div>
         </div>
         <div class="settings-content-wrap">
           <div class="settings-main-panel">
             ${
               tab === "roles"
-                ? renderServerRolesManager(guild, me, state)
+                ? renderServerRolesManager(guild, me)
                 : tab === "audit"
                   ? `
                 <h2 style="color:var(--header-primary);margin-bottom:16px;">Registro de Auditoria</h2>
@@ -4614,7 +4942,7 @@ export function renderApp() {
   }
 
   morphInnerHTML(root, `
-    <div class="app-root" data-theme="${escapeHtml(state.settings.theme)}" style="--font-scale:${state.settings.fontScale || 1};">
+    <div class="app-root" data-theme="${escapeHtml(state.settings.theme)}" style="--font-scale:${state.settings.fontScale || 1};--channels-width:${uiState.channelsWidth}px;--members-width:${uiState.membersWidth}px;">
       ${renderTitlebar(state)}
       <div class="workspace">
         ${renderGuildsRail(state)}
@@ -4633,6 +4961,7 @@ export function renderApp() {
       ${renderProfileView(state)}
       ${renderIncomingCall(state)}
       ${renderAvatarLightbox()}
+      ${renderMediaViewer()}
       ${renderConfirmDialog()}
       ${renderSwitchAccountPrompt()}
     </div>
@@ -4907,6 +5236,38 @@ function bindFormEvents() {
       if (scroller) scroller.scrollTop = scroller.scrollHeight;
     });
   }
+
+  const editAttachmentForm = document.getElementById("edit-attachment-form");
+  if (editAttachmentForm) {
+    editAttachmentForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(editAttachmentForm);
+      const key = uiState.modalPayload?.target === "call" ? "callStagedAttachment" : "stagedAttachment";
+      if (uiState[key]) uiState[key] = { ...uiState[key], name: String(fd.get("name") || uiState[key].name).trim(), spoiler: fd.get("spoiler") === "on" };
+      uiState.activeModal = null;
+      renderApp();
+    });
+  }
+
+  // Ctrl+V of an image or a copied file attaches it (sent with the next message)
+  const bindPasteAttach = (input, key) => {
+    if (!input) return;
+    input.addEventListener("paste", async (e) => {
+      const file = [...(e.clipboardData?.files || [])][0];
+      if (!file) return;
+      e.preventDefault();
+      const named = file.name && file.name !== "image.png" ? file : new File([file], `imagem-colada-${Date.now()}.png`, { type: file.type || "image/png" });
+      showToast("Anexando...");
+      const staged = await stageChatFile(named);
+      if (!staged) return;
+      uiState[key] = staged;
+      renderApp();
+      const again = key === "callStagedAttachment" ? document.querySelector("#call-chat-form input[name=message]") : document.getElementById("composer-text-input");
+      again?.focus();
+    });
+  };
+  bindPasteAttach(document.getElementById("composer-text-input"), "stagedAttachment");
+  bindPasteAttach(document.querySelector("#call-chat-form input[name=message]"), "callStagedAttachment");
 
   // Typing pings (throttled in the store)
   const composerInput = document.getElementById("composer-text-input");
@@ -5303,10 +5664,24 @@ function bindFormEvents() {
       colorHex.addEventListener("input", () => { colorPicker.value = colorHex.value; });
     }
 
+    for (const swatch of roleForm.querySelectorAll("[data-role-color]")) {
+      swatch.addEventListener("click", () => {
+        if (colorPicker) colorPicker.value = swatch.getAttribute("data-role-color");
+        if (colorHex) colorHex.value = swatch.getAttribute("data-role-color");
+      });
+    }
+
     roleForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const guildId = roleForm.getAttribute("data-guild-id");
       const roleId = roleForm.getAttribute("data-role-id");
+      if (roleForm.getAttribute("data-everyone")) {
+        const flags = Array.from(roleForm.querySelectorAll(".role-perm-checkbox:checked")).map((b) => b.getAttribute("data-perm-flag"));
+        const res = await store.updateEveryonePermissions(guildId, flags);
+        showToast(res.ok ? "Permissões de @everyone salvas!" : res.error || "Não foi possível salvar.");
+        renderApp();
+        return;
+      }
       const name = document.getElementById("role-name-input")?.value || "Cargo";
       const color = colorHex?.value || "#99aab5";
       const hoist = Boolean(document.getElementById("role-hoist-checkbox")?.checked);
@@ -5320,6 +5695,24 @@ function bindFormEvents() {
       } else {
         showToast(res.error || "Erro ao salvar cargo.");
       }
+    });
+  }
+
+  // Filters that work while typing (no re-render)
+  const rolesSearch = document.getElementById("roles-search-input");
+  if (rolesSearch) {
+    rolesSearch.addEventListener("input", () => {
+      const q = rolesSearch.value.toLowerCase();
+      uiState.rolesView = { ...(uiState.rolesView || { mode: "list" }), search: rolesSearch.value };
+      for (const row of document.querySelectorAll("[data-role-row]")) row.hidden = Boolean(q) && !row.getAttribute("data-role-name").includes(q);
+    });
+  }
+  const rolePickerSearch = document.getElementById("role-picker-search");
+  if (rolePickerSearch) {
+    rolePickerSearch.addEventListener("input", () => {
+      const q = rolePickerSearch.value.toLowerCase();
+      if (uiState.rolePicker) uiState.rolePicker.search = rolePickerSearch.value;
+      for (const item of document.querySelectorAll(".role-picker-item")) item.hidden = Boolean(q) && !item.getAttribute("data-role-name").includes(q);
     });
   }
 
@@ -5424,6 +5817,34 @@ function bindFormEvents() {
         });
         showToast("Canal criado!");
       }
+    });
+  }
+
+  const editChannelForm = document.getElementById("edit-channel-form");
+  if (editChannelForm) {
+    editChannelForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(editChannelForm);
+      const changes = { name: fd.get("name"), categoryId: fd.get("categoryId") };
+      if (fd.has("topic")) changes.topic = fd.get("topic");
+      const res = await store.updateChannel(store.getActiveGuild()?.id, editChannelForm.getAttribute("data-channel-id"), changes);
+      if (res.ok) uiState.activeModal = null;
+      showToast(res.ok ? "Canal atualizado!" : res.error || "Não foi possível salvar.");
+      renderApp();
+    });
+  }
+
+  const editCategoryForm = document.getElementById("edit-category-form");
+  if (editCategoryForm) {
+    editCategoryForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = new FormData(editCategoryForm).get("name");
+      const guildId = store.getActiveGuild()?.id;
+      const catId = editCategoryForm.getAttribute("data-category-id");
+      const res = catId ? await store.updateCategory(guildId, catId, name) : await store.createCategory(guildId, name);
+      if (res.ok) uiState.activeModal = null;
+      showToast(res.ok ? (catId ? "Categoria renomeada!" : "Categoria criada! Use o + dela para adicionar canais.") : res.error || "Não foi possível salvar.");
+      renderApp();
     });
   }
 
@@ -5851,6 +6272,22 @@ const truncate = (text, max = 120) => {
 };
 
 const DESTRUCTIVE_ACTIONS = {
+  "kick-member": (btn) => {
+    const u = store.getState().users[btn.getAttribute("data-user-id")];
+    return {
+      title: "Expulsar membro",
+      message: `Expulsar <strong>@${escapeHtml(u?.username || "membro")}</strong> do servidor? A pessoa pode voltar se receber um convite.`,
+      confirmLabel: "Expulsar"
+    };
+  },
+  "delete-category": (btn) => {
+    const cat = store.getActiveGuild()?.categories.find((c) => c.id === btn.getAttribute("data-category-id"));
+    return {
+      title: "Excluir categoria",
+      message: `Excluir a categoria <strong>${escapeHtml(cat?.name || "")}</strong>? Ela precisa estar vazia (mova ou exclua os canais antes).`,
+      confirmLabel: "Excluir Categoria"
+    };
+  },
   "ban-member": (btn) => {
     const u = store.getState().users[btn.getAttribute("data-user-id")];
     return {
@@ -6158,6 +6595,10 @@ async function handleGlobalClick(e) {
       uiState.stoppedWatching[btn.getAttribute("data-channel-id")] = true;
       renderApp();
       break;
+    case "watch-stream-popup":
+      delete uiState.stoppedWatching[btn.getAttribute("data-channel-id")];
+      renderApp();
+      break;
     case "watch-stream": {
       e.stopPropagation();
       const chId = btn.getAttribute("data-channel-id");
@@ -6405,6 +6846,38 @@ async function handleGlobalClick(e) {
       window.DiscordNative?.app?.setZoomFactor?.(1);
       await store.updateSettings({ fontScale: 1 });
       renderApp();
+      break;
+    case "open-media-viewer":
+      uiState.mediaViewer = { url: btn.getAttribute("data-url"), name: btn.getAttribute("data-name") };
+      renderApp();
+      break;
+    case "close-media-viewer":
+      // Clicks on the image itself or the bar buttons do not close it
+      if (e.target.closest("[data-media-viewer-img]") || (e.target.closest(".media-viewer-bar") && btn.getAttribute("data-action") !== "close-media-viewer")) break;
+      if (btn.classList.contains("media-viewer") && e.target !== btn) break;
+      uiState.mediaViewer = null;
+      renderApp();
+      break;
+    case "download-file": {
+      e.stopPropagation();
+      const url = btn.getAttribute("data-url");
+      if (window.DiscordNative?.settings?.downloadUrl) window.DiscordNative.settings.downloadUrl(url);
+      else window.open(url, "_blank");
+      break;
+    }
+    case "reveal-spoiler":
+      e.stopPropagation();
+      btn.closest(".spoiler")?.classList.remove("spoiler");
+      btn.remove();
+      break;
+    case "edit-staged-attachment":
+      uiState.activeModal = "edit-attachment";
+      uiState.modalPayload = { target: btn.getAttribute("data-target") };
+      renderApp();
+      break;
+    case "close-dm":
+      e.stopPropagation();
+      await store.closeDm(btn.getAttribute("data-dm-id"));
       break;
     case "popout-message": {
       const dm = await store.openOrCreateDm(btn.getAttribute("data-user-id"));
@@ -6661,14 +7134,26 @@ async function handleGlobalClick(e) {
       showToast("Enquadramento aplicado e salvo com sucesso!");
       break;
     }
-    case "select-role-settings":
-      store.selectRoleInSettings(btn.getAttribute("data-role-id"));
+    case "role-edit":
+      uiState.rolesView = { mode: "edit", roleId: btn.getAttribute("data-role-id") };
+      renderApp();
+      break;
+    case "role-view-members":
+      uiState.rolesView = { mode: "members", roleId: btn.getAttribute("data-role-id") };
+      renderApp();
+      break;
+    case "roles-back":
+      uiState.rolesView = { mode: "list", search: uiState.rolesView?.search || "" };
+      renderApp();
       break;
     case "create-new-role": {
       const gId = btn.getAttribute("data-guild-id");
-      const res = await store.createRole(gId, { name: "Novo Cargo", color: "#99aab5" });
-      if (res.ok && res.role) store.selectRoleInSettings(res.role.id);
-      showToast("Novo cargo criado com sucesso!");
+      const res = await store.createRole(gId, { name: "Novo cargo", color: "#99aab5", permissions: [] });
+      if (res.ok && res.role) {
+        uiState.rolesView = { mode: "edit", roleId: res.role.id };
+        showToast("Cargo criado: escolha o nome, a cor e as permissões.");
+      } else showToast(res.error || "Não foi possível criar o cargo.");
+      renderApp();
       break;
     }
     case "delete-role": {
@@ -6676,11 +7161,35 @@ async function handleGlobalClick(e) {
       const rId = btn.getAttribute("data-role-id");
       const res = await store.deleteRole(gId, rId);
       if (res.ok) {
-        showToast("Cargo excluído com sucesso!");
-        store.selectRoleInSettings(null);
+        showToast("Cargo excluído.");
+        uiState.rolesView = { mode: "list" };
       } else {
         showToast(res.error || "Erro ao excluir cargo.");
       }
+      renderApp();
+      break;
+    }
+    case "role-add-member":
+    case "assign-role": {
+      const res = await store.assignMemberRole(btn.getAttribute("data-guild-id"), btn.getAttribute("data-user-id"), btn.getAttribute("data-role-id"));
+      if (action === "assign-role") uiState.rolePicker = null;
+      showToast(res.ok ? "Cargo dado!" : res.error || "Não foi possível dar o cargo.");
+      renderApp();
+      break;
+    }
+    case "toggle-role-picker": {
+      e.stopPropagation();
+      const uid = btn.getAttribute("data-user-id");
+      uiState.rolePicker = uiState.rolePicker?.userId === uid ? null : { userId: uid, search: "" };
+      renderApp();
+      requestAnimationFrame(() => document.getElementById("role-picker-search")?.focus());
+      break;
+    }
+    case "kick-member": {
+      const res = await store.kickMember(btn.getAttribute("data-guild-id"), btn.getAttribute("data-user-id"));
+      closeAllFloatingMenus();
+      showToast(res.ok ? "Membro expulso do servidor." : res.error || "Não foi possível expulsar.");
+      renderApp();
       break;
     }
     case "remove-user-role": {
@@ -6724,6 +7233,27 @@ async function handleGlobalClick(e) {
         guild.collapsedCategories[catId] = !guild.collapsedCategories[catId];
         store.notify();
       }
+      break;
+    }
+    case "edit-channel":
+      e.stopPropagation();
+      closeAllFloatingMenus();
+      uiState.activeModal = "edit-channel";
+      uiState.modalPayload = { channelId: btn.getAttribute("data-channel-id") };
+      renderApp();
+      break;
+    case "edit-category":
+      e.stopPropagation();
+      closeAllFloatingMenus();
+      uiState.activeModal = "edit-category";
+      uiState.modalPayload = { categoryId: btn.getAttribute("data-category-id") || null };
+      renderApp();
+      break;
+    case "delete-category": {
+      const res = await store.deleteCategory(store.getActiveGuild()?.id, btn.getAttribute("data-category-id"));
+      if (res.ok) uiState.activeModal = null;
+      showToast(res.ok ? "Categoria excluída." : res.error || "Não foi possível excluir.");
+      renderApp();
       break;
     }
     case "open-create-channel":
@@ -6771,7 +7301,8 @@ async function handleGlobalClick(e) {
       closeAllFloatingMenus();
       await store.updateMyStatus(btn.getAttribute("data-status"));
       break;
-    case "open-user-popout": {
+    case "open-user-popout":
+      uiState.rolePicker = null; {
       e.stopPropagation();
       const targetUserId = btn.getAttribute("data-user-id");
       const isSame = uiState.userPopout && uiState.userPopout.userId === targetUserId;
@@ -7203,6 +7734,11 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Escape") {
+    if (uiState.mediaViewer) {
+      uiState.mediaViewer = null;
+      renderApp();
+      return;
+    }
     if (store.getState().gifPicker.isOpen) {
       store.closeGifPicker();
       return;
@@ -7333,6 +7869,32 @@ document.addEventListener(
   },
   true
 );
+
+// Belt and braces for the layout containers above: any stray scroll is undone
+document.addEventListener(
+  "scroll",
+  (e) => {
+    const el = e.target;
+    if (el === document || !el.matches?.(".app-root, .workspace, .main-stage, .stage-content-split, .chat-column, #app")) return;
+    if (el.scrollTop || el.scrollLeft) {
+      el.scrollTop = 0;
+      el.scrollLeft = 0;
+    }
+  },
+  true
+);
+
+store.onPermissionNotice = (text) => showToast(text);
+
+// Coming back to the window counts the channel on screen as read
+window.addEventListener("focus", () => {
+  const nav = store.getState().navigation;
+  const id = nav.view === "home" ? nav.activeDmId : nav.callViewChannelId || nav.activeChannelId;
+  if (id && store.isViewingChannel(id)) {
+    store.clearUnread(id);
+    renderApp();
+  }
+});
 
 window.__DISCORD_STORE__ = store;
 window.__DISCORD_UI_STATE__ = uiState;

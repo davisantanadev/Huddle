@@ -6,7 +6,8 @@ Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord,
 
 ## Funcionalidades
 
-- Servidores com canais de texto e voz, cargos com hierarquia, convites com link próprio (com botão que abre o app), banir membros e apagar servidor
+- Servidores com categorias e canais de texto e voz editáveis, convites com link próprio (com botão que abre o app), expulsar e banir membros, apagar servidor
+- Cargos de verdade: permissões aplicadas pelo servidor (enviar mensagens, arquivos, links, reações, gerenciar mensagens/canais/cargos, falar, transmitir...), permissões de @everyone, cor do cargo no nome e pesquisa de cargos
 - Mensagens diretas, pedidos de amizade por `@username`, chamadas de voz na DM (toca, atende, recusa)
 - Chat com links clicáveis, reações com todos os emojis (os mais usados primeiro), "fulano está digitando...", menu de botão direito na mensagem (responder, editar, excluir)
 - Compartilhamento de tela em vídeo de verdade (WebRTC, até 1440p/120 FPS, com som do PC), câmera, indicador de quem está falando
@@ -14,7 +15,10 @@ Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord,
 - Sons de entrar, sair, chamando e notificação
 - Perfil com foto e banner (inclusive GIF), tema em gradiente, editor de enquadramento e biblioteca de GIFs (Giphy)
 - Conta com verificação de e-mail por código (Supabase + Brevo, grátis), troca de senha e sessões seguras
+- Colar imagem no chat (Ctrl+V), editar anexo (nome/spoiler), ampliar e salvar imagens e arquivos, bolinha vermelha de mensagens não lidas, fechar DMs
+- Barras laterais com largura ajustável, janela de transmissão móvel e redimensionável
 - Tamanho da interface e do texto ajustáveis, 10 temas visuais e atualização pelo próprio app
+- Leve: o app fica abaixo de ~80 MB de memória (Gerenciador de Tarefas) em tudo, inclusive em call e transmitindo, com um teto de memória por processo aplicado pelo Windows
 
 ---
 

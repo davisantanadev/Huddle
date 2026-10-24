@@ -96,8 +96,20 @@ function trimProcesses(pids, { light = false } = {}) {
   return true;
 }
 
+// Hard working-set ceiling per process ({ pid, mb }[]); see MemTrim.cs. One
+// short helper run per change, nothing keeps running afterwards.
+function capProcesses(entries) {
+  if (process.platform !== "win32" || !helperPath || !entries.length) return false;
+  const byCap = new Map();
+  for (const { pid, mb } of entries) byCap.set(mb, [...(byCap.get(mb) || []), String(pid)]);
+  const args = [];
+  for (const [mb, pids] of byCap) args.push("--cap", String(mb), ...pids);
+  execFile(helperPath, args, { timeout: 3000, windowsHide: true }, () => {});
+  return true;
+}
+
 function isLightTrimAvailable() {
   return Boolean(helperPath);
 }
 
-module.exports = { prepareHelper, trimProcesses, isLightTrimAvailable };
+module.exports = { prepareHelper, trimProcesses, capProcesses, isLightTrimAvailable };

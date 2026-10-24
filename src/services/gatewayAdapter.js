@@ -845,6 +845,7 @@ class VoiceMesh {
     this.screenEncoding = { maxBitrate: 6_000_000, maxFramerate: 60 };
     this.peers = new Map(); // userId -> { pc, audio, screenAudio, remote, pendingCandidates, initiator, restartTimer }
     this.remoteVideos = new Map(); // `${userId}:${slot}` -> <video> kept between renders
+    this.silenced = new Set(); // people without the "Falar" permission: never played
     this.onRemoteMedia = null; // (userId, slot) => void
     this.muted = false;
     this.deafened = false;
@@ -997,6 +998,7 @@ class VoiceMesh {
       return el;
     };
     const audio = makeAudio();
+    audio.muted = this.deafened || this.silenced.has(userId);
     const screenAudio = makeAudio();
 
     const peer = { pc, audio, screenAudio, pendingCandidates: [], initiator, restartTimer: null };
@@ -1119,11 +1121,17 @@ class VoiceMesh {
   // Deafened: hear nobody and send nothing (like Discord)
   setDeafened(deafened) {
     this.deafened = Boolean(deafened);
-    for (const peer of this.peers.values()) {
-      peer.audio.muted = this.deafened;
+    for (const [userId, peer] of this.peers) {
+      peer.audio.muted = this.deafened || this.silenced.has(userId);
       peer.screenAudio.muted = this.deafened;
     }
     if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
+  }
+
+  // People whose microphone must not be heard (no "Falar" permission)
+  setSilencedUsers(userIds) {
+    this.silenced = new Set(userIds || []);
+    for (const [userId, peer] of this.peers) peer.audio.muted = this.deafened || this.silenced.has(userId);
   }
 
   setOutputDevice(deviceId) {

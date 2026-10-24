@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { searchGifs, prefetchTrendingGifs, GIF_CATEGORIES } = require("./gifLibrary");
 const { getGameArt } = require("./gameCatalog");
+const { PERMISSION_GROUPS, ALL_FLAGS, DEFAULT_EVERYONE, normalizeFlags } = require("./permissions");
 const { loadAppConfig } = require("./appConfig");
 const { isSupabaseConfigured, sendEmailCode, verifyEmailCode } = require("./accountDelivery");
 
@@ -500,6 +501,9 @@ class DiscordBackendServer {
     };
 
     addCol("guilds", "icon_url", "TEXT");
+    addCol("guilds", "everyone_permissions_json", "TEXT");
+    // Who closed a DM (the ✕ in the list); a new message brings it back
+    addCol("dm_channels", "hidden_for_json", "TEXT NOT NULL DEFAULT '[]'");
     addCol("user_activities", "icon_data_url", "TEXT NOT NULL DEFAULT ''");
     addCol("guilds", "banner_url", "TEXT");
     addCol("user_preferences", "call_join_custom_name", "TEXT NOT NULL DEFAULT ''");
@@ -523,6 +527,11 @@ class DiscordBackendServer {
     addCol("users", "banner_crop_y", "REAL NOT NULL DEFAULT 0.0");
 
     addCol("guild_roles", "position", "INTEGER NOT NULL DEFAULT 0");
+    // Older servers created "Admin" at position 0 (the bottom): put it on top
+    this.db.exec(`
+      UPDATE guild_roles SET position = (SELECT COALESCE(MAX(r2.position), 0) + 1 FROM guild_roles r2 WHERE r2.guild_id = guild_roles.guild_id)
+      WHERE name = 'Admin' AND position = 0
+    `);
 
     // Account security: verified e-mail and password rotation (phone columns are legacy, unused)
     addCol("users", "email_verified", "INTEGER NOT NULL DEFAULT 0");
@@ -686,8 +695,8 @@ class DiscordBackendServer {
 
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO guild_roles (id, guild_id, name, color, hoist, permissions_json)
-         VALUES (?, ?, 'Admin', '#f1c40f', 1, ?)`
+        `INSERT OR IGNORE INTO guild_roles (id, guild_id, name, color, hoist, permissions_json, position)
+         VALUES (?, ?, 'Admin', '#f1c40f', 1, ?, 1)`
       )
       .run(
         roleAdminId,
@@ -944,13 +953,14 @@ class DiscordBackendServer {
     for (const dm of dmRows) {
       const otherId = dm.user1_id === activeUserId ? dm.user2_id : dm.user1_id;
       if (!usersMap[otherId]) continue;
+      if (JSON.parse(dm.hidden_for_json || "[]").includes(activeUserId)) continue;
       dms.push({
         id: dm.id,
         userId: otherId,
         unreadCount: 0,
         lastMessageAt: this.formatTimeLabel(dm.updated_at)
       });
-      messagesMap[dm.id] = this.getChannelMessages(dm.id);
+      messagesMap[dm.id] = this.getChannelMessages(dm.id, 50, activeUserId);
     }
 
     const memberGuildRows = this.db
@@ -962,7 +972,7 @@ class DiscordBackendServer {
       )
       .all(activeUserId);
 
-    const guilds = memberGuildRows.map((g) => this.serializeGuild(g, messagesMap));
+    const guilds = memberGuildRows.map((g) => this.serializeGuild(g, messagesMap, activeUserId));
 
     const publicGuildRows = this.db.prepare(`SELECT * FROM guilds WHERE is_public = 1 ORDER BY created_at DESC`).all();
     const discoverableGuilds = publicGuildRows.map((g) => {
@@ -1017,6 +1027,7 @@ class DiscordBackendServer {
       messages: messagesMap,
       activeScreenShares,
       liveActivities: this.getLiveActivities(Object.keys(usersMap)),
+      permissionCatalog: PERMISSION_GROUPS,
       appConfig: { appName: this.config.appName, publicUrl: this.getPublicBaseUrl() }
     };
   }
@@ -1046,51 +1057,54 @@ class DiscordBackendServer {
     return result;
   }
 
+  // What every member can do (the "@everyone" set), editable per server
+  getEveryonePermissions(guildRow) {
+    if (guildRow?.everyone_permissions_json) {
+      try {
+        return normalizeFlags(JSON.parse(guildRow.everyone_permissions_json));
+      } catch (_) {}
+    }
+    return [...DEFAULT_EVERYONE];
+  }
+
+  // Effective permissions: @everyone + every role of the member. The owner and
+  // ADMINISTRATOR get everything.
   getMemberPermissions(guildId, userId) {
     const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
-    if (!guild) return new Set();
-    if (guild.owner_id === userId) {
-      return new Set([
-        "ADMINISTRATOR",
-        "MANAGE_SERVER",
-        "MANAGE_ROLES",
-        "MANAGE_CHANNELS",
-        "KICK_MEMBERS",
-        "BAN_MEMBERS",
-        "SEND_MESSAGES",
-        "CONNECT_VOICE",
-        "SPEAK_VOICE",
-        "STREAM_VIDEO",
-        "CREATE_INSTANT_INVITE"
-      ]);
-    }
+    if (!guild || !userId) return new Set();
+    if (guild.owner_id === userId) return new Set(ALL_FLAGS);
     const member = this.db.prepare(`SELECT * FROM guild_members WHERE guild_id = ? AND user_id = ?`).get(guildId, userId);
     if (!member) return new Set();
-    const roleIds = JSON.parse(member.roles_json || "[]");
-    const perms = new Set();
-    for (const rId of roleIds) {
-      const r = this.db.prepare(`SELECT * FROM guild_roles WHERE id = ? AND guild_id = ?`).get(rId, guildId);
-      if (r) {
-        const pList = JSON.parse(r.permissions_json || "[]");
-        for (const p of pList) perms.add(p);
-      }
+    const perms = new Set(this.getEveryonePermissions(guild));
+    for (const rId of JSON.parse(member.roles_json || "[]")) {
+      const r = this.db.prepare(`SELECT permissions_json FROM guild_roles WHERE id = ? AND guild_id = ?`).get(rId, guildId);
+      if (r) for (const flag of normalizeFlags(JSON.parse(r.permissions_json || "[]"))) perms.add(flag);
     }
-    if (perms.has("ADMINISTRATOR")) {
-      return new Set([
-        "ADMINISTRATOR",
-        "MANAGE_SERVER",
-        "MANAGE_ROLES",
-        "MANAGE_CHANNELS",
-        "KICK_MEMBERS",
-        "BAN_MEMBERS",
-        "SEND_MESSAGES",
-        "CONNECT_VOICE",
-        "SPEAK_VOICE",
-        "STREAM_VIDEO",
-        "CREATE_INSTANT_INVITE"
-      ]);
+    return perms.has("ADMINISTRATOR") ? new Set(ALL_FLAGS) : perms;
+  }
+
+  guildIdOfChannel(channelId) {
+    return this.db.prepare(`SELECT guild_id FROM channels WHERE id = ?`).get(channelId)?.guild_id || null;
+  }
+
+  // Permission check for something done in a channel. DMs: only the two people.
+  // Returns null when allowed, or the error to send back.
+  channelPermissionError(actorId, channelId, flag, message) {
+    if (!this.channelAudience(channelId).includes(actorId)) {
+      return { ok: false, status: 403, error: "Você não tem acesso a este canal." };
     }
-    return perms;
+    const guildId = this.guildIdOfChannel(channelId);
+    if (guildId && flag && !this.getMemberPermissions(guildId, actorId).has(flag)) {
+      return { ok: false, status: 403, error: message || "Você não tem permissão para isso neste servidor." };
+    }
+    return null;
+  }
+
+  guildPermissionError(actorId, guildId, flag, message) {
+    if (!this.getMemberPermissions(guildId, actorId).has(flag)) {
+      return { ok: false, status: 403, error: message || "Você não tem permissão para isso neste servidor." };
+    }
+    return null;
   }
 
   getMemberHighestRolePosition(guildId, userId) {
@@ -1108,7 +1122,8 @@ class DiscordBackendServer {
     return maxPos;
   }
 
-  serializeGuild(g, messagesMap = null) {
+  serializeGuild(g, messagesMap = null, viewerId = null) {
+    const myPermissions = viewerId ? [...this.getMemberPermissions(g.id, viewerId)] : [];
     const roles = this.db
       .prepare(`SELECT * FROM guild_roles WHERE guild_id = ? ORDER BY position DESC, name ASC`)
       .all(g.id)
@@ -1118,7 +1133,7 @@ class DiscordBackendServer {
         color: r.color,
         hoist: Boolean(r.hoist),
         position: Number(r.position || 0),
-        permissions: JSON.parse(r.permissions_json || "[]")
+        permissions: normalizeFlags(JSON.parse(r.permissions_json || "[]"))
       }));
 
     const members = this.db
@@ -1143,7 +1158,7 @@ class DiscordBackendServer {
       .map((c) => {
         // Voice channels have their own call chat, so their messages load too
         if (messagesMap) {
-          messagesMap[c.id] = this.getChannelMessages(c.id);
+          messagesMap[c.id] = this.getChannelMessages(c.id, 50, viewerId);
         }
         const roomMap = this.voiceRooms.get(c.id);
         const connectedUsers = roomMap ? Array.from(roomMap.keys()) : [];
@@ -1165,7 +1180,7 @@ class DiscordBackendServer {
       .prepare(
         `SELECT a.*, u.display_name FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id WHERE a.guild_id = ? ORDER BY a.created_at DESC LIMIT 30`
       )
-      .all(g.id)
+      .all(myPermissions.includes("VIEW_AUDIT_LOG") ? g.id : "")
       .map((a) => ({
         id: a.id,
         actor: a.display_name || a.actor_id,
@@ -1205,6 +1220,8 @@ class DiscordBackendServer {
       mentions: 0,
       collapsedCategories: {},
       roles,
+      everyonePermissions: this.getEveryonePermissions(g),
+      myPermissions,
       members,
       memberIds,
       categories,
@@ -1214,7 +1231,7 @@ class DiscordBackendServer {
     };
   }
 
-  getChannelMessages(channelId, limit = 50) {
+  getChannelMessages(channelId, limit = 50, viewerId = null) {
     const base = this.getPublicBaseUrl();
     const rows = this.db
       .prepare(
@@ -1238,7 +1255,10 @@ class DiscordBackendServer {
         attachment,
         pinned: Boolean(m.pinned),
         edited: Boolean(m.edited),
-        reactions: JSON.parse(m.reactions_json || "[]"),
+        // Stored with who reacted; each viewer gets the count and whether they did
+        reactions: JSON.parse(m.reactions_json || "[]").map((r) =>
+          Array.isArray(r.users) ? { emoji: r.emoji, count: r.users.length, me: r.users.includes(viewerId) } : r
+        ),
         replies: JSON.parse(m.replies_json || "[]"),
         poll: m.poll_json ? JSON.parse(m.poll_json) : null
       };
@@ -2384,8 +2404,23 @@ class DiscordBackendServer {
             .prepare(`INSERT INTO dm_channels (id, user1_id, user2_id, updated_at) VALUES (?, ?, ?, ?)`)
             .run(dmId, u1, u2, now);
           dm = { id: dmId, user1_id: u1, user2_id: u2, updated_at: now };
+        } else {
+          // Opening it again puts it back in my list
+          const hidden = JSON.parse(dm.hidden_for_json || "[]").filter((id) => id !== actorId);
+          this.db.prepare(`UPDATE dm_channels SET hidden_for_json = ? WHERE id = ?`).run(JSON.stringify(hidden), dm.id);
         }
         return { ok: true, dmId: dm.id };
+      }
+
+      // Removes a DM from my list only (the other person keeps theirs)
+      case "closeDm": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const dm = this.db.prepare(`SELECT * FROM dm_channels WHERE id = ?`).get(params.dmId);
+        if (!dm || (dm.user1_id !== actorId && dm.user2_id !== actorId)) return { ok: false, status: 404, error: "Conversa não encontrada." };
+        const hidden = new Set(JSON.parse(dm.hidden_for_json || "[]"));
+        hidden.add(actorId);
+        this.db.prepare(`UPDATE dm_channels SET hidden_for_json = ? WHERE id = ?`).run(JSON.stringify([...hidden]), dm.id);
+        return { ok: true };
       }
 
       case "SEND_MESSAGE":
@@ -2406,6 +2441,12 @@ class DiscordBackendServer {
           poll = { question, options: options.map((t, i) => ({ id: `o${i + 1}`, text: t })), votes: {} };
         }
         if (!text && !attachment && !poll) return { ok: false, error: "A mensagem não pode ficar vazia." };
+        const denied =
+          this.channelPermissionError(actorId, channelId, "SEND_MESSAGES", "Você não tem permissão para enviar mensagens aqui.") ||
+          (attachment && this.channelPermissionError(actorId, channelId, "ATTACH_FILES", "Você não tem permissão para enviar arquivos aqui.")) ||
+          (poll && this.channelPermissionError(actorId, channelId, "CREATE_POLLS", "Você não tem permissão para criar enquetes aqui.")) ||
+          (/https?:\/\//i.test(text) && this.channelPermissionError(actorId, channelId, "EMBED_LINKS", "Você não tem permissão para enviar links aqui."));
+        if (denied) return denied;
 
         const now = Date.now();
         const msgId = "m_" + crypto.randomBytes(6).toString("hex");
@@ -2416,6 +2457,7 @@ class DiscordBackendServer {
               size: attachment.size,
               isImage: Boolean(attachment.isImage),
               mimeType: attachment.mimeType || "",
+              spoiler: Boolean(attachment.spoiler),
               url: attachment.relativeUrl || attachment.url || attachment.dataUrl
             })
           : null;
@@ -2443,6 +2485,8 @@ class DiscordBackendServer {
           poll
         };
 
+        // A new message brings a closed DM back for both people
+        this.db.prepare(`UPDATE dm_channels SET hidden_for_json = '[]', updated_at = ? WHERE id = ?`).run(now, channelId);
         this.broadcastEvent("MESSAGE_CREATED", { channelId, messageId: msgId, authorId: actorId });
         return { ok: true, messageId: msgId, message: messageObj };
       }
@@ -2483,7 +2527,13 @@ class DiscordBackendServer {
         const { messageId } = params;
         const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
         if (!msg) return { ok: false, error: "Mensagem não encontrada." };
-        if (msg.author_id !== actorId) return { ok: false, error: "Permissão negada." };
+        // Your own messages always; other people's with "Gerenciar mensagens"
+        if (msg.author_id !== actorId) {
+          const guildId = this.guildIdOfChannel(msg.channel_id);
+          if (!guildId || !this.getMemberPermissions(guildId, actorId).has("MANAGE_MESSAGES")) {
+            return { ok: false, status: 403, error: "Você só pode excluir mensagens de outras pessoas com a permissão Gerenciar mensagens." };
+          }
+        }
         this.db.prepare(`DELETE FROM messages WHERE id = ?`).run(messageId);
         this.broadcastEvent("MESSAGE_DELETED", { channelId: msg.channel_id, messageId });
         return { ok: true };
@@ -2491,9 +2541,16 @@ class DiscordBackendServer {
 
       case "TOGGLE_PIN_MESSAGE":
       case "togglePinMessage": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
         const { messageId } = params;
         const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
         if (!msg) return { ok: false, error: "Mensagem não encontrada." };
+        const guildOfPin = this.guildIdOfChannel(msg.channel_id);
+        const pinPerms = guildOfPin ? this.getMemberPermissions(guildOfPin, actorId) : null;
+        if (pinPerms && !pinPerms.has("PIN_MESSAGES") && !pinPerms.has("MANAGE_MESSAGES")) {
+          return { ok: false, status: 403, error: "Você não tem permissão para fixar mensagens aqui." };
+        }
+        if (!this.channelAudience(msg.channel_id).includes(actorId)) return { ok: false, status: 403, error: "Você não tem acesso a este canal." };
         const nextPin = msg.pinned ? 0 : 1;
         this.db.prepare(`UPDATE messages SET pinned = ? WHERE id = ?`).run(nextPin, messageId);
         this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId });
@@ -2502,24 +2559,27 @@ class DiscordBackendServer {
 
       case "TOGGLE_REACTION":
       case "toggleReaction": {
-        const { messageId, emoji } = params;
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { messageId } = params;
+        const emoji = String(params.emoji || "").slice(0, 32);
         const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
-        if (!msg) return { ok: false, error: "Mensagem não encontrada." };
-        let reactions = JSON.parse(msg.reactions_json || "[]");
-        const existing = reactions.find((r) => r.emoji === emoji);
-        if (existing) {
-          if (existing.me) {
-            existing.count -= 1;
-            existing.me = false;
-            if (existing.count <= 0) reactions = reactions.filter((r) => r.emoji !== emoji);
-          } else {
-            existing.count += 1;
-            existing.me = true;
-          }
+        if (!msg || !emoji) return { ok: false, error: "Mensagem não encontrada." };
+        // Each reaction keeps who reacted, so one person's click never undoes another's
+        let reactions = JSON.parse(msg.reactions_json || "[]").map((r) =>
+          Array.isArray(r.users) ? r : { emoji: r.emoji, users: Array.from({ length: Math.max(0, r.count || 0) }, (_, i) => `legacy_${i}`) }
+        );
+        let entry = reactions.find((r) => r.emoji === emoji);
+        if (entry?.users.includes(actorId)) {
+          entry.users = entry.users.filter((u) => u !== actorId);
+          if (!entry.users.length) reactions = reactions.filter((r) => r !== entry);
         } else {
-          reactions.push({ emoji, count: 1, me: true });
+          const denied = this.channelPermissionError(actorId, msg.channel_id, "ADD_REACTIONS", "Você não tem permissão para reagir aqui.");
+          if (denied) return denied;
+          if (!entry) reactions.push((entry = { emoji, users: [] }));
+          entry.users.push(actorId);
         }
         this.db.prepare(`UPDATE messages SET reactions_json = ? WHERE id = ?`).run(JSON.stringify(reactions), messageId);
+        this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId });
         return { ok: true };
       }
 
@@ -2531,6 +2591,8 @@ class DiscordBackendServer {
         if (!msg) return { ok: false, error: "Mensagem original não encontrada." };
         const clean = String(content || "").trim();
         if (!clean) return { ok: false, error: "A resposta não pode ficar vazia." };
+        const deniedThread = this.channelPermissionError(actorId, msg.channel_id, "SEND_MESSAGES_IN_THREADS", "Você não tem permissão para responder em tópicos aqui.");
+        if (deniedThread) return deniedThread;
         const replies = JSON.parse(msg.replies_json || "[]");
         replies.push({
           id: "th_" + crypto.randomBytes(5).toString("hex"),
@@ -2551,7 +2613,7 @@ class DiscordBackendServer {
         const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
         if (!guild) return { ok: false, status: 404, error: "Servidor não encontrado." };
         const perms = this.getMemberPermissions(guildId, actorId);
-        if (!perms.has("ADMINISTRATOR") && !perms.has("MANAGE_GUILD") && !perms.has("MANAGE_SERVER")) {
+        if (!perms.has("MANAGE_SERVER")) {
           return { ok: false, status: 403, error: "Permissão insuficiente para editar o servidor." };
         }
 
@@ -2610,6 +2672,49 @@ class DiscordBackendServer {
         return { ok: true };
       }
 
+      // Permissions every member has (the "@everyone" set)
+      case "updateEveryonePermissions": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId } = params;
+        const denied = this.guildPermissionError(actorId, guildId, "MANAGE_ROLES", "Você não tem permissão para gerenciar cargos.");
+        if (denied) return denied;
+        const flags = normalizeFlags(params.permissions).filter((f) => f !== "ADMINISTRATOR");
+        this.db.prepare(`UPDATE guilds SET everyone_permissions_json = ? WHERE id = ?`).run(JSON.stringify(flags), guildId);
+        const now = Date.now();
+        this.db
+          .prepare(`INSERT INTO audit_logs (id, guild_id, actor_id, action, time_label, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run("al_" + crypto.randomBytes(6).toString("hex"), guildId, actorId, "updated @everyone permissions", this.formatTimeLabel(now), now);
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
+        return { ok: true, permissions: flags };
+      }
+
+      // Removes a member; unlike a ban they can come back with an invite
+      case "kickMember": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId, targetUserId } = params;
+        const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
+        if (!guild) return { ok: false, status: 404, error: "Servidor não encontrado." };
+        const denied = this.guildPermissionError(actorId, guildId, "KICK_MEMBERS", "Você não tem permissão para expulsar membros.");
+        if (denied) return denied;
+        if (!targetUserId || targetUserId === actorId) return { ok: false, error: "Você não pode expulsar a si mesmo." };
+        if (targetUserId === guild.owner_id) return { ok: false, status: 403, error: "O dono do servidor não pode ser expulso." };
+        if (actorId !== guild.owner_id && this.getMemberHighestRolePosition(guildId, targetUserId) >= this.getMemberHighestRolePosition(guildId, actorId)) {
+          return { ok: false, status: 403, error: "Você só pode expulsar membros com cargo abaixo do seu." };
+        }
+        this.db.prepare(`DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?`).run(guildId, targetUserId);
+        for (const ch of this.db.prepare(`SELECT id FROM channels WHERE guild_id = ?`).all(guildId)) {
+          const room = this.voiceRooms.get(ch.id);
+          if (room?.delete(targetUserId)) this.broadcastEvent("RTC_ROOM_UPDATED", { channelId: ch.id, participants: Array.from(room.values()) });
+        }
+        const target = this.db.prepare(`SELECT username FROM users WHERE id = ?`).get(targetUserId);
+        const now = Date.now();
+        this.db
+          .prepare(`INSERT INTO audit_logs (id, guild_id, actor_id, action, time_label, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run("al_" + crypto.randomBytes(6).toString("hex"), guildId, actorId, `kicked @${target?.username || targetUserId}`, this.formatTimeLabel(now), now);
+        this.broadcastEvent("GUILD_MEMBER_REMOVED", { guildId, userId: targetUserId });
+        return { ok: true };
+      }
+
       case "banMember": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const { guildId, targetUserId } = params;
@@ -2617,7 +2722,7 @@ class DiscordBackendServer {
         const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
         if (!guild) return { ok: false, status: 404, error: "Servidor não encontrado." };
         const perms = this.getMemberPermissions(guildId, actorId);
-        if (!perms.has("BAN_MEMBERS") && !perms.has("ADMINISTRATOR")) {
+        if (!perms.has("BAN_MEMBERS")) {
           return { ok: false, status: 403, error: "Você não tem permissão para banir membros." };
         }
         if (!targetUserId || targetUserId === actorId) return { ok: false, error: "Você não pode banir a si mesmo." };
@@ -2699,12 +2804,10 @@ class DiscordBackendServer {
         const { guildId, name, type, topic, categoryId } = params;
         const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
         if (!guild) return { ok: false, error: "Servidor não encontrado." };
-        const member = this.db
-          .prepare(`SELECT * FROM guild_members WHERE guild_id = ? AND user_id = ?`)
-          .get(guildId, actorId);
-        if (!member) return { ok: false, error: "Permissão negada." };
+        const deniedCreate = this.guildPermissionError(actorId, guildId, "MANAGE_CHANNELS", "Você não tem permissão para criar canais.");
+        if (deniedCreate) return deniedCreate;
 
-        const rawName = String(name || "").trim();
+        const rawName = String(name || "").trim().slice(0, 100);
         if (!rawName) return { ok: false, error: "O nome do canal é obrigatório." };
         const cleanName = type === "voice" ? rawName : rawName.toLowerCase().replace(/\s+/g, "-");
         const chId = "c_" + crypto.randomBytes(6).toString("hex");
@@ -2744,18 +2847,94 @@ class DiscordBackendServer {
           mentions: 0,
           connectedUsers: []
         };
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
         return { ok: true, channelId: chId, channel: channelObj };
+      }
+
+      // Rename / change topic / move to another category
+      case "updateChannel": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId, channelId } = params;
+        const ch = this.db.prepare(`SELECT * FROM channels WHERE id = ? AND guild_id = ?`).get(channelId, guildId);
+        if (!ch) return { ok: false, status: 404, error: "Canal não encontrado." };
+        const denied = this.guildPermissionError(actorId, guildId, "MANAGE_CHANNELS", "Você não tem permissão para editar canais.");
+        if (denied) return denied;
+        let name = ch.name;
+        if (params.name !== undefined) {
+          const raw = String(params.name || "").trim().slice(0, 100);
+          if (!raw) return { ok: false, error: "O nome do canal não pode ficar vazio." };
+          name = ch.type === "voice" ? raw : raw.toLowerCase().replace(/\s+/g, "-");
+        }
+        const topic = params.topic !== undefined ? String(params.topic || "").slice(0, 300) : ch.topic;
+        let categoryId = ch.category_id;
+        if (params.categoryId !== undefined) {
+          const cat = this.db.prepare(`SELECT id FROM channel_categories WHERE id = ? AND guild_id = ?`).get(params.categoryId, guildId);
+          if (!cat) return { ok: false, error: "Categoria não encontrada." };
+          categoryId = cat.id;
+        }
+        this.db.prepare(`UPDATE channels SET name = ?, topic = ?, category_id = ? WHERE id = ?`).run(name, topic, categoryId, channelId);
+        if (name !== ch.name) {
+          const now = Date.now();
+          this.db
+            .prepare(`INSERT INTO audit_logs (id, guild_id, actor_id, action, time_label, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+            .run("al_" + crypto.randomBytes(6).toString("hex"), guildId, actorId, `Renamed channel #${ch.name} to #${name}`, this.formatTimeLabel(now), now);
+        }
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
+        return { ok: true };
+      }
+
+      // Categories group text and voice channels
+      case "createCategory": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId } = params;
+        const denied = this.guildPermissionError(actorId, guildId, "MANAGE_CHANNELS", "Você não tem permissão para criar categorias.");
+        if (denied) return denied;
+        const name = String(params.name || "").trim().slice(0, 100);
+        if (!name) return { ok: false, error: "Dê um nome para a categoria." };
+        const id = "cat_" + crypto.randomBytes(6).toString("hex");
+        const pos = (this.db.prepare(`SELECT MAX(position) AS p FROM channel_categories WHERE guild_id = ?`).get(guildId)?.p || 0) + 1;
+        this.db.prepare(`INSERT INTO channel_categories (id, guild_id, name, position) VALUES (?, ?, ?, ?)`).run(id, guildId, name, pos);
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
+        return { ok: true, categoryId: id };
+      }
+
+      case "updateCategory": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId, categoryId } = params;
+        const denied = this.guildPermissionError(actorId, guildId, "MANAGE_CHANNELS", "Você não tem permissão para editar categorias.");
+        if (denied) return denied;
+        const name = String(params.name || "").trim().slice(0, 100);
+        if (!name) return { ok: false, error: "O nome da categoria não pode ficar vazio." };
+        const res = this.db.prepare(`UPDATE channel_categories SET name = ? WHERE id = ? AND guild_id = ?`).run(name, categoryId, guildId);
+        if (!res.changes) return { ok: false, status: 404, error: "Categoria não encontrada." };
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
+        return { ok: true };
+      }
+
+      case "deleteCategory": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId, categoryId } = params;
+        const denied = this.guildPermissionError(actorId, guildId, "MANAGE_CHANNELS", "Você não tem permissão para excluir categorias.");
+        if (denied) return denied;
+        const inside = this.db.prepare(`SELECT COUNT(*) AS n FROM channels WHERE category_id = ?`).get(categoryId).n;
+        if (inside) return { ok: false, error: "Mova ou exclua os canais desta categoria antes de apagá-la." };
+        this.db.prepare(`DELETE FROM channel_categories WHERE id = ? AND guild_id = ?`).run(categoryId, guildId);
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
+        return { ok: true };
       }
 
       case "DELETE_CHANNEL":
       case "deleteChannel": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const { guildId, channelId } = params;
+        const deniedDelete = this.guildPermissionError(actorId, guildId, "MANAGE_CHANNELS", "Você não tem permissão para excluir canais.");
+        if (deniedDelete) return deniedDelete;
         const count = this.db.prepare(`SELECT COUNT(*) AS cnt FROM channels WHERE guild_id = ?`).get(guildId).cnt;
         if (count <= 1) return { ok: false, error: "Não é possível excluir o último canal do servidor." };
         const ch = this.db.prepare(`SELECT * FROM channels WHERE id = ? AND guild_id = ?`).get(channelId, guildId);
         if (!ch) return { ok: false, error: "Canal não encontrado." };
         this.db.prepare(`DELETE FROM channels WHERE id = ?`).run(channelId);
+        this.db.prepare(`DELETE FROM messages WHERE channel_id = ?`).run(channelId);
         this.db
           .prepare(`INSERT INTO audit_logs (id, guild_id, actor_id, action, time_label, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
           .run(
@@ -2766,6 +2945,7 @@ class DiscordBackendServer {
             this.formatTimeLabel(),
             Date.now()
           );
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
         return { ok: true };
       }
 
@@ -2782,8 +2962,8 @@ class DiscordBackendServer {
         const member = this.db
           .prepare(`SELECT * FROM guild_members WHERE guild_id = ? AND user_id = ?`)
           .get(guildId, actorId);
-        if (!member) {
-          return { ok: false, status: 403, error: "Apenas membros autorizados do servidor podem gerar convites." };
+        if (!member || !this.getMemberPermissions(guildId, actorId).has("CREATE_INSTANT_INVITE")) {
+          return { ok: false, status: 403, error: "Você não tem permissão para criar convites neste servidor." };
         }
 
         const now = Date.now();
@@ -3134,6 +3314,8 @@ class DiscordBackendServer {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const { guildId, channelId } = params;
         if (!actorId || !channelId) return { ok: false, error: "Parâmetros de canal de voz inválidos." };
+        const deniedVoice = this.channelPermissionError(actorId, channelId, "CONNECT_VOICE", "Você não tem permissão para entrar neste canal de voz.");
+        if (deniedVoice) return deniedVoice;
 
         for (const [chId, room] of this.voiceRooms.entries()) {
           if (room.has(actorId)) {
@@ -3203,7 +3385,13 @@ class DiscordBackendServer {
         for (const [channelId, room] of this.voiceRooms.entries()) {
           if (room.has(actorId)) {
             const p = room.get(actorId);
-            p.muted = Boolean(params.muted);
+            const guildOfRoom = this.guildIdOfChannel(channelId);
+            const roomPerms = guildOfRoom ? this.getMemberPermissions(guildOfRoom, actorId) : null;
+            if (params.videoEnabled && roomPerms && !roomPerms.has("STREAM_VIDEO")) {
+              return { ok: false, status: 403, error: "Você não tem permissão para ligar a câmera neste canal." };
+            }
+            // Without "Falar" the others keep this person silenced
+            p.muted = Boolean(params.muted) || Boolean(roomPerms && !roomPerms.has("SPEAK_VOICE"));
             p.deafened = Boolean(params.deafened);
             if (params.videoEnabled !== undefined) p.videoEnabled = Boolean(params.videoEnabled);
             // Everyone sees the new mic/camera state on the call tiles
@@ -3218,6 +3406,8 @@ class DiscordBackendServer {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const { guildId, channelId, sourceId, sourceName, resolution, fps, hasSystemAudio, initialFrameDataUrl } = params;
         if (!actorId || !channelId) return { ok: false, error: "Não conectado a um canal de voz." };
+        const deniedStream = this.channelPermissionError(actorId, channelId, "STREAM_VIDEO", "Você não tem permissão para transmitir neste canal.");
+        if (deniedStream) return deniedStream;
         const room = this.voiceRooms.get(channelId);
         if (room && room.has(actorId)) {
           room.get(actorId).screenShareEnabled = true;
@@ -3346,7 +3536,11 @@ class DiscordBackendServer {
           return { ok: false, status: 403, error: "Permissão insuficiente para criar cargos." };
         }
         const actorPos = this.getMemberHighestRolePosition(guildId, actorId);
+        // New roles start at the bottom (just above Members), like Discord
         const desiredPos = position !== undefined ? Number(position) : 1;
+        if (position === undefined) {
+          this.db.prepare(`UPDATE guild_roles SET position = position + 1 WHERE guild_id = ? AND position >= 1`).run(guildId);
+        }
         const isOwner = this.db.prepare(`SELECT owner_id FROM guilds WHERE id = ?`).get(guildId)?.owner_id === actorId;
         if (!isOwner && desiredPos >= actorPos) {
           return { ok: false, status: 403, error: "Você não pode criar um cargo com posição igual ou superior à sua." };
@@ -3356,7 +3550,7 @@ class DiscordBackendServer {
         const cleanName = String(name || "Novo Cargo").trim();
         const roleColor = color || "#99aab5";
         const roleHoist = hoist ? 1 : 0;
-        const permsJson = JSON.stringify(Array.isArray(permissions) ? permissions : ["SEND_MESSAGES", "CONNECT_VOICE"]);
+        const permsJson = JSON.stringify(normalizeFlags(Array.isArray(permissions) ? permissions : []).filter((f) => f !== "ADMINISTRATOR" || perms.has("ADMINISTRATOR")));
 
         this.db
           .prepare(
@@ -3417,7 +3611,11 @@ class DiscordBackendServer {
           return { ok: false, status: 403, error: "Você não pode posicionar um cargo acima da sua própria hierarquia." };
         }
 
-        const nextPermsJson = permissions !== undefined ? JSON.stringify(Array.isArray(permissions) ? permissions : []) : existing.permissions_json;
+        // Only administrators can hand out "Administrador"
+        const nextPermsJson =
+          permissions !== undefined
+            ? JSON.stringify(normalizeFlags(Array.isArray(permissions) ? permissions : []).filter((f) => f !== "ADMINISTRATOR" || perms.has("ADMINISTRATOR")))
+            : existing.permissions_json;
 
         this.db
           .prepare(

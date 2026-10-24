@@ -2052,6 +2052,12 @@ async function runVerification() {
         screen,
         camera,
         screenInUi: Boolean(document.querySelector('[data-remote-video="u_davis:screen"] video')),
+        // The enlarged stream fills its tile (width or height, keeping 16:9)
+        focusFill: (() => {
+          const v = document.querySelector(".call-focus video")?.getBoundingClientRect();
+          const t = document.querySelector(".call-focus .call-tile")?.getBoundingClientRect();
+          return v && t ? Math.round(Math.max(v.width / t.width, v.height / t.height) * 100) : 0;
+        })(),
         cameraFlag: Boolean(store.getActiveChannel?.() && true) && (store.getState().guilds.find((g) => g.id === "g_rea")?.channels.find((c) => c.id === "c_voice_lounge")?.voiceParticipants || []).some((p) => p.userId === "u_davis" && p.videoEnabled),
         strip
       };
@@ -2110,7 +2116,8 @@ async function runVerification() {
       videoCheck?.screen?.width >= 1280 &&
       videoCheck?.screen?.fps > 0 &&
       videoCheck?.camera?.fps > 0 &&
-      videoCheck?.cameraFlag,
+      videoCheck?.cameraFlag &&
+      videoCheck?.focusFill >= 95,
     JSON.stringify(voiceCheck)
   );
 
@@ -2246,6 +2253,116 @@ async function runVerification() {
       batchCheck.firstFrequent === "👍" &&
       batchCheck.firstResult === "🔥",
     JSON.stringify(batchCheck)
+  );
+
+  // =========================================================================
+  // SUITE 32: Permissions enforced by the server, channels/categories, DMs,
+  // per-person reactions and unread badges
+  // =========================================================================
+  const permsCheck = await mainWin.webContents.executeJavaScript(`(async () => {
+    const store = window.__DISCORD_STORE__;
+    const backend = window.DiscordNative.backend;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (fn, ms = 4000) => {
+      const t0 = Date.now();
+      while (!fn() && Date.now() - t0 < ms) await wait(50);
+      return fn();
+    };
+    store.selectGuild("g_rea", "c_general");
+    const guild = () => store.getState().guilds.find((g) => g.id === "g_rea");
+    const maria = await backend.rpc("login", { emailOrUsername: "maria_real", password: "password123" });
+    const mariaId = maria.user.id;
+    const as = (action, params) => backend.rpc(action, params, maria.sessionToken);
+
+    // @everyone without "Enviar mensagens": Maria cannot post; restored, she can
+    const original = guild().everyonePermissions;
+    await store.updateEveryonePermissions("g_rea", original.filter((f) => f !== "SEND_MESSAGES"));
+    const mariaRoles = (guild().members.find((m) => m.userId === mariaId)?.roles || []).slice();
+    for (const r of mariaRoles) await store.removeMemberRole("g_rea", mariaId, r);
+    const blockedSend = await as("sendMessage", { channelId: "c_general", content: "não devia passar" });
+    await store.updateEveryonePermissions("g_rea", original);
+    const allowedSend = await as("sendMessage", { channelId: "c_general", content: "agora pode" });
+
+    // Deleting someone else's message needs "Gerenciar mensagens"
+    const davisMsg = await store.sendMessage("c_general", "mensagem do Davis");
+    const deleteDenied = await as("deleteMessage", { messageId: davisMsg.id });
+    const modRole = await store.createRole("g_rea", { name: "Moderação", color: "#e91e63", permissions: ["MANAGE_MESSAGES"] });
+    await store.assignMemberRole("g_rea", mariaId, modRole.role.id);
+    const deleteAllowed = await as("deleteMessage", { messageId: davisMsg.id });
+    await store.deleteRole("g_rea", modRole.role.id);
+
+    // Without "Gerenciar canais" no channel changes
+    const channelDenied = await as("createChannel", { guildId: "g_rea", name: "hack", type: "text" });
+
+    // Per-person reactions
+    const msg = await store.sendMessage("c_general", "reaja aqui");
+    await store.toggleReaction("c_general", msg.id, "👍");
+    await as("toggleReaction", { messageId: msg.id, emoji: "👍" });
+    await store.syncFromBackend({ silent: true });
+    const both = store.getState().messages.c_general.find((m) => m.id === msg.id).reactions.find((r) => r.emoji === "👍");
+    await store.toggleReaction("c_general", msg.id, "👍");
+    await store.syncFromBackend({ silent: true });
+    const afterMine = store.getState().messages.c_general.find((m) => m.id === msg.id).reactions.find((r) => r.emoji === "👍");
+
+    // Channels: rename, categories, move
+    const renamed = await store.updateChannel("g_rea", "c_general", { name: "Geral Principal" });
+    const newName = guild().channels.find((c) => c.id === "c_general").name;
+    const cat = await store.createCategory("g_rea", "Jogos");
+    const moved = await store.updateChannel("g_rea", "c_general", { categoryId: cat.categoryId });
+    const inCat = guild().channels.find((c) => c.id === "c_general").categoryId === cat.categoryId;
+    const deleteFull = await store.deleteCategory("g_rea", cat.categoryId);
+    const firstCat = guild().categories[0].id;
+    await store.updateChannel("g_rea", "c_general", { categoryId: firstCat, name: "general" });
+    const catRenamed = await store.updateCategory("g_rea", cat.categoryId, "Jogos 2");
+    const deleteEmpty = await store.deleteCategory("g_rea", cat.categoryId);
+
+    // Unread: a message in a channel I am not viewing shows a red badge
+    store.selectHome("friends");
+    await as("sendMessage", { channelId: "c_general", content: "você não está vendo isso" });
+    const badgeShown = await waitFor(() => guild().unreadCount > 0 && document.querySelector('[data-testid="guild-unread-badge"]'));
+    store.selectGuild("g_rea", "c_general");
+    const badgeCleared = guild().unreadCount === 0;
+
+    // Kick: gone from the server, but an invite brings her back (not a ban)
+    const kicked = await store.kickMember("g_rea", mariaId);
+    const goneAfterKick = !guild().memberIds.includes(mariaId);
+    const invite = await store.createServerInvite("g_rea", {});
+    const rejoin = await as("acceptInvite", { tokenOrUrl: invite.invite.url });
+
+    // Close a DM: it leaves my list and comes back with a new message
+    const dm = await store.openOrCreateDm(mariaId);
+    await store.closeDm(dm.id);
+    await store.syncFromBackend({ silent: true });
+    const dmHidden = !store.getState().dms.some((d) => d.id === dm.id);
+    await as("sendMessage", { channelId: dm.id, content: "oi de novo" });
+    const dmBack = await waitFor(() => store.getState().dms.some((d) => d.id === dm.id));
+
+    return {
+      blockedSend: !blockedSend.ok,
+      allowedSend: allowedSend.ok,
+      deleteDenied: !deleteDenied.ok,
+      deleteAllowed: deleteAllowed.ok,
+      channelDenied: !channelDenied.ok,
+      reactionsBoth: both?.count === 2 && both?.me === true,
+      reactionsAfterMine: afterMine?.count === 1 && afterMine?.me === false,
+      renamed: renamed.ok && newName === "geral-principal",
+      moved: moved.ok && inCat,
+      categoryNotEmptyRefused: !deleteFull.ok,
+      categoryRenamed: catRenamed.ok,
+      categoryDeleted: deleteEmpty.ok,
+      badgeShown: Boolean(badgeShown),
+      badgeCleared,
+      kicked: kicked.ok && goneAfterKick,
+      rejoinAfterKick: rejoin.ok,
+      dmHidden,
+      dmBack: Boolean(dmBack)
+    };
+  })()`);
+  recordTest(
+    "Domain 20: Permissions, Channels, DMs, Reactions & Unread",
+    "Server-side permissions (@everyone, roles), kick, channel/category management, closing DMs, per-person reactions and unread badges",
+    Object.values(permsCheck).every(Boolean),
+    JSON.stringify(permsCheck)
   );
 
   // =========================================================================

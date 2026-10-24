@@ -15,7 +15,10 @@ function keyOf(node) {
 }
 
 function syncAttributes(from, to) {
+  // Hover-animated videos get their src set on hover: leave it alone
+  const keepSrc = from.hasAttribute("data-morph-keep-src");
   for (const { name } of [...from.attributes]) {
+    if (keepSrc && name === "src") continue;
     if (!to.hasAttribute(name)) from.removeAttribute(name);
   }
   for (const { name, value } of [...to.attributes]) {

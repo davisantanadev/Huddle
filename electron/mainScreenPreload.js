@@ -55,6 +55,7 @@ const DiscordNative = {
     get: (key, defaultValue) => ipcRenderer.invoke("DISCORD_SETTINGS_GET", key, defaultValue),
     set: (key, value) => ipcRenderer.invoke("DISCORD_SETTINGS_SET", key, value),
     getSync: (key, defaultValue) => ipcRenderer.sendSync("DISCORD_SETTINGS_GET_SYNC", key, defaultValue),
+    downloadUrl: (url) => ipcRenderer.send("DISCORD_DOWNLOAD_URL", url),
     updateBackgroundColor: (color) => ipcRenderer.send("DISCORD_SETTINGS_UPDATE_BACKGROUND_COLOR", color)
   },
   userDataCache: {
@@ -128,8 +129,6 @@ const DiscordNative = {
 
 contextBridge.exposeInMainWorld("DiscordNative", DiscordNative);
 
-// Interface size chosen in Configurações > Aparência, applied before the first paint
-try {
-  const zoom = Number(ipcRenderer.sendSync("DISCORD_SETTINGS_GET_SYNC", "UI_ZOOM", 1)) || 1;
-  if (zoom !== 1) webFrame.setZoomFactor(Math.min(1.75, Math.max(0.7, zoom)));
-} catch (_) {}
+// The interface size (UI_ZOOM) is applied by the main process once the window
+// is up: setting it here, before the first paint, kept the window from ever
+// being shown (stuck on the splash screen)

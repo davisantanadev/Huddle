@@ -371,8 +371,11 @@ class Store {
     this.state.userNotes = snap.userNotes || {};
     this.state.friends = snap.friends || [];
     this.state.liveActivities = snap.liveActivities || {};
+    this.state.permissionCatalog = snap.permissionCatalog || [];
+    queueMicrotask(() => this.applyCallPermissions());
     this.state.dms = snap.dms || [];
     this.state.guilds = snap.guilds || [];
+    this.applyUnread();
     this.state.discoverableGuilds = snap.discoverableGuilds || [];
     if (snap.appConfig) this.state.appConfig = snap.appConfig;
     this.state.messages = snap.messages || {};
@@ -958,8 +961,7 @@ class Store {
     this.state.navigation.activeThreadMessageId = null;
     if (dmId) {
       this.state.navigation.activeDmId = dmId;
-      const dm = this.state.dms.find((d) => d.id === dmId);
-      if (dm) dm.unreadCount = 0;
+      this.clearUnread(dmId);
     }
     this.notify();
   }
@@ -982,8 +984,7 @@ class Store {
 
     if (targetChannel) {
       this.state.navigation.activeChannelId = targetChannel.id;
-      targetChannel.unread = false;
-      targetChannel.mentions = 0;
+      this.clearUnread(targetChannel.id);
     }
     this.notify();
   }
@@ -1005,14 +1006,14 @@ class Store {
     this.state.navigation.callViewChannelId = null;
     this.state.navigation.activeChannelId = ch.id;
     this.state.navigation.activeThreadMessageId = null;
-    ch.unread = false;
-    ch.mentions = 0;
+    this.clearUnread(ch.id);
     this.notify();
   }
 
   openCallView(channelId) {
     this.state.navigation.view = "guild";
     this.state.navigation.callViewChannelId = channelId;
+    this.clearUnread(channelId);
     this.state.navigation.activeThreadMessageId = null;
     this.notify();
   }
@@ -1032,6 +1033,11 @@ class Store {
   // Phase 6 & 9: Voice RTC & Real Screen Sharing Actions
   // ==========================================================================
   async joinVoiceChannel(guildId, channelId) {
+    const targetGuild = this.state.guilds.find((g) => g.id === guildId);
+    if (targetGuild && !this.can("CONNECT_VOICE", targetGuild)) {
+      this.onPermissionNotice?.("Você não tem permissão para entrar neste canal de voz.");
+      return { ok: false, error: "Sem permissão para conectar." };
+    }
     if (this.state.voice.dmCall) {
       await this.leaveVoiceChannel();
     }
@@ -1293,9 +1299,74 @@ class Store {
   notifyIncomingMessage(channelId, messageId) {
     const msg = (this.state.messages[channelId] || []).find((m) => m.id === messageId);
     if (!msg || msg.authorId === this.state.auth.currentUserId) return;
-    const viewing = this.getActiveChannel()?.id === channelId && typeof document !== "undefined" && document.hasFocus();
+    const viewing = this.isViewingChannel(channelId) && typeof document !== "undefined" && document.hasFocus();
     if (viewing) return;
+    this.markUnread(channelId);
     CallSounds.playNotification(this.state.settings);
+  }
+
+  // ==========================================================================
+  // Unread messages (red badges on servers, channels and DMs)
+  // ==========================================================================
+  // Kept on this PC per account, so they survive syncs and restarts.
+  unreadKey() {
+    return `eco_unread_${this.state.auth.currentUserId || ""}`;
+  }
+
+  loadUnread() {
+    if (this.unreadFor === this.state.auth.currentUserId) return;
+    this.unreadFor = this.state.auth.currentUserId;
+    try {
+      this.unreadCounts = JSON.parse(localStorage.getItem(this.unreadKey()) || "{}") || {};
+    } catch (_) {
+      this.unreadCounts = {};
+    }
+  }
+
+  saveUnread() {
+    try {
+      localStorage.setItem(this.unreadKey(), JSON.stringify(this.unreadCounts));
+    } catch (_) {}
+  }
+
+  isViewingChannel(channelId) {
+    const nav = this.state.navigation;
+    if (nav.view === "home") return nav.homeSection === "dm" && nav.activeDmId === channelId;
+    if (nav.view === "guild") return nav.callViewChannelId ? nav.callViewChannelId === channelId : nav.activeChannelId === channelId;
+    return false;
+  }
+
+  markUnread(channelId) {
+    this.loadUnread();
+    this.unreadCounts[channelId] = (this.unreadCounts[channelId] || 0) + 1;
+    this.saveUnread();
+    this.applyUnread();
+    this.notify({ skipPersist: true });
+  }
+
+  clearUnread(channelId) {
+    this.loadUnread();
+    if (!channelId || !this.unreadCounts[channelId]) return;
+    delete this.unreadCounts[channelId];
+    this.saveUnread();
+    this.applyUnread();
+  }
+
+  // Copies the counts onto the state the UI reads
+  applyUnread() {
+    this.loadUnread();
+    const counts = this.unreadCounts;
+    for (const g of this.state.guilds) {
+      let total = 0;
+      for (const c of g.channels || []) {
+        c.unreadCount = counts[c.id] || 0;
+        c.unread = c.unreadCount > 0;
+        total += c.unreadCount;
+      }
+      g.unreadCount = total;
+      g.unread = total > 0;
+    }
+    for (const dm of this.state.dms) dm.unreadCount = counts[dm.id] || 0;
   }
 
   async leaveVoiceChannel() {
@@ -1366,6 +1437,11 @@ class Store {
   }
 
   toggleMute() {
+    // Without "Falar" in this server the microphone stays off
+    if (this.state.voice.muted && !this.canSpeakInCall()) {
+      this.onPermissionNotice?.("Você não tem permissão para falar neste canal.");
+      return { ok: false };
+    }
     this.state.voice.muted = !this.state.voice.muted;
     if (!this.state.voice.muted && this.state.voice.deafened) {
       this.state.voice.deafened = false;
@@ -1657,6 +1733,16 @@ class Store {
     return res;
   }
 
+  async closeDm(dmId) {
+    const res = await NativeBridge.rpc("closeDm", { dmId });
+    if (res.ok) {
+      this.state.dms = this.state.dms.filter((d) => d.id !== dmId);
+      if (this.state.navigation.activeDmId === dmId) this.selectHome("friends");
+      this.notify();
+    }
+    return res;
+  }
+
   async openOrCreateDm(targetUserId) {
     const res = await NativeBridge.rpc("openOrCreateDm", {
       userId: this.state.auth.currentUserId,
@@ -1808,6 +1894,78 @@ class Store {
       await this.syncFromBackend({ silent: true });
     }
     return res;
+  }
+
+  // Server management that only needs a refresh afterwards
+  async guildAction(action, params) {
+    const res = await NativeBridge.rpc(action, params);
+    if (res.ok) await this.syncFromBackend({ silent: true });
+    return res;
+  }
+
+  kickMember(guildId, targetUserId) {
+    return this.guildAction("kickMember", { guildId, targetUserId });
+  }
+
+  updateEveryonePermissions(guildId, permissions) {
+    return this.guildAction("updateEveryonePermissions", { guildId, permissions });
+  }
+
+  updateChannel(guildId, channelId, changes) {
+    return this.guildAction("updateChannel", { guildId, channelId, ...changes });
+  }
+
+  createCategory(guildId, name) {
+    return this.guildAction("createCategory", { guildId, name });
+  }
+
+  updateCategory(guildId, categoryId, name) {
+    return this.guildAction("updateCategory", { guildId, categoryId, name });
+  }
+
+  deleteCategory(guildId, categoryId) {
+    return this.guildAction("deleteCategory", { guildId, categoryId });
+  }
+
+  // Permissions of anyone in a server, from its roles (owner = everything)
+  memberPermissions(guild, userId) {
+    if (!guild) return new Set();
+    if (guild.ownerId === userId) return new Set(["ADMINISTRATOR"]);
+    const roleIds = (guild.members || []).find((m) => m.userId === userId)?.roles || [];
+    const perms = new Set(guild.everyonePermissions || []);
+    for (const role of guild.roles || []) {
+      if (roleIds.includes(role.id)) for (const flag of role.permissions || []) perms.add(flag);
+    }
+    return perms;
+  }
+
+  memberCan(guild, userId, flag) {
+    const perms = this.memberPermissions(guild, userId);
+    return perms.has("ADMINISTRATOR") || perms.has(flag);
+  }
+
+  canSpeakInCall() {
+    const guild = this.state.guilds.find((g) => g.id === this.state.voice.connectedGuildId);
+    return !guild || this.can("SPEAK_VOICE", guild);
+  }
+
+  // Everyone in my call without "Falar" is never played on this PC
+  applyCallPermissions() {
+    const guild = this.state.guilds.find((g) => g.id === this.state.voice.connectedGuildId);
+    if (!guild || !this.state.voice.connectedChannelId) return Voice.setSilencedUsers([]);
+    const channel = guild.channels.find((c) => c.id === this.state.voice.connectedChannelId);
+    Voice.setSilencedUsers((channel?.connectedUsers || []).filter((id) => !this.memberCan(guild, id, "SPEAK_VOICE")));
+    if (!this.canSpeakInCall() && !this.state.voice.muted) {
+      this.state.voice.muted = true;
+      Voice.setMuted(true);
+      this.publishVoiceState();
+    }
+  }
+
+  // My permissions in a server (computed by the backend), owner = everything
+  can(flag, guild = this.getActiveGuild()) {
+    if (!guild) return true; // DMs
+    return (guild.myPermissions || []).includes(flag);
   }
 
   async banMember(guildId, targetUserId, reason = "") {

@@ -1,7 +1,7 @@
 {
   "name": "discord-desktop-replica",
   "productName": "Discord",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Discord Client for Desktop - Functional Reconstruction (REA Verified)",
   "main": "electron/main.js",
   "private": true,
