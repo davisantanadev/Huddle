@@ -6,6 +6,7 @@
 import { store, AVAILABLE_THEMES } from "./state/store.js";
 import { morphInnerHTML, bindReplacingDuplicates } from "./ui/morph.js";
 import { syncEmojiPicker, recordEmojiUse } from "./ui/emojiPicker.js";
+import { attachMentionAutocomplete } from "./ui/mentions.js";
 import { Icons } from "./components/icons.js";
 import {
   NativeBridge,
@@ -477,7 +478,13 @@ function formatMessageMarkdown(rawText) {
   html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
   html = html.replace(/~~([^~]+)~~/g, "<del>$1</del>");
   html = html.replace(/(^|\n)&gt;\s*(.+)/g, "$1<blockquote>$2</blockquote>");
-  html = html.replace(/@([a-zA-Z0-9_.]+)/g, '<span class="mention-pill" data-mention="$1">@$1</span>');
+  const users = Object.values(store.getState().users || {});
+  html = html.replace(/(^|[^\w.])@([a-zA-Z0-9_.]+)/g, (whole, lead, name) => {
+    const clean = name.replace(/\.+$/, "");
+    const u = users.find((x) => x.username?.toLowerCase() === clean.toLowerCase());
+    if (!u) return whole;
+    return `${lead}<span class="mention-pill" data-mention="${clean}" data-action="open-user-popout" data-user-id="${u.id}">@${clean}</span>${name.slice(clean.length)}`;
+  });
   html = html.replace(/\n/g, "<br/>");
   html = html.replace(/\u0000(\d+)\u0000/g, (_m, i) => {
     const url = links[Number(i)];
@@ -1705,6 +1712,14 @@ function renderTypingIndicator(channelId) {
   return `<div class="typing-indicator active" data-testid="typing-indicator"><span class="typing-dots"><i></i><i></i><i></i></span><span>${text}</span></div>`;
 }
 
+// Does this message mention me (@my_username as a whole word)?
+function mentionsMe(content) {
+  const me = store.getCurrentUser()?.username;
+  if (!me || !content) return false;
+  const name = me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\w.])@${name}(?![\\w.])`, "i").test(content);
+}
+
 function renderCallChatPanel(state, ch) {
   const messages = state.messages[ch.id] || [];
   const listHtml =
@@ -1716,7 +1731,7 @@ function renderCallChatPanel(state, ch) {
             const grouped = idx > 0 && messages[idx - 1].authorId === m.authorId;
             const attachment = renderAttachment(m.attachment) + renderPollCard(m, ch.id);
             return `
-              <div class="call-chat-msg ${grouped ? "grouped" : ""}" data-message-id="${m.id}">
+              <div class="call-chat-msg ${grouped ? "grouped" : ""} ${mentionsMe(m.content) ? "mentioned" : ""}" data-message-id="${m.id}">
                 ${grouped ? "" : `<div data-action="open-user-popout" data-user-id="${author.id}" style="cursor:pointer;">${renderAvatar(author)}</div>`}
                 <div class="call-chat-msg-body">
                   ${
@@ -1880,9 +1895,7 @@ function renderChatStage(state) {
             };
             const prev = idx > 0 ? visibleMessages[idx - 1] : null;
             const isGrouped = !isCompact && prev && prev.authorId === m.authorId && !m.replyToId;
-            const isMentioned =
-              m.content.toLowerCase().includes(`@${me.username.toLowerCase()}`) ||
-              m.content.toLowerCase().includes("@everyone");
+            const isMentioned = mentionsMe(m.content) || /(^|\s)@everyone\b/i.test(m.content || "");
 
             const replyTarget = m.replyToId ? allMessages.find((item) => item.id === m.replyToId) : null;
             const replyAuthor = replyTarget ? state.users[replyTarget.authorId] : null;
@@ -5318,6 +5331,23 @@ function bindFormEvents() {
   };
   bindPasteAttach(document.getElementById("composer-text-input"), "stagedAttachment");
   bindPasteAttach(document.querySelector("#call-chat-form input[name=message]"), "callStagedAttachment");
+
+  // "@" mentions: the people who can see the channel of each box
+  const peopleOfChannel = (channelId) => {
+    const st = store.getState();
+    const dm = st.dms.find((d) => d.id === channelId);
+    const ids = dm
+      ? [dm.userId, st.auth.currentUserId]
+      : st.guilds.find((g) => g.channels.some((c) => c.id === channelId))?.memberIds || [];
+    return ids.map((id) => st.users[id]).filter(Boolean);
+  };
+  const mentionAvatar = (u) => renderAvatar(u, "", false, "width:24px;height:24px;min-width:24px;font-size:10px;");
+  attachMentionAutocomplete(document.getElementById("composer-text-input"), () => peopleOfChannel(store.getActiveChannel()?.id), mentionAvatar);
+  attachMentionAutocomplete(
+    document.querySelector("#call-chat-form input[name=message]"),
+    () => peopleOfChannel(document.getElementById("call-chat-form")?.getAttribute("data-channel-id")),
+    mentionAvatar
+  );
 
   // Typing pings (throttled in the store)
   const composerInput = document.getElementById("composer-text-input");

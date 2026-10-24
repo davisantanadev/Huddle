@@ -9,7 +9,7 @@ Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord,
 - Servidores com categorias e canais de texto e voz editáveis, convites com link próprio (com botão que abre o app), expulsar e banir membros, apagar servidor
 - Cargos de verdade: permissões aplicadas pelo servidor (enviar mensagens, arquivos, links, reações, gerenciar mensagens/canais/cargos, falar, transmitir...), permissões de @everyone, cor do cargo no nome e pesquisa de cargos
 - Mensagens diretas, pedidos de amizade por `@username`, chamadas de voz na DM (toca, atende, recusa)
-- Chat com links clicáveis, reações com todos os emojis (os mais usados primeiro), "fulano está digitando...", menu de botão direito na mensagem (responder, editar, excluir)
+- Chat com menções por `@` (lista de sugestões no chat e no chat da call; a menção abre o card da pessoa), links clicáveis, reações com todos os emojis (os mais usados primeiro), "fulano está digitando...", menu de botão direito na mensagem (responder, editar, excluir)
 - Compartilhamento de tela em vídeo de verdade (WebRTC, até 1440p/120 FPS, com som do PC), câmera, indicador de quem está falando
 - Atividade no perfil: o jogo que você está jogando (com o ícone do app e o tempo) e a música do Spotify, com capa e barra de progresso
 - Sons de entrar, sair, chamando e notificação
