@@ -1,7 +1,7 @@
 {
   "name": "discord-desktop-replica",
   "productName": "Invadominio zak' zak",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Discord Client for Desktop - Functional Reconstruction (REA Verified)",
   "main": "electron/main.js",
   "private": true,
@@ -16,5 +16,8 @@
   "devDependencies": {
     "@electron/packager": "^18.3.6",
     "electron": "^35.0.0"
+  },
+  "dependencies": {
+    "@sapphi-red/web-noise-suppressor": "^0.4.1"
   }
 }

@@ -3875,6 +3875,9 @@ function acceleratorFromEvent(e) {
       ArrowLeft: "Left",
       ArrowRight: "Right",
       Pause: "Pause",
+      CapsLock: "Capslock",
+      PrintScreen: "PrintScreen",
+      NumpadDecimal: "numdec",
       ScrollLock: "Scrolllock",
       NumpadAdd: "numadd",
       NumpadSubtract: "numsub",
@@ -3888,9 +3891,15 @@ function acceleratorFromEvent(e) {
   if (e.altKey) mods.push("Alt");
   if (e.shiftKey) mods.push("Shift");
   if (e.metaKey) mods.push("Super");
-  // A plain letter/number alone would fire while typing anywhere: needs a modifier (F-keys are fine)
-  if (!mods.length && !/^F\d+$/.test(key) && !["Pause", "Scrolllock", "Insert"].includes(key)) return null;
+  // A single key alone is fine too (e.g. F8, Insert, or even a letter)
   return [...mods, key].join("+");
+}
+
+// A single key that is used for typing (letter, number, space...) stops
+// typing in other programs while the app is open: worth a warning
+function hotkeyTakesTypingKey(accelerator) {
+  const parts = String(accelerator || "").split("+").filter(Boolean);
+  return parts.length === 1 && !/^(F\d+|Pause|Scrolllock|Insert|Capslock|PrintScreen|Home|End|PageUp|PageDown|Delete)$/.test(parts[0]);
 }
 
 function renderMuteHotkeyCard() {
@@ -3902,14 +3911,14 @@ function renderMuteHotkeyCard() {
       <div class="settings-card-head">
         <div>
           <h3>Atalho para mutar o microfone</h3>
-          <p>Liga e desliga o microfone de qualquer lugar, mesmo com o app em segundo plano (por exemplo, num jogo).</p>
+          <p>Liga e desliga o microfone de qualquer lugar, mesmo com o app em segundo plano (por exemplo, num jogo). Pode ser uma tecla só (como F8 ou Insert) ou uma combinação (como Ctrl + Shift + M).</p>
         </div>
       </div>
       <div class="hotkey-row">
         <div class="hotkey-display ${recording ? "recording" : ""}" data-testid="mute-hotkey-display">
           ${
             recording
-              ? `<span class="hotkey-hint">Pressione a nova combinação... (Esc cancela)</span>`
+              ? `<span class="hotkey-hint">Pressione uma tecla ou uma combinação... (Esc cancela)</span>`
               : keys.length
                 ? keys.map((k) => `<kbd>${escapeHtml(k)}</kbd>`).join('<span class="hotkey-plus">+</span>')
                 : `<span class="hotkey-hint">Sem atalho</span>`
@@ -3922,6 +3931,11 @@ function renderMuteHotkeyCard() {
                ${accelerator ? `<button type="button" class="btn btn-secondary btn-sm" data-action="clear-mute-hotkey">Remover</button>` : ""}`
         }
       </div>
+      ${
+        !recording && hotkeyTakesTypingKey(accelerator)
+          ? `<div class="inline-feedback warn" data-testid="mute-hotkey-warning">Uma tecla de digitação sozinha para de escrever em outros programas enquanto o app estiver aberto. Prefira F1–F12, Insert ou Pause.</div>`
+          : ""
+      }
       ${uiState.muteHotkeyError ? `<div class="inline-feedback err">${escapeHtml(uiState.muteHotkeyError)}</div>` : ""}
     </section>
   `;
@@ -3950,11 +3964,6 @@ document.addEventListener(
     }
     const accelerator = acceleratorFromEvent(e);
     if (accelerator === "") return; // only modifiers so far
-    if (accelerator === null) {
-      uiState.muteHotkeyError = "Use pelo menos uma tecla como Ctrl, Alt ou Shift junto (ou uma tecla F1-F24).";
-      renderApp();
-      return;
-    }
     saveMuteHotkey(accelerator);
   },
   true
@@ -4022,7 +4031,7 @@ function renderVoiceSettingsPanel(state) {
       <div class="setting-row">
         <div>
           <div class="setting-title">Supressão de ruído</div>
-          <div class="setting-desc">Filtra ruídos de fundo do microfone durante as chamadas.</div>
+          <div class="setting-desc">Filtro inteligente (RNNoise) que tira teclado, ventilador, barulho de rua e outros sons de fundo, deixando só a voz. Vale para o seu microfone e para o que você ouve dos outros.</div>
         </div>
         ${renderToggle({ on: state.voice.noiseSuppression, action: "toggle-krisp", label: "Supressão de ruído" })}
       </div>
@@ -7871,8 +7880,7 @@ async function handleGlobalClick(e) {
       await store.updateSetting("messageDisplay", btn.getAttribute("data-density"));
       break;
     case "toggle-krisp":
-      state.voice.noiseSuppression = !state.voice.noiseSuppression;
-      store.notify();
+      store.setNoiseSuppression(!state.voice.noiseSuppression);
       break;
     case "toggle-setting": {
       const k = btn.getAttribute("data-key");

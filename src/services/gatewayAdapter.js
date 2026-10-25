@@ -1,6 +1,7 @@
 // ==========================================================================
 // Discord Native, Backend SQLite RPC, Call Audio & WebRTC Screen Share Layer
 // ==========================================================================
+import { createDenoisedStream } from "./noiseSuppressor.js";
 
 export const IntegrationMetadata = {
   observedEndpoints: {
@@ -869,6 +870,7 @@ class VoiceMesh {
     this.onRemoteSpeaking = null; // (userId, speaking) => void
     this.remoteSpeaking = new Map(); // userId -> { speaking, lastLoudAt }
     this.levelTimer = null;
+    this.noiseSuppression = true; // also filter what we hear (Supressão de ruído)
   }
 
   // Who is talking, read from the audio we receive from each person (the
@@ -1087,10 +1089,12 @@ class VoiceMesh {
     pc.ontrack = (e) => {
       const slot = SLOTS[pc.getTransceivers().indexOf(e.transceiver)];
       const stream = new MediaStream([e.track]);
-      if (slot === "mic" || slot === "screenAudio") {
-        const el = slot === "mic" ? audio : screenAudio;
-        el.srcObject = stream;
-        el.play().catch(() => {});
+      if (slot === "mic") {
+        peer.micStream = stream;
+        this.routeRemoteMic(peer);
+      } else if (slot === "screenAudio") {
+        screenAudio.srcObject = stream;
+        screenAudio.play().catch(() => {});
       } else if (slot) {
         this.setRemoteVideo(userId, slot, stream);
       }
@@ -1193,6 +1197,50 @@ class VoiceMesh {
     if (typeof this.sendSignal === "function") this.sendSignal(targetUserId, signalType, signalData);
   }
 
+  // Someone's voice goes through the noise filter (when on) before we hear it.
+  // Chromium only feeds a remote WebRTC track into Web Audio while the track
+  // is also attached to a media element, hence the silent `micHolder`.
+  async routeRemoteMic(peer) {
+    const raw = peer.micStream;
+    if (!raw) return;
+    const token = (peer.micRouteToken = (peer.micRouteToken || 0) + 1);
+    if (peer.micFilter) {
+      peer.micFilter.dispose();
+      peer.micFilter = null;
+    }
+    let filter = null;
+    if (this.noiseSuppression) {
+      if (!peer.micHolder) {
+        peer.micHolder = new Audio();
+        peer.micHolder.muted = true;
+      }
+      peer.micHolder.srcObject = raw;
+      peer.micHolder.play().catch(() => {});
+      filter = await createDenoisedStream(raw).catch(() => null);
+      if (token !== peer.micRouteToken || !this.peers.has(this.userIdOf(peer))) {
+        if (filter) filter.dispose();
+        return;
+      }
+    } else if (peer.micHolder) {
+      peer.micHolder.srcObject = null;
+    }
+    peer.micFilter = filter;
+    peer.audio.srcObject = filter ? filter.stream : raw;
+    peer.audio.play().catch(() => {});
+  }
+
+  userIdOf(peer) {
+    for (const [id, p] of this.peers) if (p === peer) return id;
+    return null;
+  }
+
+  setNoiseSuppression(on) {
+    const next = on !== false;
+    if (next === this.noiseSuppression) return;
+    this.noiseSuppression = next;
+    for (const peer of this.peers.values()) this.routeRemoteMic(peer);
+  }
+
   setMuted(muted) {
     this.muted = Boolean(muted);
     if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
@@ -1262,7 +1310,8 @@ class VoiceMesh {
     return [...this.peers.entries()].map(([userId, peer]) => ({
       userId,
       state: peer.pc.connectionState,
-      stream: peer.audio.srcObject || null
+      stream: peer.micStream || peer.audio.srcObject || null,
+      filtered: Boolean(peer.micFilter)
     }));
   }
 
@@ -1275,7 +1324,9 @@ class VoiceMesh {
     try {
       peer.pc.close();
     } catch (_) {}
-    for (const el of [peer.audio, peer.screenAudio]) {
+    peer.micRouteToken = (peer.micRouteToken || 0) + 1;
+    if (peer.micFilter) peer.micFilter.dispose();
+    for (const el of [peer.audio, peer.screenAudio, peer.micHolder].filter(Boolean)) {
       el.pause();
       el.srcObject = null;
     }

@@ -5,6 +5,17 @@
 // ==========================================================================
 
 import { NativeBridge, CallSounds, ScreenShare, VoiceDevices, VAD, Voice, Camera } from "../services/gatewayAdapter.js";
+import { createDenoisedStream } from "../services/noiseSuppressor.js";
+
+// "Supressão de ruído" is a choice of this PC (on unless turned off)
+const NOISE_SUPPRESSION_KEY = "eco.noiseSuppression";
+function readNoiseSuppressionPref() {
+  try {
+    return localStorage.getItem(NOISE_SUPPRESSION_KEY) !== "0";
+  } catch (_) {
+    return true;
+  }
+}
 
 const TYPING_PING_MS = 3000;
 const TYPING_SHOW_MS = 7000;
@@ -133,7 +144,7 @@ function createEmptyState() {
       screenShareSourceName: null,
       dmCall: null, // { channelId, peerId, status: "ringing" | "connected" } while in a DM call
       pingMs: 16,
-      noiseSuppression: true,
+      noiseSuppression: readNoiseSuppressionPref(),
       inputVolume: 100,
       outputVolume: 100
     },
@@ -1124,12 +1135,36 @@ class Store {
   }
 
   restartMicrophone() {
+    this.stopLocalMicrophone();
+    this.startLocalVoiceActivity();
+  }
+
+  // Closes the microphone and its noise filter
+  stopLocalMicrophone() {
     VAD.stop();
+    if (this.localMicFilter) {
+      this.localMicFilter.dispose();
+      this.localMicFilter = null;
+    }
     if (this.localAudioStream) {
-      this.localAudioStream.getTracks().forEach((t) => t.stop());
+      for (const t of this.localAudioStream.getTracks()) {
+        try {
+          t.stop();
+        } catch (_) {}
+      }
       this.localAudioStream = null;
     }
-    this.startLocalVoiceActivity();
+  }
+
+  // "Supressão de ruído": filters our microphone and what we hear from others
+  setNoiseSuppression(on) {
+    this.state.voice.noiseSuppression = Boolean(on);
+    try {
+      localStorage.setItem(NOISE_SUPPRESSION_KEY, on ? "1" : "0");
+    } catch (_) {}
+    Voice.setNoiseSuppression(this.state.voice.noiseSuppression);
+    if (this.state.voice.connectedChannelId) this.restartMicrophone();
+    this.notify();
   }
 
   // Audio between the people in the call (WebRTC); STUN/TURN come from the server
@@ -1153,7 +1188,8 @@ class Store {
     Voice.setOutputDevice(this.state.settings.voiceOutputDeviceId);
     Voice.setOutputVolume(this.state.settings.voiceOutputVolume ?? 100);
     Voice.setLocalUserPrefs(this.getUserAudioPrefs());
-    if (this.localAudioStream) Voice.setLocalStream(this.localAudioStream);
+    Voice.setNoiseSuppression(this.state.voice.noiseSuppression !== false);
+    if (this.localAudioStream) Voice.setLocalStream(this.localMicFilter?.stream || this.localAudioStream);
     Voice.syncParticipants((participants || []).map((p) => p.userId));
   }
 
@@ -1201,15 +1237,24 @@ class Store {
             autoGainControl: true
           }
         })
-        .then((st) => {
+        .then(async (st) => {
+          // Noise filter before sending (and before the speaking ring, so a
+          // keyboard or fan no longer lights it up); unfiltered if it fails
+          let filter = null;
+          if (this.state.voice.noiseSuppression !== false) {
+            filter = await createDenoisedStream(st).catch(() => null);
+          }
           // Left the call while the browser was still opening the microphone
           if (!this.state.voice.connectedChannelId) {
+            if (filter) filter.dispose();
             st.getTracks().forEach((t) => t.stop());
             return;
           }
           this.localAudioStream = st;
-          Voice.setLocalStream(st);
-          VAD.start(st, (speaking) => {
+          this.localMicFilter = filter;
+          const sent = filter ? filter.stream : st;
+          Voice.setLocalStream(sent);
+          VAD.start(sent, (speaking) => {
             this.setVoiceSpeaking(speaking);
           });
         })
@@ -1421,15 +1466,7 @@ class Store {
 
     CallSounds.stopRinging();
     clearTimeout(this.dmRingTimeout);
-    VAD.stop();
-    if (this.localAudioStream) {
-      for (const t of this.localAudioStream.getTracks()) {
-        try {
-          t.stop();
-        } catch (_) {}
-      }
-      this.localAudioStream = null;
-    }
+    this.stopLocalMicrophone();
 
     if (this.state.voice.screenShareEnabled) {
       await this.stopScreenShare();
