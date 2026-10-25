@@ -18,7 +18,8 @@ Aplicativo desktop de chat, voz e compartilhamento de tela inspirado no Discord,
 - Colar imagem no chat (Ctrl+V), editar anexo (nome/spoiler), ampliar e salvar imagens e arquivos, bolinha vermelha de mensagens não lidas, fechar DMs
 - Barras laterais com largura ajustável, janela de transmissão móvel e redimensionável
 - Tamanho da interface e do texto ajustáveis, 10 temas visuais e atualização pelo próprio app
-- Leve: o app fica abaixo de ~80 MB de memória (Gerenciador de Tarefas) em tudo, inclusive em call e transmitindo, com um teto de memória por processo aplicado pelo Windows
+- Fluido por padrão: transmissão mantendo o FPS (baixa a nitidez quando falta CPU ou banda), prioridade acima do normal durante calls e memória devolvida ao Windows quando o app está minimizado; o **Modo economia de memória** (Configurações → Windows & Memória) mantém o app abaixo de ~80 MB, com o custo de travadas ocasionais
+- Menu de botão direito no cartão da call: perfil, mensagem, nota, volume por pessoa, silenciar só para você, efeitos sonoros, vídeo, amigo, bloquear, cargos, mover, e moderação (silenciar voz e desativar áudio no servidor, desconectar)
 
 ---
 

@@ -91,6 +91,8 @@ const DiscordNative = {
     rpc: (action, params, sessionToken) => ipcRenderer.invoke("DISCORD_BACKEND_RPC", action, params, sessionToken)
   },
   processUtils: {
+    getMemorySaver: () => ipcRenderer.sendSync("DISCORD_MEMORY_SAVER_GET_SYNC"),
+    setMemorySaver: (enabled) => ipcRenderer.sendSync("DISCORD_MEMORY_SAVER_SET_SYNC", Boolean(enabled)),
     purgeMemory: async () => {
       try {
         webFrame.clearCache();

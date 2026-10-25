@@ -813,14 +813,22 @@ export function screenBitrateFor(width, height, fps) {
   return Math.round(Math.min(30_000_000, Math.max(2_000_000, bits)));
 }
 
-// Starts video near the target bitrate instead of ramping up from ~300 kbps
-// (which looked like 144p for the first seconds of every share)
+// Starts video at a sane bitrate instead of ramping up from ~300 kbps (which
+// looked like 144p for the first seconds of every share), but low enough for a
+// home upload link, with a low floor so congestion control can back off.
+// The old 8 Mbps start / 1.5 Mbps floor per viewer flooded the uplink at the
+// start of every share: packets were lost and the picture froze for seconds.
 function tuneVideoSdp(sdp) {
   return sdp.replace(/^(a=fmtp:\d+ .*)$/gm, (line) => {
     if (/x-google-start-bitrate|apt=/.test(line)) return line;
-    return `${line};x-google-start-bitrate=8000;x-google-min-bitrate=1500`;
+    return `${line};x-google-start-bitrate=2500;x-google-min-bitrate=300`;
   });
 }
+
+// Every viewer gets their own encoded copy (mesh), so the uplink is shared:
+// each one gets an equal slice of this budget, never less than the floor
+const SCREEN_UPLOAD_BUDGET = 16_000_000;
+const SCREEN_MIN_PER_VIEWER = 1_500_000;
 
 function preferredVideoCodecs() {
   const caps = typeof RTCRtpReceiver !== "undefined" && RTCRtpReceiver.getCapabilities?.("video");
@@ -845,7 +853,9 @@ class VoiceMesh {
     this.screenEncoding = { maxBitrate: 6_000_000, maxFramerate: 60 };
     this.peers = new Map(); // userId -> { pc, audio, screenAudio, remote, pendingCandidates, initiator, restartTimer }
     this.remoteVideos = new Map(); // `${userId}:${slot}` -> <video> kept between renders
-    this.silenced = new Set(); // people without the "Falar" permission: never played
+    this.silenced = new Set(); // people without the "Falar" permission (or server-muted): never played
+    this.localMuted = new Set(); // people I silenced for myself only (right-click > Silenciar)
+    this.userVolumes = new Map(); // userId -> 0..1 (right-click > Volume do usuário)
     this.onRemoteMedia = null; // (userId, slot) => void
     this.muted = false;
     this.deafened = false;
@@ -907,12 +917,16 @@ class VoiceMesh {
     if (!params.encodings?.length) return;
     const enc = params.encodings[0];
     if (slot === "screen") {
-      enc.maxBitrate = this.screenEncoding.maxBitrate;
+      const viewers = Math.max(1, this.peers.size);
+      const slice = Math.max(SCREEN_MIN_PER_VIEWER, Math.round(SCREEN_UPLOAD_BUDGET / viewers));
+      enc.maxBitrate = Math.min(this.screenEncoding.maxBitrate, slice);
       enc.maxFramerate = this.screenEncoding.maxFramerate;
       enc.scaleResolutionDownBy = 1;
       enc.priority = "high";
       enc.networkPriority = "high";
-      params.degradationPreference = "balanced";
+      // Short of CPU/GPU (e.g. a game running) or bandwidth: keep it fluid and
+      // lower the sharpness, instead of dropping frames
+      params.degradationPreference = "maintain-framerate";
     } else {
       enc.maxBitrate = CAMERA_MAX_BITRATE;
       enc.maxFramerate = 30;
@@ -970,11 +984,22 @@ class VoiceMesh {
   syncParticipants(userIds) {
     if (!this.channelId) return;
     const others = new Set(userIds.filter((id) => id && id !== this.meId));
+    const before = this.peers.size;
     for (const id of [...this.peers.keys()]) {
       if (!others.has(id)) this.closePeer(id);
     }
     for (const id of others) {
       if (!this.peers.has(id) && this.meId < id) this.createPeer(id, true);
+    }
+    if (this.peers.size !== before) this.reapplyScreenEncoding();
+  }
+
+  // The per-viewer bitrate slice depends on how many people are watching
+  reapplyScreenEncoding() {
+    if (!this.tracks.screen) return;
+    for (const peer of this.peers.values()) {
+      const transceiver = peer.pc.getTransceivers()[SLOTS.indexOf("screen")];
+      if (transceiver) this.applyEncoding(transceiver.sender, "screen");
     }
   }
 
@@ -998,8 +1023,11 @@ class VoiceMesh {
       return el;
     };
     const audio = makeAudio();
-    audio.muted = this.deafened || this.silenced.has(userId);
+    audio.muted = this.isUserMuted(userId);
+    audio.volume = this.volumeFor(userId);
     const screenAudio = makeAudio();
+    screenAudio.volume = this.volumeFor(userId);
+    screenAudio.muted = this.deafened || this.localMuted.has(userId);
 
     const peer = { pc, audio, screenAudio, pendingCandidates: [], initiator, restartTimer: null };
     this.peers.set(userId, peer);
@@ -1021,6 +1049,7 @@ class VoiceMesh {
     };
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
+      if (state === "connected") this.reapplyScreenEncoding();
       if (state === "failed" && peer.initiator) this.restartIce(userId);
       // A brief network hiccup: try an ICE restart if it does not recover alone
       if (state === "disconnected" && peer.initiator) {
@@ -1122,16 +1151,36 @@ class VoiceMesh {
   setDeafened(deafened) {
     this.deafened = Boolean(deafened);
     for (const [userId, peer] of this.peers) {
-      peer.audio.muted = this.deafened || this.silenced.has(userId);
-      peer.screenAudio.muted = this.deafened;
+      peer.audio.muted = this.isUserMuted(userId);
+      peer.screenAudio.muted = this.deafened || this.localMuted.has(userId);
     }
     if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
   }
 
-  // People whose microphone must not be heard (no "Falar" permission)
+  isUserMuted(userId) {
+    return this.deafened || this.silenced.has(userId) || this.localMuted.has(userId);
+  }
+
+  volumeFor(userId) {
+    return this.outputVolume * (this.userVolumes.has(userId) ? this.userVolumes.get(userId) : 1);
+  }
+
+  // People whose microphone must not be heard (no "Falar" permission, server-muted)
   setSilencedUsers(userIds) {
     this.silenced = new Set(userIds || []);
-    for (const [userId, peer] of this.peers) peer.audio.muted = this.deafened || this.silenced.has(userId);
+    for (const [userId, peer] of this.peers) peer.audio.muted = this.isUserMuted(userId);
+  }
+
+  // Per-person preferences from the call tile's right-click menu (this PC only)
+  setLocalUserPrefs({ muted = [], volumes = {} } = {}) {
+    this.localMuted = new Set(muted);
+    this.userVolumes = new Map(Object.entries(volumes).map(([id, pct]) => [id, Math.max(0, Math.min(1, Number(pct) / 100))]));
+    for (const [userId, peer] of this.peers) {
+      peer.audio.muted = this.isUserMuted(userId);
+      peer.screenAudio.muted = this.deafened || this.localMuted.has(userId);
+      peer.audio.volume = this.volumeFor(userId);
+      peer.screenAudio.volume = this.volumeFor(userId);
+    }
   }
 
   setOutputDevice(deviceId) {
@@ -1145,9 +1194,9 @@ class VoiceMesh {
   // 0–100 from the settings slider
   setOutputVolume(percent) {
     this.outputVolume = Math.max(0, Math.min(1, (Number(percent) || 0) / 100));
-    for (const peer of this.peers.values()) {
-      peer.audio.volume = this.outputVolume;
-      peer.screenAudio.volume = this.outputVolume;
+    for (const [userId, peer] of this.peers) {
+      peer.audio.volume = this.volumeFor(userId);
+      peer.screenAudio.volume = this.volumeFor(userId);
     }
   }
 

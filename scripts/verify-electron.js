@@ -198,6 +198,8 @@ async function setupTestEnvironment() {
   ipcMain.on("DISCORD_APP_SET_OPEN_ON_STARTUP_SYNC", (e) => { e.returnValue = false; });
   ipcMain.on("DISCORD_GPU_SETTINGS_SET_ENABLE_HWACCEL", () => {});
   ipcMain.handle("DISCORD_MEMORY_GET_TASK_MANAGER_MB", () => null);
+  ipcMain.on("DISCORD_MEMORY_SAVER_GET_SYNC", (e) => { e.returnValue = false; });
+  ipcMain.on("DISCORD_MEMORY_SAVER_SET_SYNC", (e, on) => { e.returnValue = Boolean(on); });
   ipcMain.on("DISCORD_SETTINGS_GET_SYNC", (e, _k, def) => { e.returnValue = def; });
   ipcMain.on("DISCORD_GPU_SETTINGS_GET_ENABLE_HWACCEL_SYNC", (e) => { e.returnValue = true; });
   ipcMain.handle("DISCORD_SETTINGS_GET", (_e, _k, def) => def);

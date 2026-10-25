@@ -351,6 +351,13 @@ class Store {
 
       if (event === "RTC_ROOM_UPDATED" && payload?.channelId === this.state.voice.connectedChannelId) {
         Voice.syncParticipants((payload.participants || []).map((p) => p.userId));
+        this.applyModeration(payload.participants || []);
+      }
+
+      // A moderator disconnected or moved me
+      if (event === "VOICE_FORCED") {
+        if (payload?.userId === this.state.auth.currentUserId) this.handleForcedVoice(payload);
+        return;
       }
 
       if (event === "RTC_ROOM_UPDATED" && payload?.channelId) {
@@ -360,13 +367,36 @@ class Store {
 
       if (event === "MESSAGE_CREATED" && payload?.channelId) {
         if (payload.authorId) this.setTyping(payload.channelId, payload.authorId, false);
-        this.syncFromBackend({ silent: false }).then(() => this.notifyIncomingMessage(payload.channelId, payload.messageId));
+        this.requestSync().then(() => this.notifyIncomingMessage(payload.channelId, payload.messageId));
         return;
       }
 
       // For structural state changes (messages, friendships, username/profile updates, guilds, voice)
-      this.syncFromBackend({ silent: false });
+      this.requestSync();
     });
+  }
+
+  // Server events arrive in bursts (someone joins a call: room update, presence,
+  // sounds...). Each used to download the whole state and redraw the app; now
+  // a burst becomes one download: at most one in flight, and whatever arrives
+  // meanwhile is folded into a single follow-up shortly after.
+  requestSync() {
+    if (this.syncInFlight) {
+      this.syncAgain = true;
+      return this.syncInFlight;
+    }
+    this.syncInFlight = (async () => {
+      try {
+        do {
+          this.syncAgain = false;
+          await this.syncFromBackend({ silent: false });
+          if (this.syncAgain) await new Promise((r) => setTimeout(r, 150));
+        } while (this.syncAgain);
+      } finally {
+        this.syncInFlight = null;
+      }
+    })();
+    return this.syncInFlight;
   }
 
   async syncFromBackend({ silent = false } = {}) {
@@ -1123,6 +1153,7 @@ class Store {
     Voice.setDeafened(this.state.voice.deafened);
     Voice.setOutputDevice(this.state.settings.voiceOutputDeviceId);
     Voice.setOutputVolume(this.state.settings.voiceOutputVolume ?? 100);
+    Voice.setLocalUserPrefs(this.getUserAudioPrefs());
     if (this.localAudioStream) Voice.setLocalStream(this.localAudioStream);
     Voice.syncParticipants((participants || []).map((p) => p.userId));
   }
@@ -1263,7 +1294,8 @@ class Store {
     if (!prev || this.state.voice.connectedChannelId !== channelId || !ids.includes(meId)) return;
     // DM hang-ups end the call in handleDmCallRoomUpdate, which plays the sound itself
     if (this.state.voice.dmCall) return;
-    if (prev.some((id) => id !== meId && !ids.includes(id))) {
+    const soundsMuted = new Set(this.getUserAudioPrefs().soundsMuted);
+    if (prev.some((id) => id !== meId && !ids.includes(id) && !soundsMuted.has(id))) {
       CallSounds.play("leave", this.state.settings, null, { force: true });
     }
   }
@@ -1475,6 +1507,10 @@ class Store {
   }
 
   toggleDeafen() {
+    if (this.state.voice.deafened && this.state.voice.serverDeafened) {
+      this.onPermissionNotice?.("Um moderador desativou seu áudio neste servidor.");
+      return { ok: false };
+    }
     this.state.voice.deafened = !this.state.voice.deafened;
     Voice.setDeafened(this.state.voice.deafened);
     if (this.state.voice.deafened) {
@@ -1955,8 +1991,78 @@ class Store {
   }
 
   canSpeakInCall() {
+    if (this.state.voice.serverMuted) return false;
     const guild = this.state.guilds.find((g) => g.id === this.state.voice.connectedGuildId);
     return !guild || this.can("SPEAK_VOICE", guild);
+  }
+
+  // Server mute/deafen set by a moderator (flags on my entry in the room)
+  applyModeration(participants) {
+    this.roomServerMuted = new Set(participants.filter((p) => p.serverMuted).map((p) => p.userId));
+    const me = participants.find((p) => p.userId === this.state.auth.currentUserId);
+    const v = this.state.voice;
+    const wasMuted = v.serverMuted;
+    const wasDeafened = v.serverDeafened;
+    v.serverMuted = Boolean(me?.serverMuted);
+    v.serverDeafened = Boolean(me?.serverDeafened);
+    if (v.serverMuted && !v.muted) {
+      v.muted = true;
+      Voice.setMuted(true);
+    }
+    if (v.serverDeafened && !v.deafened) {
+      v.deafened = true;
+      v.muted = true;
+      Voice.setDeafened(true);
+      Voice.setMuted(true);
+    }
+    if (v.serverMuted !== wasMuted) this.onPermissionNotice?.(v.serverMuted ? "Um moderador silenciou sua voz neste servidor." : "Sua voz foi liberada pelo moderador.");
+    if (v.serverDeafened !== wasDeafened) this.onPermissionNotice?.(v.serverDeafened ? "Um moderador desativou seu áudio neste servidor." : "Seu áudio foi liberado pelo moderador.");
+    this.applyCallPermissions();
+    this.notify({ skipPersist: true });
+  }
+
+  async handleForcedVoice({ op, guildId, channelId }) {
+    if (op === "move" && guildId && channelId) {
+      this.onPermissionNotice?.("Um moderador moveu você para outro canal de voz.");
+      await this.joinVoiceChannel(guildId, channelId);
+      return;
+    }
+    this.onPermissionNotice?.("Um moderador desconectou você da call.");
+    await this.leaveVoiceChannel();
+  }
+
+  // Right-click on someone in a call (needs the matching permission)
+  async moderateVoice(targetUserId, op, { value, channelId } = {}) {
+    const res = await NativeBridge.rpc("voiceModerate", { targetUserId, op, value, channelId });
+    if (!res.ok) this.onPermissionNotice?.(res.error || "Não foi possível fazer isso.");
+    return res;
+  }
+
+  // Per-person preferences on this PC: volume, silenced, sounds off, video hidden
+  getUserAudioPrefs() {
+    if (!this.userAudioPrefs) {
+      try {
+        this.userAudioPrefs = JSON.parse(localStorage.getItem("eco_user_call_prefs_v1") || "null");
+      } catch {}
+      this.userAudioPrefs = { volumes: {}, muted: [], soundsMuted: [], videoHidden: [], ...(this.userAudioPrefs || {}) };
+    }
+    return this.userAudioPrefs;
+  }
+
+  setUserAudioPref(key, userId, value) {
+    const prefs = this.getUserAudioPrefs();
+    if (key === "volume") prefs.volumes[userId] = Math.max(0, Math.min(100, Number(value)));
+    else {
+      const list = new Set(prefs[key]);
+      if (value) list.add(userId);
+      else list.delete(userId);
+      prefs[key] = [...list];
+    }
+    try {
+      localStorage.setItem("eco_user_call_prefs_v1", JSON.stringify(prefs));
+    } catch {}
+    Voice.setLocalUserPrefs(prefs);
+    if (key !== "volume") this.notify({ skipPersist: true });
   }
 
   // Everyone in my call without "Falar" is never played on this PC
@@ -1964,7 +2070,9 @@ class Store {
     const guild = this.state.guilds.find((g) => g.id === this.state.voice.connectedGuildId);
     if (!guild || !this.state.voice.connectedChannelId) return Voice.setSilencedUsers([]);
     const channel = guild.channels.find((c) => c.id === this.state.voice.connectedChannelId);
-    Voice.setSilencedUsers((channel?.connectedUsers || []).filter((id) => !this.memberCan(guild, id, "SPEAK_VOICE")));
+    Voice.setSilencedUsers(
+      (channel?.connectedUsers || []).filter((id) => !this.memberCan(guild, id, "SPEAK_VOICE") || this.roomServerMuted?.has(id))
+    );
     if (!this.canSpeakInCall() && !this.state.voice.muted) {
       this.state.voice.muted = true;
       Voice.setMuted(true);

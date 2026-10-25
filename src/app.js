@@ -1643,8 +1643,10 @@ function renderCallTile(state, ch, userId, { focused = false, small = false, noS
   const speaking = Boolean(state.voice.speakingUsers?.[userId]) && !muted;
   const share = state.screenShares[ch.id];
   const isSharing = isMe ? state.voice.screenShareEnabled : share?.userId === userId;
-  const watching = !noStream && isSharing && (isMe || !uiState.stoppedWatching[ch.id]);
-  const cameraOn = isMe ? state.voice.videoEnabled : Boolean(participant?.videoEnabled);
+  // "Desativar vídeo" from the right-click menu: this person's video stays off here
+  const videoHidden = !isMe && store.getUserAudioPrefs().videoHidden.includes(userId);
+  const watching = !noStream && !videoHidden && isSharing && (isMe || !uiState.stoppedWatching[ch.id]);
+  const cameraOn = !videoHidden && (isMe ? state.voice.videoEnabled : Boolean(participant?.videoEnabled));
 
   let media;
   if (watching && isMe && ScreenShare.getStream()) {
@@ -1768,6 +1770,52 @@ function renderCallChatPanel(state, ch) {
   `;
 }
 
+// Who gets a tile in the grid: everyone, or (with "Mostrar participantes sem
+// vídeo" off) only people with camera/screen on — but never an empty grid
+function gridIds(state, ch, participants) {
+  if (uiState.showNonVideoTiles !== false) return participants;
+  const hidden = new Set(store.getUserAudioPrefs().videoHidden);
+  const share = state.screenShares[ch.id];
+  const withVideo = participants.filter((id) => {
+    if (hidden.has(id)) return false;
+    if (id === state.auth.currentUserId) return state.voice.videoEnabled || state.voice.screenShareEnabled;
+    const p = (ch.voiceParticipants || []).find((x) => x.userId === id);
+    return Boolean(p?.videoEnabled) || share?.userId === id;
+  });
+  return withVideo.length ? withVideo : participants;
+}
+
+// Sizes the call grid like Discord: 16:9 tiles as big as the stage allows,
+// packed together with a small gap, rows centred (the last one too)
+const CALL_GRID_GAP = 8;
+let callGridObserver = null;
+
+function layoutCallGrid() {
+  const grid = document.querySelector("[data-call-grid]");
+  if (!grid) {
+    callGridObserver?.disconnect();
+    callGridObserver = null;
+    return;
+  }
+  const fit = () => {
+    const n = grid.children.length;
+    const W = grid.clientWidth;
+    const H = grid.clientHeight;
+    if (!n || !W || !H) return;
+    let best = 0;
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols);
+      const w = Math.min((W - (cols - 1) * CALL_GRID_GAP) / cols, ((H - (rows - 1) * CALL_GRID_GAP) / rows) * (16 / 9));
+      if (w > best) best = w;
+    }
+    grid.style.setProperty("--tile-w", `${Math.floor(best)}px`);
+  };
+  fit();
+  callGridObserver?.disconnect();
+  callGridObserver = new ResizeObserver(fit);
+  callGridObserver.observe(grid);
+}
+
 function renderCallStage(state, ch) {
   const participants = (ch.connectedUsers || []).length ? ch.connectedUsers : [state.auth.currentUserId];
   // A screen share fills the stage on its own; clicking the big tile (or "Ver
@@ -1794,7 +1842,7 @@ function renderCallStage(state, ch) {
           : ""
       }
     `
-    : `<div class="call-grid" style="--call-cols:${participants.length <= 1 ? 1 : participants.length <= 4 ? 2 : 3};">${participants.map((id) => renderCallTile(state, ch, id)).join("")}</div>`;
+    : `<div class="call-grid" data-call-grid>${gridIds(state, ch, participants).map((id) => renderCallTile(state, ch, id)).join("")}</div>`;
 
   const v = state.voice;
   return `
@@ -4482,6 +4530,13 @@ function renderSettingsOverlay(state) {
           desc: "Deixa vídeo e compartilhamento de tela mais fluidos, mas usa cerca de 100 MB a mais. Vale após reiniciar o app.",
           testid: "hardware-acceleration-checkbox"
         })}
+        ${checkboxRow({
+          id: "setting-memory-saver",
+          checked: Boolean(window.DiscordNative?.processUtils?.getMemorySaver?.()),
+          title: "Modo economia de memória",
+          desc: "Mantém o app abaixo de ~80 MB com um limite imposto pelo Windows. Em troca, podem aparecer travadas ao abrir, em carregamentos e nas transmissões.",
+          testid: "memory-saver-checkbox"
+        })}
       </section>
     `;
   } else if (tab === "activity") {
@@ -4932,20 +4987,58 @@ function renderAudioDeviceMenu(state) {
   `;
 }
 
+// Items: { label, sublabel?, danger?, onClick } | { type: "separator" } |
+// { type: "checkbox", label, checked, danger?, onToggle(checked) } (menu stays open) |
+// { type: "slider", label, value 0-100, onInput(value) } | { type: "submenu", label, items }
+function renderContextMenuItems(items, prefix = "") {
+  return items
+    .map((it, i) => {
+      const idx = prefix ? `${prefix}.${i}` : String(i);
+      if (it.type === "separator") return `<div class="context-menu-sep" role="separator"></div>`;
+      if (it.type === "slider") {
+        return `
+          <div class="context-menu-slider">
+            <div class="context-menu-slider-label">${escapeHtml(it.label)} <span data-context-slider-value="${idx}">${Math.round(it.value)}%</span></div>
+            <input type="range" min="0" max="100" value="${Math.round(it.value)}" data-context-slider="${idx}" aria-label="${escapeHtml(it.label)}" />
+          </div>`;
+      }
+      if (it.type === "submenu") {
+        return `
+          <div class="context-menu-item has-submenu" tabindex="0">
+            <span>${escapeHtml(it.label)}</span>${Icons.chevronRight}
+            <div class="context-submenu">${it.items.length ? renderContextMenuItems(it.items, idx) : `<div class="context-menu-empty">Nada aqui</div>`}</div>
+          </div>`;
+      }
+      const check =
+        it.type === "checkbox" ? `<span class="context-menu-check ${it.checked ? "on" : ""}">${it.checked ? Icons.check : ""}</span>` : "";
+      return `
+        <button class="context-menu-item ${it.danger ? "danger" : ""}" data-context-idx="${idx}" ${it.type === "checkbox" ? `role="menuitemcheckbox" aria-checked="${it.checked ? "true" : "false"}"` : ""}>
+          <span class="context-menu-text">
+            <span>${escapeHtml(it.label)}</span>
+            ${it.sublabel ? `<span class="context-menu-sublabel">${escapeHtml(it.sublabel)}</span>` : ""}
+          </span>
+          ${check}
+        </button>`;
+    })
+    .join("");
+}
+
+function findContextItem(path) {
+  let list = uiState.contextMenu?.items || [];
+  let item = null;
+  for (const part of String(path).split(".")) {
+    item = list[Number(part)];
+    list = item?.items || [];
+  }
+  return item;
+}
+
 function renderContextMenu() {
   if (!uiState.contextMenu) return "";
-  const { x, y, items } = uiState.contextMenu;
+  const { x, y, items, wide } = uiState.contextMenu;
   return `
-    <div class="context-menu" style="left:${x}px;top:${y}px;" data-testid="context-menu">
-      ${items
-        .map(
-          (it, idx) => `
-        <button class="context-menu-item ${it.danger ? "danger" : ""}" data-context-idx="${idx}">
-          <span>${escapeHtml(it.label)}</span>
-        </button>
-      `
-        )
-        .join("")}
+    <div class="context-menu ${wide ? "wide" : ""}" style="left:${x}px;top:${y}px;" data-testid="context-menu" role="menu">
+      ${renderContextMenuItems(items)}
     </div>
   `;
 }
@@ -6034,6 +6127,27 @@ function bindFormEvents() {
     });
   });
 
+  layoutCallGrid();
+
+  // Context menu: volume slider, and keep the menu (and submenus) on screen
+  document.querySelectorAll("[data-context-slider]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const path = input.getAttribute("data-context-slider");
+      const item = findContextItem(path);
+      if (item) item.value = Number(input.value);
+      const label = document.querySelector(`[data-context-slider-value="${CSS.escape(path)}"]`);
+      if (label) label.textContent = `${input.value}%`;
+      item?.onInput?.(Number(input.value));
+    });
+  });
+  const ctxMenu = document.querySelector(".context-menu");
+  if (ctxMenu) {
+    const r = ctxMenu.getBoundingClientRect();
+    if (r.bottom > window.innerHeight - 8) ctxMenu.style.top = `${Math.max(8, window.innerHeight - r.height - 8)}px`;
+    if (r.right > window.innerWidth - 8) ctxMenu.style.left = `${Math.max(8, window.innerWidth - r.width - 8)}px`;
+    if (r.right + 220 > window.innerWidth) ctxMenu.classList.add("submenus-left");
+  }
+
   // Profile view: border flag/colour and call tile colour
   const borderToggle = document.getElementById("profile-border-toggle");
   if (borderToggle) {
@@ -6220,6 +6334,15 @@ function bindFormEvents() {
     hwAccelBox.addEventListener("change", () => {
       NativeBridge.setGpuAcceleration(hwAccelBox.checked);
       showToast("Reinicie o app para aplicar a mudança na aceleração de hardware.");
+    });
+  }
+  const memorySaverBox = document.getElementById("setting-memory-saver");
+  if (memorySaverBox) {
+    memorySaverBox.addEventListener("change", () => {
+      const on = window.DiscordNative?.processUtils?.setMemorySaver?.(memorySaverBox.checked);
+      memorySaverBox.checked = Boolean(on);
+      showToast(on ? "Economia de memória ligada." : "Economia de memória desligada: o app fica mais fluido.");
+      setTimeout(refreshMemoryUsageLabel, 1500);
     });
   }
   if (document.getElementById("memory-usage-label")) refreshMemoryUsageLabel();
@@ -6590,12 +6713,19 @@ async function handleGlobalClick(e) {
   if (uiState.contextMenu) {
     const ctxIdxBtn = e.target.closest("[data-context-idx]");
     if (ctxIdxBtn) {
-      const item = uiState.contextMenu.items[Number(ctxIdxBtn.getAttribute("data-context-idx"))];
+      const item = findContextItem(ctxIdxBtn.getAttribute("data-context-idx"));
+      if (item?.type === "checkbox") {
+        item.checked = !item.checked;
+        if (typeof item.onToggle === "function") await item.onToggle(item.checked);
+        renderApp();
+        return;
+      }
       uiState.contextMenu = null;
       if (item && typeof item.onClick === "function") await item.onClick();
       renderApp();
       return;
     }
+    if (e.target.closest(".context-menu")) return;
     uiState.contextMenu = null;
     renderApp();
   }
@@ -7748,7 +7878,164 @@ function openMessageContextMenu(e, row) {
   renderApp();
 }
 
+// Right-click on someone's call tile (or their row under the voice channel)
+function buildCallUserMenu(userId) {
+  const state = store.getState();
+  const me = state.auth.currentUserId;
+  const user = state.users[userId];
+  if (!user) return [];
+  const isMe = userId === me;
+  const prefs = store.getUserAudioPrefs();
+  const guild = state.guilds.find((g) => g.id === state.voice.connectedGuildId) || null;
+  const channel = guild?.channels.find((c) => c.id === state.voice.connectedChannelId) || null;
+  const participant = (channel?.voiceParticipants || []).find((p) => p.userId === userId);
+  const friend = state.friends.find((f) => f.userId === userId);
+  const items = [{ label: "Perfil", onClick: () => openProfileView(userId) }];
+
+  if (!isMe) {
+    items.push(
+      { label: "Mensagem", onClick: () => store.openOrCreateDm(userId) },
+      {
+        label: "Iniciar chamada",
+        onClick: async () => {
+          const dm = await store.openOrCreateDm(userId);
+          const dmId = dm?.id || store.getState().navigation.activeDmId;
+          if (dmId) await store.startDmCall(dmId);
+        }
+      },
+      {
+        label: "Adicionar nota",
+        sublabel: "Visível apenas para você",
+        onClick: () => {
+          uiState.userPopout = { userId };
+          renderApp();
+          document.querySelector("[data-user-note-id]")?.focus();
+        }
+      },
+      { type: "separator" },
+      {
+        type: "slider",
+        label: "Volume do usuário",
+        value: prefs.volumes[userId] ?? 100,
+        onInput: (v) => store.setUserAudioPref("volume", userId, v)
+      },
+      { type: "separator" },
+      {
+        type: "checkbox",
+        label: "Silenciar",
+        checked: prefs.muted.includes(userId),
+        onToggle: (on) => store.setUserAudioPref("muted", userId, on)
+      },
+      {
+        type: "checkbox",
+        label: "Silenciar efeitos sonoros",
+        checked: prefs.soundsMuted.includes(userId),
+        onToggle: (on) => store.setUserAudioPref("soundsMuted", userId, on)
+      },
+      {
+        type: "checkbox",
+        label: "Desativar vídeo",
+        checked: prefs.videoHidden.includes(userId),
+        onToggle: (on) => store.setUserAudioPref("videoHidden", userId, on)
+      },
+      { type: "separator" }
+    );
+    if (!friend) items.push({ label: "Adicionar amigo", onClick: async () => showToast((await store.sendFriendRequestToUser(userId)).ok ? "Pedido de amizade enviado!" : "Não foi possível enviar o pedido.") });
+    if (friend?.relation !== "blocked") {
+      items.push({
+        label: "Bloquear",
+        danger: true,
+        onClick: () => {
+          const fake = document.createElement("button");
+          fake.setAttribute("data-action", "block-friend");
+          fake.setAttribute("data-user-id", userId);
+          openConfirmDialog("block-friend", fake);
+        }
+      });
+    }
+  }
+
+  // Roles (with "Gerenciar cargos", only roles below mine)
+  if (guild && store.can("MANAGE_ROLES", guild)) {
+    const isOwner = guild.ownerId === me;
+    const myTop = myTopRolePosition(guild, me);
+    const memberRoleIds = (guild.members || []).find((m) => m.userId === userId)?.roles || [];
+    const roles = guild.roles.filter((r) => r.name !== "@everyone" && (isOwner || (r.position || 0) < myTop));
+    items.push(
+      { type: "separator" },
+      {
+        type: "submenu",
+        label: "Cargos",
+        items: roles.map((r) => ({
+          type: "checkbox",
+          label: r.name,
+          checked: memberRoleIds.includes(r.id),
+          onToggle: (on) => (on ? store.assignMemberRole(guild.id, userId, r.id) : store.removeMemberRole(guild.id, userId, r.id))
+        }))
+      }
+    );
+  }
+  const canMove = guild && store.can("MOVE_MEMBERS", guild);
+  if (canMove) {
+    items.push({
+      type: "submenu",
+      label: "Mover para",
+      items: guild.channels
+        .filter((c) => c.type === "voice" && c.id !== channel?.id)
+        .map((c) => ({ label: c.name, onClick: () => store.moderateVoice(userId, "move", { channelId: c.id }) }))
+    });
+  }
+
+  items.push(
+    { type: "separator" },
+    {
+      type: "checkbox",
+      label: "Mostrar participantes sem vídeo",
+      checked: uiState.showNonVideoTiles !== false,
+      onToggle: (on) => {
+        uiState.showNonVideoTiles = on;
+      }
+    }
+  );
+
+  // Server moderation of someone else
+  if (guild && !isMe && (store.can("MUTE_MEMBERS", guild) || store.can("DEAFEN_MEMBERS", guild) || canMove)) {
+    items.push({ type: "separator" });
+    if (store.can("MUTE_MEMBERS", guild)) {
+      items.push({
+        type: "checkbox",
+        label: "Silenciar voz no servidor",
+        danger: true,
+        checked: Boolean(participant?.serverMuted),
+        onToggle: (on) => store.moderateVoice(userId, "mute", { value: on })
+      });
+    }
+    if (store.can("DEAFEN_MEMBERS", guild)) {
+      items.push({
+        type: "checkbox",
+        label: "Desativar áudio no servidor",
+        danger: true,
+        checked: Boolean(participant?.serverDeafened),
+        onToggle: (on) => store.moderateVoice(userId, "deafen", { value: on })
+      });
+    }
+    if (canMove) items.push({ label: "Desconectar", danger: true, onClick: () => store.moderateVoice(userId, "disconnect") });
+  }
+  return items;
+}
+
 document.addEventListener("contextmenu", (e) => {
+  const callTarget = e.target.closest(".call-tile[data-user-id], .voice-user-row[data-user-id]");
+  if (callTarget && store.getState().voice.connectedChannelId) {
+    const items = buildCallUserMenu(callTarget.getAttribute("data-user-id"));
+    if (items.length) {
+      e.preventDefault();
+      closeAllFloatingMenus("contextMenu");
+      uiState.contextMenu = { x: e.clientX, y: e.clientY, items, wide: true };
+      renderApp();
+      return;
+    }
+  }
   // Text boxes and selected text get the standard menu (Copiar/Colar...) from the main process
   const row = e.target.closest(".message-row[data-message-id], .call-chat-msg[data-message-id]");
   if (row && !e.target.closest("input, textarea, [contenteditable]") && !String(window.getSelection?.() || "").trim()) {

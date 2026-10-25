@@ -325,6 +325,9 @@ class DiscordBackendServer {
     this.openStreams = new Map(); // userId -> number of open streams
     this.offlineTimers = new Map(); // userId -> pending "went offline" timer
     this.voiceRooms = new Map();
+    // Server mute/deafen set by moderators, kept per server while the backend runs:
+    // `${guildId}:${userId}` -> { serverMuted, serverDeafened }
+    this.serverVoiceFlags = new Map();
     this.listening = new Map(); // userId -> song playing on Spotify (reportListening)
     this.screenShares = new Map();
     this.server = null;
@@ -3383,12 +3386,15 @@ class DiscordBackendServer {
           this.voiceRooms.set(channelId, new Map());
         }
         const room = this.voiceRooms.get(channelId);
+        const modFlags = (guildId && this.serverVoiceFlags.get(`${guildId}:${actorId}`)) || {};
         room.set(actorId, {
           userId: actorId,
           guildId,
           channelId,
-          muted: Boolean(params.muted),
-          deafened: Boolean(params.deafened),
+          muted: Boolean(params.muted) || Boolean(modFlags.serverMuted),
+          deafened: Boolean(params.deafened) || Boolean(modFlags.serverDeafened),
+          serverMuted: Boolean(modFlags.serverMuted),
+          serverDeafened: Boolean(modFlags.serverDeafened),
           videoEnabled: false,
           screenShareEnabled: false,
           joinedAt: Date.now()
@@ -3405,6 +3411,56 @@ class DiscordBackendServer {
           participants: Array.from(room.values()),
           activeScreenShare: this.screenShares.get(channelId) || null
         };
+      }
+
+      // Moderators acting on someone in a call: server mute/deafen, disconnect, move
+      case "VOICE_MODERATE":
+      case "voiceModerate": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const targetId = String(params.targetUserId || "");
+        const op = String(params.op || "");
+        let roomId = null;
+        for (const [chId, room] of this.voiceRooms.entries()) if (room.has(targetId)) roomId = chId;
+        if (!roomId) return { ok: false, status: 404, error: "Essa pessoa não está em uma call." };
+        const guildId = this.guildIdOfChannel(roomId);
+        if (!guildId) return { ok: false, error: "Moderação só existe em calls de servidor." };
+        const needed = { mute: "MUTE_MEMBERS", deafen: "DEAFEN_MEMBERS", disconnect: "MOVE_MEMBERS", move: "MOVE_MEMBERS" }[op];
+        if (!needed) return { ok: false, error: "Ação inválida." };
+        const denied = this.guildPermissionError(actorId, guildId, needed, "Você não tem permissão para isso neste servidor.");
+        if (denied) return denied;
+        if (targetId !== actorId && this.getMemberHighestRolePosition(guildId, targetId) >= this.getMemberHighestRolePosition(guildId, actorId)) {
+          return { ok: false, status: 403, error: "Você não pode moderar alguém com cargo igual ou acima do seu." };
+        }
+        const room = this.voiceRooms.get(roomId);
+        const p = room.get(targetId);
+        if (op === "mute" || op === "deafen") {
+          const key = `${guildId}:${targetId}`;
+          const flags = { ...(this.serverVoiceFlags.get(key) || {}) };
+          if (op === "mute") flags.serverMuted = Boolean(params.value);
+          else flags.serverDeafened = Boolean(params.value);
+          if (flags.serverMuted || flags.serverDeafened) this.serverVoiceFlags.set(key, flags);
+          else this.serverVoiceFlags.delete(key);
+          p.serverMuted = Boolean(flags.serverMuted);
+          p.serverDeafened = Boolean(flags.serverDeafened);
+          if (p.serverMuted) p.muted = true;
+          if (p.serverDeafened) p.deafened = true;
+          this.broadcastEvent("RTC_ROOM_UPDATED", { channelId: roomId, participants: Array.from(room.values()) });
+          return { ok: true, participant: p };
+        }
+        if (op === "move") {
+          const target = this.db.prepare(`SELECT * FROM channels WHERE id = ? AND guild_id = ? AND type = 'voice'`).get(params.channelId, guildId);
+          if (!target) return { ok: false, error: "Canal de voz inválido." };
+          if (target.id === roomId) return { ok: true };
+        }
+        // Disconnect (or move): the target's app leaves the call / joins the other channel
+        room.delete(targetId);
+        if (this.screenShares.get(roomId)?.sharerId === targetId) {
+          this.screenShares.delete(roomId);
+          this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId: roomId, sharerId: targetId });
+        }
+        this.broadcastEvent("RTC_ROOM_UPDATED", { channelId: roomId, participants: Array.from(room.values()) });
+        this.broadcastEvent("VOICE_FORCED", { userId: targetId, op, guildId, channelId: op === "move" ? params.channelId : null });
+        return { ok: true };
       }
 
       case "RTC_LEAVE_VOICE":
@@ -3439,8 +3495,8 @@ class DiscordBackendServer {
               return { ok: false, status: 403, error: "Você não tem permissão para ligar a câmera neste canal." };
             }
             // Without "Falar" the others keep this person silenced
-            p.muted = Boolean(params.muted) || Boolean(roomPerms && !roomPerms.has("SPEAK_VOICE"));
-            p.deafened = Boolean(params.deafened);
+            p.muted = Boolean(params.muted) || Boolean(roomPerms && !roomPerms.has("SPEAK_VOICE")) || Boolean(p.serverMuted);
+            p.deafened = Boolean(params.deafened) || Boolean(p.serverDeafened);
             if (params.videoEnabled !== undefined) p.videoEnabled = Boolean(params.videoEnabled);
             // Everyone sees the new mic/camera state on the call tiles
             this.broadcastEvent("RTC_ROOM_UPDATED", { channelId, participants: Array.from(room.values()) });

@@ -17,6 +17,7 @@ const {
   nativeImage
 } = require("electron");
 const path = require("path");
+const os = require("os");
 const fs = require("fs");
 const { execFile } = require("child_process");
 const { DiscordBackendServer } = require("./backendServer");
@@ -143,23 +144,47 @@ let remoteServerUrl = null;
 let mediaSessionActive = false;
 let lastTrimAt = 0;
 
-// Memory: every app process gets a hard working-set ceiling (MemTrim --cap).
-// Windows keeps it under that by moving the least-used pages out a few at a
-// time, so the "Memory" column of Task Manager stays under ~80 MB in every
-// situation (chat, GIFs, calls, screen share) with no all-at-once trim and
-// no stutter. Measured with 1080p/60 video sent and received: 58-70 MB, same
-// frame rate as without the ceiling. The ceiling counts shared DLL pages too,
-// which Task Manager leaves out, hence the numbers above 80.
+// "Modo economia de memória" (Configurações > Windows & Memória, off by
+// default): every app process gets a hard working-set ceiling (MemTrim --cap),
+// which keeps Task Manager's "Memory" column low. It is off by default because
+// a ceiling below what the app is using makes Windows page memory in and out
+// non-stop: measured with a 1080p/60 share between two copies of the app, 37
+// FPS and stalls with the ceiling against 54-57 FPS and none without it, and
+// the window took twice as long to open (0.70 s vs 0.30 s).
 const MAIN_PROCESS_CAP_MB = 85; // app + GPU + capture/encoding (in-process)
 const PAGE_PROCESS_CAP_MB = 30; // each page (window)
 let cappedPids = "";
 
+function isMemorySaverOn() {
+  return Boolean(getSetting("MEMORY_SAVER", false));
+}
+
 function applyMemoryCaps() {
   const metrics = app.getAppMetrics();
-  const key = metrics.map((m) => m.pid).sort().join(",");
+  if (!isMemorySaverOn()) {
+    // Turned off while running: lift the ceilings that were set
+    if (cappedPids) {
+      capProcesses(metrics.map((mt) => ({ pid: mt.pid, mb: 0 })));
+      cappedPids = "";
+    }
+    return;
+  }
+  const key = metrics.map((mt) => mt.pid).sort().join(",");
   if (key === cappedPids) return;
-  const entries = metrics.map((m) => ({ pid: m.pid, mb: m.type === "Browser" ? MAIN_PROCESS_CAP_MB : PAGE_PROCESS_CAP_MB }));
+  const entries = metrics.map((mt) => ({ pid: mt.pid, mb: mt.type === "Browser" ? MAIN_PROCESS_CAP_MB : PAGE_PROCESS_CAP_MB }));
   if (capProcesses(entries)) cappedPids = key;
+}
+
+// During a call or screen share the app runs "above normal": a game at normal
+// priority no longer starves the capture, the video encoder and the audio
+// (all of them live in the app's processes)
+function setMediaPriority(active) {
+  const level = active ? os.constants.priority.PRIORITY_ABOVE_NORMAL : os.constants.priority.PRIORITY_NORMAL;
+  for (const mt of app.getAppMetrics()) {
+    try {
+      os.setPriority(mt.pid, level);
+    } catch (_) {}
+  }
 }
 
 // Emptying the working set entirely is only done while the app is out of
@@ -702,6 +727,7 @@ function registerIpcHandlers(backend) {
 
   ipcMain.on("DISCORD_MEDIA_SESSION", (_e, active) => {
     const ended = mediaSessionActive && !active;
+    if (Boolean(active) !== mediaSessionActive) setMediaPriority(Boolean(active));
     mediaSessionActive = Boolean(active);
     // Call/share over: give back what it used
     if (ended) setTimeout(() => trimProcessWorkingSets(), 2000);
@@ -979,6 +1005,16 @@ function registerIpcHandlers(backend) {
 
   ipcMain.on("DISCORD_APP_SET_OPEN_ON_STARTUP_SYNC", (event, enabled) => {
     event.returnValue = applyOpenOnStartup(enabled);
+  });
+
+  ipcMain.on("DISCORD_MEMORY_SAVER_GET_SYNC", (event) => {
+    event.returnValue = isMemorySaverOn();
+  });
+
+  ipcMain.on("DISCORD_MEMORY_SAVER_SET_SYNC", (event, enabled) => {
+    setSetting("MEMORY_SAVER", Boolean(enabled));
+    applyMemoryCaps();
+    event.returnValue = isMemorySaverOn();
   });
 
   ipcMain.on("DISCORD_GPU_SETTINGS_GET_ENABLE_HWACCEL_SYNC", (event) => {

@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-24T04:30:39.689Z",
+  "timestamp": "2026-10-25T22:25:04.438Z",
   "targetLimitMB": 80,
   "baselineBeforeOptimization": {
     "1_startup": {
@@ -30,173 +30,173 @@
   "afterOptimization": [
     {
       "stage": "1_startup",
-      "mainWorkingSetMB": 4.73,
+      "mainWorkingSetMB": 5.16,
       "rendererWorkingSetMB": 0,
-      "totalWorkingSetMB": 4.8,
-      "totalPrivateMB": 256.51,
-      "mainHeapUsedMB": 6.71,
+      "totalWorkingSetMB": 5.23,
+      "totalPrivateMB": 258.01,
+      "mainHeapUsedMB": 6.63,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8796,
-          "workingSetMB": 4.73,
-          "privateMB": 75.23
+          "pid": 21680,
+          "workingSetMB": 5.16,
+          "privateMB": 75.27
         },
         {
           "type": "GPU",
-          "pid": 11128,
+          "pid": 17232,
           "workingSetMB": 0.07,
-          "privateMB": 138.75
+          "privateMB": 142.73
         },
         {
           "type": "Utility",
-          "pid": 844,
+          "pid": 15512,
           "workingSetMB": 0,
-          "privateMB": 13.51
+          "privateMB": 13.43
         },
         {
           "type": "Tab",
-          "pid": 12320,
+          "pid": 20788,
           "workingSetMB": 0,
-          "privateMB": 29.02
+          "privateMB": 26.57
         }
       ]
     },
     {
       "stage": "2_after_navigation",
-      "mainWorkingSetMB": 6.61,
-      "rendererWorkingSetMB": 1.49,
-      "totalWorkingSetMB": 15.06,
-      "totalPrivateMB": 376.47,
-      "mainHeapUsedMB": 8.35,
+      "mainWorkingSetMB": 5.32,
+      "rendererWorkingSetMB": 1.5,
+      "totalWorkingSetMB": 9.91,
+      "totalPrivateMB": 375.31,
+      "mainHeapUsedMB": 8.21,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8796,
-          "workingSetMB": 6.61,
-          "privateMB": 80.76
+          "pid": 21680,
+          "workingSetMB": 5.32,
+          "privateMB": 80.26
         },
         {
           "type": "GPU",
-          "pid": 11128,
-          "workingSetMB": 1.23,
-          "privateMB": 157.23
+          "pid": 17232,
+          "workingSetMB": 1.21,
+          "privateMB": 159.05
         },
         {
           "type": "Utility",
-          "pid": 844,
+          "pid": 15512,
           "workingSetMB": 0,
-          "privateMB": 13.85
+          "privateMB": 13.74
         },
         {
           "type": "Tab",
-          "pid": 12320,
-          "workingSetMB": 1.49,
-          "privateMB": 52.29
+          "pid": 20788,
+          "workingSetMB": 1.5,
+          "privateMB": 49.84
         },
         {
           "type": "Utility",
-          "pid": 16064,
-          "workingSetMB": 5.65,
-          "privateMB": 12.73
+          "pid": 22104,
+          "workingSetMB": 1.81,
+          "privateMB": 12.8
         },
         {
           "type": "Utility",
-          "pid": 3428,
+          "pid": 12436,
           "workingSetMB": 0.07,
-          "privateMB": 59.61
+          "privateMB": 59.62
         }
       ]
     },
     {
       "stage": "3_during_call",
-      "mainWorkingSetMB": 38.16,
-      "rendererWorkingSetMB": 9.67,
-      "totalWorkingSetMB": 68.48,
-      "totalPrivateMB": 479.16,
-      "mainHeapUsedMB": 8.89,
+      "mainWorkingSetMB": 36.74,
+      "rendererWorkingSetMB": 10.05,
+      "totalWorkingSetMB": 109.55,
+      "totalPrivateMB": 514.71,
+      "mainHeapUsedMB": 8.78,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8796,
-          "workingSetMB": 38.16,
-          "privateMB": 167.82
+          "pid": 21680,
+          "workingSetMB": 36.74,
+          "privateMB": 166.13
         },
         {
           "type": "GPU",
-          "pid": 11128,
-          "workingSetMB": 13.6,
-          "privateMB": 169.69
+          "pid": 17232,
+          "workingSetMB": 56.18,
+          "privateMB": 209.99
         },
         {
           "type": "Utility",
-          "pid": 844,
-          "workingSetMB": 4,
-          "privateMB": 14.09
+          "pid": 15512,
+          "workingSetMB": 0,
+          "privateMB": 13.76
         },
         {
           "type": "Tab",
-          "pid": 12320,
-          "workingSetMB": 9.67,
-          "privateMB": 53.53
+          "pid": 20788,
+          "workingSetMB": 10.05,
+          "privateMB": 50.74
         },
         {
           "type": "Utility",
-          "pid": 16064,
-          "workingSetMB": 2.98,
-          "privateMB": 14.42
+          "pid": 22104,
+          "workingSetMB": 3.53,
+          "privateMB": 14.5
         },
         {
           "type": "Utility",
-          "pid": 3428,
-          "workingSetMB": 0.07,
-          "privateMB": 59.61
+          "pid": 12436,
+          "workingSetMB": 3.06,
+          "privateMB": 59.59
         }
       ]
     },
     {
       "stage": "4_after_call",
-      "mainWorkingSetMB": 5.53,
+      "mainWorkingSetMB": 6.83,
       "rendererWorkingSetMB": 0.96,
-      "totalWorkingSetMB": 13.4,
-      "totalPrivateMB": 422.74,
-      "mainHeapUsedMB": 7.74,
+      "totalWorkingSetMB": 10.44,
+      "totalPrivateMB": 459.63,
+      "mainHeapUsedMB": 7.63,
       "processes": [
         {
           "type": "Browser",
-          "pid": 8796,
-          "workingSetMB": 5.53,
-          "privateMB": 113.68
+          "pid": 21680,
+          "workingSetMB": 6.83,
+          "privateMB": 113.75
         },
         {
           "type": "GPU",
-          "pid": 11128,
-          "workingSetMB": 1.2,
-          "privateMB": 169.69
+          "pid": 17232,
+          "workingSetMB": 1.21,
+          "privateMB": 209.95
         },
         {
           "type": "Utility",
-          "pid": 844,
-          "workingSetMB": 0.02,
-          "privateMB": 14.09
+          "pid": 15512,
+          "workingSetMB": 0,
+          "privateMB": 13.76
         },
         {
           "type": "Tab",
-          "pid": 12320,
+          "pid": 20788,
           "workingSetMB": 0.96,
-          "privateMB": 52.62
+          "privateMB": 49.43
         },
         {
           "type": "Utility",
-          "pid": 16064,
-          "workingSetMB": 5.58,
-          "privateMB": 13.07
+          "pid": 22104,
+          "workingSetMB": 1.36,
+          "privateMB": 13.14
         },
         {
           "type": "Utility",
-          "pid": 3428,
-          "workingSetMB": 0.1,
-          "privateMB": 59.58
+          "pid": 12436,
+          "workingSetMB": 0.07,
+          "privateMB": 59.59
         }
       ]
     }

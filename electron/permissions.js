@@ -40,7 +40,10 @@ const PERMISSION_GROUPS = [
     perms: [
       { flag: "CONNECT_VOICE", label: "Conectar", desc: "Entrar nos canais de voz." },
       { flag: "SPEAK_VOICE", label: "Falar", desc: "Ser ouvido nas calls (sem ela, entra silenciado)." },
-      { flag: "STREAM_VIDEO", label: "Vídeo / Compartilhar tela", desc: "Ligar a câmera e transmitir a tela." }
+      { flag: "STREAM_VIDEO", label: "Vídeo / Compartilhar tela", desc: "Ligar a câmera e transmitir a tela." },
+      { flag: "MUTE_MEMBERS", label: "Silenciar membros", desc: "Silenciar a voz de outras pessoas no servidor inteiro." },
+      { flag: "DEAFEN_MEMBERS", label: "Desativar áudio de membros", desc: "Impedir que outras pessoas ouçam a call." },
+      { flag: "MOVE_MEMBERS", label: "Mover membros", desc: "Mover pessoas entre canais de voz e desconectá-las da call." }
     ]
   },
   {
