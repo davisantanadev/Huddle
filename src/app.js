@@ -4636,8 +4636,8 @@ function renderSettingsOverlay(state) {
         ${
           uiState.updatingApp
             ? `<div class="update-progress" data-testid="update-progress">
-                <div class="update-progress-track"><div class="update-progress-fill" id="update-progress-fill" style="width:${uiState.updatePercent || 0}%;"></div></div>
-                <span id="update-progress-label">${escapeHtml(uiState.updateLabel || "Preparando o download...")}</span>
+                <div class="update-progress-track"><div class="update-progress-fill js-update-fill" id="update-progress-fill" style="width:${uiState.updatePercent || 0}%;"></div></div>
+                <span class="js-update-label" id="update-progress-label">${escapeHtml(uiState.updateLabel || "Preparando o download...")}</span>
               </div>`
             : ""
         }
@@ -5234,6 +5234,7 @@ export function renderApp() {
   morphInnerHTML(root, `
     <div class="app-root" data-theme="${escapeHtml(state.settings.theme)}" style="--font-scale:${state.settings.fontScale || 1};--channels-width:${uiState.channelsWidth}px;--members-width:${uiState.membersWidth}px;">
       ${renderTitlebar(state)}
+      ${renderUpdateBanner()}
       <div class="workspace">
         ${renderGuildsRail(state)}
         ${renderSecondarySidebar(state)}
@@ -7220,6 +7221,10 @@ async function handleGlobalClick(e) {
     case "check-updates":
       await checkForUpdates({ quiet: false });
       break;
+    case "dismiss-update-banner":
+      uiState.updateBannerDismissed = uiState.updateInfo?.latest || true;
+      renderApp();
+      break;
     case "install-update": {
       // Downloads inside the app (progress below the button); closes only when ready
       uiState.updatingApp = true;
@@ -7229,8 +7234,7 @@ async function handleGlobalClick(e) {
       const res = await window.DiscordNative?.app?.installUpdate?.();
       if (res?.ok) {
         uiState.updateLabel = "Pronto! Instalando... o app fecha e abre de novo sozinho.";
-        const label = document.getElementById("update-progress-label");
-        if (label) label.textContent = uiState.updateLabel;
+        paintUpdateProgress();
       } else {
         uiState.updatingApp = false;
         renderApp();
@@ -8450,10 +8454,36 @@ async function checkForUpdates({ quiet = true } = {}) {
   if (!quiet) renderApp();
   const info = await window.DiscordNative.app.checkForUpdates().catch(() => null);
   uiState.checkingUpdates = false;
-  uiState.updateInfo = info || { ok: false, error: "Não foi possível verificar." };
-  if (info?.available) showToast(`Nova versão do ${getAppName()} disponível (${info.latest}). Atualize em Configurações > Windows & Memória.`);
-  else if (!quiet) showToast(info?.ok ? "Você já está na versão mais recente." : uiState.updateInfo.error);
+  // A failed background check keeps what an earlier one found
+  if (info?.ok || !quiet || !uiState.updateInfo?.available) uiState.updateInfo = info || { ok: false, error: "Não foi possível verificar." };
+  if (!quiet && !info?.available) showToast(info?.ok ? "Você já está na versão mais recente." : uiState.updateInfo.error);
   renderApp();
+}
+
+// Bar under the titlebar while a newer version exists (and while it downloads)
+function renderUpdateBanner() {
+  const info = uiState.updateInfo;
+  if (uiState.updatingApp) {
+    return `
+      <div class="update-banner" data-testid="update-banner">
+        <span class="update-banner-text"><span class="js-update-label">${escapeHtml(uiState.updateLabel || "Preparando o download...")}</span></span>
+        <div class="update-progress-track update-banner-track"><div class="update-progress-fill js-update-fill" style="width:${uiState.updatePercent || 0}%;"></div></div>
+      </div>
+    `;
+  }
+  if (!info?.available || uiState.updateBannerDismissed === info.latest) return "";
+  return `
+    <div class="update-banner" data-testid="update-banner">
+      <span class="update-banner-text">Nova versão do ${escapeHtml(getAppName())} disponível: <strong>${escapeHtml(info.latest)}</strong> (você está na ${escapeHtml(info.current || "")})</span>
+      <button type="button" class="btn btn-success btn-sm" data-action="install-update" data-testid="banner-install-update-btn">Atualizar agora</button>
+      <button type="button" class="update-banner-close" data-action="dismiss-update-banner" aria-label="Depois" title="Depois">×</button>
+    </div>
+  `;
+}
+
+function paintUpdateProgress() {
+  document.querySelectorAll(".js-update-fill").forEach((el) => (el.style.width = `${uiState.updatePercent || 0}%`));
+  document.querySelectorAll(".js-update-label").forEach((el) => (el.textContent = uiState.updateLabel));
 }
 
 // Download progress of "Atualizar agora" (updated in place, no full redraw)
@@ -8465,10 +8495,7 @@ NativeBridge.subscribeIpc("UPDATE_PROGRESS", ({ received = 0, total = 0, done = 
     : total
       ? `Baixando ${uiState.updatePercent}% (${mb(received)} de ${mb(total)} MB)`
       : `Baixando ${mb(received)} MB...`;
-  const fill = document.getElementById("update-progress-fill");
-  const label = document.getElementById("update-progress-label");
-  if (fill) fill.style.width = `${uiState.updatePercent}%`;
-  if (label) label.textContent = uiState.updateLabel;
+  paintUpdateProgress();
 });
 
 NativeBridge.subscribeIpc("CHECK_FOR_UPDATES", () => {
@@ -8476,7 +8503,11 @@ NativeBridge.subscribeIpc("CHECK_FOR_UPDATES", () => {
   uiState.settingsOverlay = { type: "user", tab: "windows" };
   renderApp();
 });
-setTimeout(() => checkForUpdates({ quiet: true }), 15000);
+// Checks on its own: soon after opening, then every 30 minutes
+setTimeout(() => checkForUpdates({ quiet: true }), 4000);
+setInterval(() => {
+  if (!uiState.updatingApp) checkForUpdates({ quiet: true });
+}, 30 * 60 * 1000);
 
 // Game covers come from the Steam CDN; if one fails, the card keeps its initials
 document.addEventListener(
