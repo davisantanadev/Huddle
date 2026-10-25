@@ -335,11 +335,9 @@ class Store {
       }
 
       if (event === "VOICE_SPEAKING_CHANGED" && payload?.userId) {
-        this.state.voice.speakingUsers[payload.userId] = Boolean(payload.speaking);
-        if (payload.userId === this.state.auth.currentUserId) {
-          this.state.voice.isSpeaking = Boolean(payload.speaking);
-        }
-        this.notify({ skipPersist: true });
+        // People we hear directly are detected on this PC (Voice.onRemoteSpeaking)
+        if (payload.userId === this.state.auth.currentUserId || Voice.hasAudioFrom(payload.userId)) return;
+        this.setUserSpeaking(payload.userId, Boolean(payload.speaking));
         return;
       }
 
@@ -1142,6 +1140,7 @@ class Store {
     }
     // A screen or camera video started arriving: show it
     Voice.onRemoteMedia = () => this.notify({ skipPersist: true });
+    Voice.onRemoteSpeaking = (userId, speaking) => this.setUserSpeaking(userId, speaking);
     Voice.start({
       channelId,
       meId: this.state.auth.currentUserId,
@@ -1461,14 +1460,22 @@ class Store {
     return { ok: true };
   }
 
+  // The green ring: the UI swaps it directly (onSpeakingChange) instead of
+  // redrawing the whole app every time someone starts or stops talking
+  setUserSpeaking(userId, speaking) {
+    if (!this.state.voice.speakingUsers) this.state.voice.speakingUsers = {};
+    if (Boolean(this.state.voice.speakingUsers[userId]) === Boolean(speaking)) return;
+    this.state.voice.speakingUsers[userId] = Boolean(speaking);
+    if (typeof this.onSpeakingChange === "function") this.onSpeakingChange(userId, Boolean(speaking));
+    else this.notify({ skipPersist: true });
+  }
+
   async setVoiceSpeaking(speaking) {
     // While muted nothing is sent, so nobody should see us "speaking"
     const isSpk = Boolean(speaking) && !this.state.voice.muted && !this.state.voice.deafened;
     this.state.voice.isSpeaking = isSpk;
     const meId = this.state.auth.currentUserId;
-    if (!this.state.voice.speakingUsers) this.state.voice.speakingUsers = {};
-    this.state.voice.speakingUsers[meId] = isSpk;
-    this.notify({ skipPersist: true });
+    this.setUserSpeaking(meId, isSpk);
     if (this.state.voice.connectedChannelId) {
       await NativeBridge.rpc("setVoiceSpeaking", {
         channelId: this.state.voice.connectedChannelId,

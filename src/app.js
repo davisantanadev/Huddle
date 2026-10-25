@@ -3827,6 +3827,139 @@ function renderSoundRow(s, { type, title, desc, previewLabel }) {
   `;
 }
 
+// ==========================================================================
+// Mute shortcut (global: works with the app in the background, e.g. in a game)
+// ==========================================================================
+function readMuteHotkey() {
+  return window.DiscordNative?.hotkeys?.getMuteHotkey?.() || { accelerator: "", active: false };
+}
+
+// "CommandOrControl+Shift+M" -> ["Ctrl", "Shift", "M"]
+function hotkeyParts(accelerator) {
+  return String(accelerator || "")
+    .split("+")
+    .filter(Boolean)
+    .map((p) => ({ CommandOrControl: "Ctrl", Control: "Ctrl", Alt: "Alt", Shift: "Shift", Super: "Win", Space: "Espaço" })[p] || p);
+}
+
+// A keydown -> Electron accelerator ("" while only modifiers are held)
+function acceleratorFromEvent(e) {
+  const code = e.code || "";
+  let key = "";
+  if (/^Key[A-Z]$/.test(code)) key = code.slice(3);
+  else if (/^Digit[0-9]$/.test(code)) key = code.slice(5);
+  else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) key = code;
+  else if (/^Numpad[0-9]$/.test(code)) key = "num" + code.slice(6);
+  else {
+    key = {
+      Space: "Space",
+      Backquote: "`",
+      Minus: "-",
+      Equal: "=",
+      BracketLeft: "[",
+      BracketRight: "]",
+      Backslash: "\\",
+      Semicolon: ";",
+      Quote: "'",
+      Comma: ",",
+      Period: ".",
+      Slash: "/",
+      Insert: "Insert",
+      Delete: "Delete",
+      Home: "Home",
+      End: "End",
+      PageUp: "PageUp",
+      PageDown: "PageDown",
+      ArrowUp: "Up",
+      ArrowDown: "Down",
+      ArrowLeft: "Left",
+      ArrowRight: "Right",
+      Pause: "Pause",
+      ScrollLock: "Scrolllock",
+      NumpadAdd: "numadd",
+      NumpadSubtract: "numsub",
+      NumpadMultiply: "nummult",
+      NumpadDivide: "numdiv"
+    }[code] || "";
+  }
+  if (!key) return "";
+  const mods = [];
+  if (e.ctrlKey) mods.push("CommandOrControl");
+  if (e.altKey) mods.push("Alt");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.metaKey) mods.push("Super");
+  // A plain letter/number alone would fire while typing anywhere: needs a modifier (F-keys are fine)
+  if (!mods.length && !/^F\d+$/.test(key) && !["Pause", "Scrolllock", "Insert"].includes(key)) return null;
+  return [...mods, key].join("+");
+}
+
+function renderMuteHotkeyCard() {
+  const { accelerator } = readMuteHotkey();
+  const recording = uiState.recordingMuteHotkey;
+  const keys = hotkeyParts(accelerator);
+  return `
+    <section class="settings-card" data-testid="mute-hotkey-card">
+      <div class="settings-card-head">
+        <div>
+          <h3>Atalho para mutar o microfone</h3>
+          <p>Liga e desliga o microfone de qualquer lugar, mesmo com o app em segundo plano (por exemplo, num jogo).</p>
+        </div>
+      </div>
+      <div class="hotkey-row">
+        <div class="hotkey-display ${recording ? "recording" : ""}" data-testid="mute-hotkey-display">
+          ${
+            recording
+              ? `<span class="hotkey-hint">Pressione a nova combinação... (Esc cancela)</span>`
+              : keys.length
+                ? keys.map((k) => `<kbd>${escapeHtml(k)}</kbd>`).join('<span class="hotkey-plus">+</span>')
+                : `<span class="hotkey-hint">Sem atalho</span>`
+          }
+        </div>
+        ${
+          recording
+            ? `<button type="button" class="btn btn-secondary btn-sm" data-action="cancel-mute-hotkey">Cancelar</button>`
+            : `<button type="button" class="btn btn-primary btn-sm" data-action="record-mute-hotkey" data-testid="change-mute-hotkey-btn">Alterar atalho</button>
+               ${accelerator ? `<button type="button" class="btn btn-secondary btn-sm" data-action="clear-mute-hotkey">Remover</button>` : ""}`
+        }
+      </div>
+      ${uiState.muteHotkeyError ? `<div class="inline-feedback err">${escapeHtml(uiState.muteHotkeyError)}</div>` : ""}
+    </section>
+  `;
+}
+
+function saveMuteHotkey(accelerator) {
+  const res = window.DiscordNative?.hotkeys?.setMuteHotkey?.(accelerator) || { ok: false, error: "Disponível só no app instalado." };
+  uiState.recordingMuteHotkey = false;
+  uiState.muteHotkeyError = res.ok ? "" : res.error;
+  renderApp();
+  if (res.ok) showToast(accelerator ? `Atalho de mutar: ${hotkeyParts(accelerator).join(" + ")}` : "Atalho de mutar removido.");
+}
+
+// While recording, the next key combination becomes the shortcut
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (!uiState.recordingMuteHotkey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      uiState.recordingMuteHotkey = false;
+      uiState.muteHotkeyError = "";
+      renderApp();
+      return;
+    }
+    const accelerator = acceleratorFromEvent(e);
+    if (accelerator === "") return; // only modifiers so far
+    if (accelerator === null) {
+      uiState.muteHotkeyError = "Use pelo menos uma tecla como Ctrl, Alt ou Shift junto (ou uma tecla F1-F24).";
+      renderApp();
+      return;
+    }
+    saveMuteHotkey(accelerator);
+  },
+  true
+);
+
 function renderVoiceSettingsPanel(state) {
   const s = state.settings;
   const inputs = uiState.audioInputDevices.length > 0
@@ -3841,6 +3974,8 @@ function renderVoiceSettingsPanel(state) {
       <h2>Voz, Vídeo & Sons</h2>
       <p>Escolha seus dispositivos, teste o microfone e personalize os sons de chamada.</p>
     </div>
+
+    ${renderMuteHotkeyCard()}
 
     <section class="settings-card" data-testid="audio-devices-config-panel">
       <div class="settings-card-head">
@@ -4491,11 +4626,21 @@ function renderSettingsOverlay(state) {
             }</p>
           </div>
           ${
-            uiState.updateInfo?.available
-              ? `<button class="btn btn-success btn-sm" data-action="install-update" data-testid="install-update-btn">Atualizar agora</button>`
-              : `<button class="btn btn-primary btn-sm" data-action="check-updates" data-testid="check-updates-btn">${uiState.checkingUpdates ? "Verificando..." : "Verificar atualizações"}</button>`
+            uiState.updatingApp
+              ? `<button class="btn btn-success btn-sm" disabled>Baixando...</button>`
+              : uiState.updateInfo?.available
+                ? `<button class="btn btn-success btn-sm" data-action="install-update" data-testid="install-update-btn">Atualizar agora</button>`
+                : `<button class="btn btn-primary btn-sm" data-action="check-updates" data-testid="check-updates-btn" ${uiState.checkingUpdates ? "disabled" : ""}>${uiState.checkingUpdates ? "Verificando..." : "Verificar atualizações"}</button>`
           }
         </div>
+        ${
+          uiState.updatingApp
+            ? `<div class="update-progress" data-testid="update-progress">
+                <div class="update-progress-track"><div class="update-progress-fill" id="update-progress-fill" style="width:${uiState.updatePercent || 0}%;"></div></div>
+                <span id="update-progress-label">${escapeHtml(uiState.updateLabel || "Preparando o download...")}</span>
+              </div>`
+            : ""
+        }
         ${uiState.updateInfo?.available && uiState.updateInfo.notes ? `<p class="setting-desc update-notes">${escapeHtml(uiState.updateInfo.notes)}</p>` : ""}
       </section>
       <section class="settings-card">
@@ -5062,6 +5207,13 @@ export function renderApp() {
     morphInnerHTML(root, renderEmailGateScreen(state));
     bindReplacingDuplicates(bindFormEvents);
     return;
+  }
+
+  // A server that no longer exists (or a brand-new account with no servers) would
+  // leave the window without its sidebar and account bar: show the home screen
+  if (state.navigation.view === "guild" && !store.getActiveGuild()) {
+    state.navigation.view = "home";
+    state.navigation.homeSection = "friends";
   }
 
   let mainStageHtml = "";
@@ -6792,6 +6944,19 @@ async function handleGlobalClick(e) {
       uiState.callFocusUserId = null;
       renderApp();
       break;
+    case "record-mute-hotkey":
+      uiState.recordingMuteHotkey = true;
+      uiState.muteHotkeyError = "";
+      renderApp();
+      break;
+    case "cancel-mute-hotkey":
+      uiState.recordingMuteHotkey = false;
+      uiState.muteHotkeyError = "";
+      renderApp();
+      break;
+    case "clear-mute-hotkey":
+      saveMuteHotkey("");
+      break;
     case "toggle-call-chat":
       uiState.callChatOpen = !uiState.callChatOpen;
       renderApp();
@@ -7056,8 +7221,21 @@ async function handleGlobalClick(e) {
       await checkForUpdates({ quiet: false });
       break;
     case "install-update": {
+      // Downloads inside the app (progress below the button); closes only when ready
+      uiState.updatingApp = true;
+      uiState.updatePercent = 0;
+      uiState.updateLabel = "Preparando o download...";
+      renderApp();
       const res = await window.DiscordNative?.app?.installUpdate?.();
-      showToast(res?.ok ? "Baixando a atualização... o app vai fechar e abrir de novo sozinho." : res?.error || "Não foi possível atualizar.");
+      if (res?.ok) {
+        uiState.updateLabel = "Pronto! Instalando... o app fecha e abre de novo sozinho.";
+        const label = document.getElementById("update-progress-label");
+        if (label) label.textContent = uiState.updateLabel;
+      } else {
+        uiState.updatingApp = false;
+        renderApp();
+        showToast(res?.error || "Não foi possível atualizar.");
+      }
       break;
     }
     case "reset-ui-scale":
@@ -8243,6 +8421,12 @@ NativeBridge.subscribeIpc("CALL_LEAVE", () => {
   store.leaveVoiceChannel();
 });
 
+// Global mute shortcut (Configurações > Voz, Vídeo & Sons)
+NativeBridge.subscribeIpc("HOTKEY_TOGGLE_MUTE", () => {
+  if (!store.getState().auth.isAuthenticated) return;
+  store.toggleMute();
+});
+
 NativeBridge.subscribeIpc("SYSTEM_TRAY_TOGGLE_MUTE", () => {
   store.toggleMute();
   showToast(store.getState().voice.muted ? "Microfone silenciado via Bandeja" : "Microfone ativado via Bandeja");
@@ -8271,6 +8455,21 @@ async function checkForUpdates({ quiet = true } = {}) {
   else if (!quiet) showToast(info?.ok ? "Você já está na versão mais recente." : uiState.updateInfo.error);
   renderApp();
 }
+
+// Download progress of "Atualizar agora" (updated in place, no full redraw)
+NativeBridge.subscribeIpc("UPDATE_PROGRESS", ({ received = 0, total = 0, done = false } = {}) => {
+  const mb = (n) => (n / 1048576).toFixed(0);
+  uiState.updatePercent = total ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  uiState.updateLabel = done
+    ? "Conferindo e instalando..."
+    : total
+      ? `Baixando ${uiState.updatePercent}% (${mb(received)} de ${mb(total)} MB)`
+      : `Baixando ${mb(received)} MB...`;
+  const fill = document.getElementById("update-progress-fill");
+  const label = document.getElementById("update-progress-label");
+  if (fill) fill.style.width = `${uiState.updatePercent}%`;
+  if (label) label.textContent = uiState.updateLabel;
+});
 
 NativeBridge.subscribeIpc("CHECK_FOR_UPDATES", () => {
   checkForUpdates({ quiet: false });
@@ -8303,6 +8502,20 @@ document.addEventListener(
 );
 
 store.onPermissionNotice = (text) => showToast(text);
+
+// Speaking ring: toggled in place on the call tile, the row under the voice
+// channel and the account bar (no full redraw several times a second)
+store.onSpeakingChange = (userId, speaking) => {
+  const id = CSS.escape(userId);
+  const voice = store.getState().voice;
+  const channel = store.getActiveGuild()?.channels.find((c) => c.id === voice.connectedChannelId);
+  const participant = (channel?.voiceParticipants || []).find((p) => p.userId === userId);
+  const muted = userId === store.getState().auth.currentUserId ? voice.muted : Boolean(participant?.muted);
+  document.querySelectorAll(`.call-tile[data-user-id="${id}"]`).forEach((el) => el.classList.toggle("speaking", speaking && !muted));
+  document
+    .querySelectorAll(`.voice-user-row[data-user-id="${id}"] .avatar-wrap, .account-bar .avatar-wrap[data-user-id="${id}"]`)
+    .forEach((el) => el.classList.toggle("speaking", speaking));
+};
 
 // Coming back to the window counts the channel on screen as read
 window.addEventListener("focus", () => {

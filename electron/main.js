@@ -13,6 +13,7 @@ const {
   desktopCapturer,
   session,
   powerMonitor,
+  globalShortcut,
   net,
   nativeImage
 } = require("electron");
@@ -173,6 +174,35 @@ function applyMemoryCaps() {
   if (key === cappedPids) return;
   const entries = metrics.map((mt) => ({ pid: mt.pid, mb: mt.type === "Browser" ? MAIN_PROCESS_CAP_MB : PAGE_PROCESS_CAP_MB }));
   if (capProcesses(entries)) cappedPids = key;
+}
+
+// Keyboard shortcut that mutes/unmutes the microphone from anywhere (also in a
+// game). Changed in Configurações > Voz, Vídeo & Sons; "" turns it off.
+const DEFAULT_MUTE_HOTKEY = "CommandOrControl+Shift+M";
+let activeMuteHotkey = "";
+
+function getMuteHotkey() {
+  const value = getSetting("MUTE_HOTKEY", DEFAULT_MUTE_HOTKEY);
+  return typeof value === "string" ? value : DEFAULT_MUTE_HOTKEY;
+}
+
+// Registers the shortcut; { ok:false } when Windows or another app already uses it
+function applyMuteHotkey(accelerator) {
+  if (activeMuteHotkey) {
+    try {
+      globalShortcut.unregister(activeMuteHotkey);
+    } catch (_) {}
+    activeMuteHotkey = "";
+  }
+  if (!accelerator) return { ok: true };
+  let ok = false;
+  try {
+    ok = globalShortcut.register(accelerator, () => webContentsSend("HOTKEY_TOGGLE_MUTE"));
+  } catch (_) {
+    ok = false;
+  }
+  if (ok) activeMuteHotkey = accelerator;
+  return ok ? { ok: true } : { ok: false, error: "Esse atalho já está em uso por outro programa ou não é válido." };
 }
 
 // During a call or screen share the app runs "above normal": a game at normal
@@ -866,34 +896,109 @@ function registerIpcHandlers(backend) {
       return { ok: false, error: "Não foi possível falar com o servidor de atualizações." };
     }
   });
+  // "Atualizar agora": the app downloads the new version itself, showing the
+  // progress (UPDATE_PROGRESS), checks its SHA-256, and only then closes. A
+  // short script swaps the files from the downloaded zip (seconds, not the
+  // minute-long download it used to do after the app had already closed) and
+  // reopens the app. Accounts/settings live in the data folder, never touched.
+  let updateInProgress = false;
   ipcMain.handle("DISCORD_UPDATE_INSTALL", async () => {
     const base = updateBase();
     if (!/^https:\/\//.test(base) || !app.isPackaged) return { ok: false, error: "Atualização automática só funciona no app instalado." };
-    // The installer is saved with a small .cmd next to it, opened like a
-    // double-click (shell.openPath): a visible window that keeps running after
-    // this app closes. (Spawning PowerShell straight from the app died silently.)
+    if (updateInProgress) return { ok: false, error: "A atualização já está sendo baixada." };
+    updateInProgress = true;
+    const dir = path.join(app.getPath("temp"), "eco-update");
+    const zipPath = path.join(dir, "update.zip");
     try {
-      const res = await net.fetch(`${base}/download/install.ps1`, { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const dir = path.join(app.getPath("temp"), "eco-update");
       fs.mkdirSync(dir, { recursive: true });
+      const sumRes = await net.fetch(`${base}/download/Eco.zip.sha256`, { cache: "no-store" });
+      if (!sumRes.ok) throw new Error("checksum");
+      const expected = String(await sumRes.text()).trim().split(/\s+/)[0].toLowerCase();
+
+      const res = await net.fetch(`${base}/download/Eco.zip`, { cache: "no-store" });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const total = Number(res.headers.get("content-length")) || 0;
+      const hash = require("crypto").createHash("sha256");
+      const out = fs.createWriteStream(zipPath);
+      let received = 0;
+      let lastSent = 0;
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        hash.update(chunk);
+        received += chunk.length;
+        if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
+        if (Date.now() - lastSent > 200) {
+          lastSent = Date.now();
+          webContentsSend("UPDATE_PROGRESS", { received, total });
+        }
+      }
+      await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+      if (hash.digest("hex") !== expected) throw new Error("hash");
+      webContentsSend("UPDATE_PROGRESS", { received: total || received, total: total || received, done: true });
+
+      // Swap script: waits for this app to exit, replaces the install folder's
+      // files with the zip's and starts the app again
+      const installDir = path.dirname(process.execPath);
+      const exeName = path.basename(process.execPath);
+      const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
+        `$installDir = ${q(installDir)}`,
+        `$zip = ${q(zipPath)}`,
+        `$exe = Join-Path $installDir ${q(exeName)}`,
+        "Write-Host ''",
+        "Write-Host '  Instalando a atualização... o app abre sozinho em seguida.' -ForegroundColor Cyan",
+        "try {",
+        `  Wait-Process -Id ${process.pid} -Timeout 30 -ErrorAction SilentlyContinue`,
+        "  Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($installDir + '\\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force",
+        "  Start-Sleep -Milliseconds 800",
+        "  $staging = Join-Path $env:TEMP 'eco-update\\staging'",
+        "  if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }",
+        "  Expand-Archive -Path $zip -DestinationPath $staging -Force",
+        "  if (-not (Get-ChildItem -LiteralPath $staging -Filter '*.exe' -File)) { throw 'Pacote de atualização inválido.' }",
+        "  Get-ChildItem -LiteralPath $installDir | Remove-Item -Recurse -Force",
+        "  Get-ChildItem -LiteralPath $staging | Move-Item -Destination $installDir -Force",
+        "  Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue",
+        "  Remove-Item $zip -Force -ErrorAction SilentlyContinue",
+        "} catch {",
+        "  Write-Host ('  Não foi possível instalar: ' + $_.Exception.Message) -ForegroundColor Red",
+        "  Start-Sleep -Seconds 8",
+        "}",
+        "if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe -WorkingDirectory $installDir }"
+      ].join("\r\n");
       // BOM: Windows PowerShell 5 reads the accents correctly
-      fs.writeFileSync(path.join(dir, "install.ps1"), "\ufeff" + (await res.text()), "utf8");
-      const cmd = path.join(dir, "atualizar-eco.cmd");
+      fs.writeFileSync(path.join(dir, "apply-update.ps1"), "\ufeff" + script, "utf8");
+      // Opened like a double-click (shell.openPath): keeps running after this
+      // app closes. (Spawning PowerShell straight from the app died silently.)
+      const cmd = path.join(dir, "atualizar.cmd");
       fs.writeFileSync(
         cmd,
-        '@echo off\r\ntitle Atualizando o Eco\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"\r\n',
+        '@echo off\r\ntitle Atualizando\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0apply-update.ps1"\r\n',
         "utf8"
       );
       const err = await shell.openPath(cmd);
       if (err) throw new Error(err);
-    } catch (_) {
-      return { ok: false, error: "Não foi possível baixar a atualização. Tente de novo em instantes." };
+    } catch (err) {
+      updateInProgress = false;
+      try {
+        fs.rmSync(zipPath, { force: true });
+      } catch (_) {}
+      const msg = String(err?.message || "");
+      return {
+        ok: false,
+        error:
+          msg === "hash"
+            ? "O arquivo baixado veio corrompido. Tente de novo."
+            : "Não foi possível baixar a atualização. Verifique a internet e tente de novo."
+      };
     }
     setTimeout(() => {
       isQuitting = true;
       app.quit();
-    }, 1500);
+    }, 600);
     return { ok: true };
   });
 
@@ -1005,6 +1110,21 @@ function registerIpcHandlers(backend) {
 
   ipcMain.on("DISCORD_APP_SET_OPEN_ON_STARTUP_SYNC", (event, enabled) => {
     event.returnValue = applyOpenOnStartup(enabled);
+  });
+
+  ipcMain.on("DISCORD_MUTE_HOTKEY_GET_SYNC", (event) => {
+    event.returnValue = { accelerator: getMuteHotkey(), active: Boolean(activeMuteHotkey) };
+  });
+
+  ipcMain.on("DISCORD_MUTE_HOTKEY_SET_SYNC", (event, accelerator) => {
+    const next = typeof accelerator === "string" ? accelerator.slice(0, 80) : "";
+    const res = applyMuteHotkey(next);
+    if (res.ok) {
+      setSetting("MUTE_HOTKEY", next);
+    } else {
+      applyMuteHotkey(getMuteHotkey()); // keep the previous one working
+    }
+    event.returnValue = { ...res, accelerator: res.ok ? next : getMuteHotkey() };
   });
 
   ipcMain.on("DISCORD_MEMORY_SAVER_GET_SYNC", (event) => {
@@ -1124,6 +1244,7 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers(backendServer);
   setupSystemTray();
+  applyMuteHotkey(getMuteHotkey());
   // Compiles the tiny memory helper the first time (a second or two, in the background)
   prepareHelper(app.getPath("userData"))
     .then(() => applyMemoryCaps())
@@ -1142,6 +1263,12 @@ app.whenReady().then(async () => {
   } else {
     launchSplashWindow();
   }
+});
+
+app.on("will-quit", () => {
+  try {
+    globalShortcut.unregisterAll();
+  } catch (_) {}
 });
 
 app.on("before-quit", () => {

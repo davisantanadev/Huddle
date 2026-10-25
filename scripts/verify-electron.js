@@ -199,6 +199,8 @@ async function setupTestEnvironment() {
   ipcMain.on("DISCORD_GPU_SETTINGS_SET_ENABLE_HWACCEL", () => {});
   ipcMain.handle("DISCORD_MEMORY_GET_TASK_MANAGER_MB", () => null);
   ipcMain.on("DISCORD_MEMORY_SAVER_GET_SYNC", (e) => { e.returnValue = false; });
+  ipcMain.on("DISCORD_MUTE_HOTKEY_GET_SYNC", (e) => { e.returnValue = { accelerator: "CommandOrControl+Shift+M", active: true }; });
+  ipcMain.on("DISCORD_MUTE_HOTKEY_SET_SYNC", (e, acc) => { e.returnValue = { ok: true, accelerator: acc }; });
   ipcMain.on("DISCORD_MEMORY_SAVER_SET_SYNC", (e, on) => { e.returnValue = Boolean(on); });
   ipcMain.on("DISCORD_SETTINGS_GET_SYNC", (e, _k, def) => { e.returnValue = def; });
   ipcMain.on("DISCORD_GPU_SETTINGS_GET_ENABLE_HWACCEL_SYNC", (e) => { e.returnValue = true; });

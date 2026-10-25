@@ -6818,3 +6818,76 @@ video.server-header-banner {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* ==========================================================================
+   Mute shortcut (Voz, Vídeo & Sons)
+   ========================================================================== */
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hotkey-display {
+  flex: 1;
+  min-width: 220px;
+  min-height: 40px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-faint);
+}
+
+.hotkey-display.recording {
+  border-color: var(--brand-purple);
+  box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.25);
+}
+
+.hotkey-display kbd {
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--header-primary);
+  background-color: var(--bg-modifier-selected);
+  border-bottom: 2px solid rgba(0, 0, 0, 0.35);
+}
+
+.hotkey-plus {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.hotkey-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* "Atualizar agora": download progress inside the updates card */
+.update-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.update-progress-track {
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: var(--bg-input);
+}
+
+.update-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 4px;
+  background-color: var(--status-green);
+  transition: width 0.2s ease;
+}

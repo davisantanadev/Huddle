@@ -807,6 +807,10 @@ const SLOTS = ["mic", "screen", "camera", "screenAudio"];
 const SLOT_KINDS = { mic: "audio", screen: "video", camera: "video", screenAudio: "audio" };
 const CAMERA_MAX_BITRATE = 2_500_000;
 
+// Received audio level (0-1) that counts as talking, and how long the ring stays after
+const SPEAKING_LEVEL = 0.02;
+const SPEAKING_HANGOVER_MS = 450;
+
 // Bits per second for a screen share: enough for sharp text and fluid motion
 export function screenBitrateFor(width, height, fps) {
   const bits = width * height * fps * 0.07;
@@ -862,6 +866,52 @@ class VoiceMesh {
     this.outputDeviceId = "default";
     this.outputVolume = 1;
     this.sendSignal = null; // (targetUserId, signalType, signalData) => Promise
+    this.onRemoteSpeaking = null; // (userId, speaking) => void
+    this.remoteSpeaking = new Map(); // userId -> { speaking, lastLoudAt }
+    this.levelTimer = null;
+  }
+
+  // Who is talking, read from the audio we receive from each person (the
+  // audioLevel WebRTC reports per packet): no server round trip, and it works
+  // whatever version of the app the other person runs
+  startLevelWatch() {
+    if (this.levelTimer) return;
+    this.levelTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [userId, peer] of this.peers) {
+        const receiver = peer.pc.getTransceivers()[SLOTS.indexOf("mic")]?.receiver;
+        let level = 0;
+        try {
+          for (const src of receiver?.getSynchronizationSources?.() || []) {
+            if (now - src.timestamp < 400) level = Math.max(level, src.audioLevel || 0);
+          }
+        } catch (_) {}
+        const entry = this.remoteSpeaking.get(userId) || { speaking: false, lastLoudAt: 0 };
+        if (level >= SPEAKING_LEVEL) entry.lastLoudAt = now;
+        // Short hangover so the ring does not flicker between words
+        const speaking = now - entry.lastLoudAt < SPEAKING_HANGOVER_MS;
+        if (speaking !== entry.speaking) {
+          entry.speaking = speaking;
+          if (typeof this.onRemoteSpeaking === "function") this.onRemoteSpeaking(userId, speaking);
+        }
+        this.remoteSpeaking.set(userId, entry);
+      }
+    }, 120);
+  }
+
+  stopLevelWatch() {
+    clearInterval(this.levelTimer);
+    this.levelTimer = null;
+    for (const [userId, entry] of this.remoteSpeaking) {
+      if (entry.speaking && typeof this.onRemoteSpeaking === "function") this.onRemoteSpeaking(userId, false);
+    }
+    this.remoteSpeaking.clear();
+  }
+
+  // True while we receive this person's audio directly (local detection applies)
+  hasAudioFrom(userId) {
+    const peer = this.peers.get(userId);
+    return Boolean(peer && peer.pc.connectionState === "connected");
   }
 
   isActive() {
@@ -874,6 +924,7 @@ class VoiceMesh {
     this.meId = meId;
     this.iceServers = iceServers || [];
     this.sendSignal = sendSignal;
+    this.startLevelWatch();
   }
 
   get localTrack() {
@@ -1218,6 +1269,8 @@ class VoiceMesh {
   closePeer(userId) {
     const peer = this.peers.get(userId);
     if (!peer) return;
+    if (this.remoteSpeaking.get(userId)?.speaking && typeof this.onRemoteSpeaking === "function") this.onRemoteSpeaking(userId, false);
+    this.remoteSpeaking.delete(userId);
     clearTimeout(peer.restartTimer);
     try {
       peer.pc.close();
@@ -1238,6 +1291,7 @@ class VoiceMesh {
   }
 
   stop() {
+    this.stopLevelWatch();
     for (const id of [...this.peers.keys()]) this.closePeer(id);
     this.channelId = null;
     this.tracks = { mic: null, screen: null, camera: null, screenAudio: null };

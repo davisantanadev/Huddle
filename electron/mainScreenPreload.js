@@ -90,6 +90,10 @@ const DiscordNative = {
     getInfoSync: () => ipcRenderer.sendSync("DISCORD_BACKEND_GET_INFO_SYNC"),
     rpc: (action, params, sessionToken) => ipcRenderer.invoke("DISCORD_BACKEND_RPC", action, params, sessionToken)
   },
+  hotkeys: {
+    getMuteHotkey: () => ipcRenderer.sendSync("DISCORD_MUTE_HOTKEY_GET_SYNC"),
+    setMuteHotkey: (accelerator) => ipcRenderer.sendSync("DISCORD_MUTE_HOTKEY_SET_SYNC", accelerator)
+  },
   processUtils: {
     getMemorySaver: () => ipcRenderer.sendSync("DISCORD_MEMORY_SAVER_GET_SYNC"),
     setMemorySaver: (enabled) => ipcRenderer.sendSync("DISCORD_MEMORY_SAVER_SET_SYNC", Boolean(enabled)),
