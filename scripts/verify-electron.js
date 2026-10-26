@@ -2347,6 +2347,25 @@ async function runVerification() {
     await as("updateProfile", { status: "online" });
     const myOwn = store.getCurrentUser().status;
 
+    // App closed mid-call: once her live connection is gone she leaves the call
+    const httpBase = (await import("./services/gatewayAdapter.js")).NativeBridge.getBackendInfo().httpUrl;
+    const ctrl = new AbortController();
+    const stream = fetch(httpBase + "/api/events?token=" + encodeURIComponent(maria.sessionToken), { signal: ctrl.signal }).catch(() => null);
+    await wait(500);
+    await as("joinVoiceChannel", { guildId: "g_rea", channelId: "c_voice_lounge" });
+    const inCall = () => (store.getState().guilds.find((g) => g.id === "g_rea").channels.find((c) => c.id === "c_voice_lounge").connectedUsers || []).includes(mariaId);
+    await store.syncFromBackend({ silent: true });
+    const joinedCall = inCall();
+    ctrl.abort();
+    await stream;
+    const tLeave = Date.now();
+    let leftCall = false;
+    while (!leftCall && Date.now() - tLeave < 20000) {
+      await wait(1000);
+      await store.syncFromBackend({ silent: true });
+      leftCall = !inCall();
+    }
+
     // Kick: gone from the server, but an invite brings her back (not a ban)
     const kicked = await store.kickMember("g_rea", mariaId);
     const goneAfterKick = !guild().memberIds.includes(mariaId);
@@ -2383,7 +2402,8 @@ async function runVerification() {
       presenceClosedOnlineIsOffline: closedOnline === "offline",
       presenceClosedDndKept: closedDnd === "dnd",
       presenceInvisibleIsOffline: closedInvisible === "offline",
-      presenceMineAsChosen: myOwn === "online"
+      presenceMineAsChosen: myOwn === "online",
+      ghostLeftCall: joinedCall && leftCall
     };
   })()`);
   recordTest(

@@ -871,7 +871,10 @@ class DiscordBackendServer {
     clearTimeout(this.offlineTimers.get(userId));
     const timer = setTimeout(() => {
       this.offlineTimers.delete(userId);
-      if (!this.openStreams.get(userId)) this.presenceChanged(userId);
+      if (this.openStreams.get(userId)) return;
+      this.presenceChanged(userId);
+      // App closed (or the connection is gone): nobody stays "in the call" as a ghost
+      this.handleAction("leaveVoiceChannel", { actorId: userId }).catch(() => {});
     }, PRESENCE_GRACE_MS);
     timer.unref?.();
     this.offlineTimers.set(userId, timer);

@@ -599,6 +599,8 @@ function launchMainWindow(showImmediately = false) {
     saveWindowConfig(mainWindow);
     if (!isQuitting && getSetting("MINIMIZE_TO_TRAY", true) && tray && !process.argv.includes("--no-tray-hide")) {
       e.preventDefault();
+      // Closing the window leaves the call even though the app keeps running in the tray
+      webContentsSend("CALL_LEAVE");
       mainWindow.hide();
       trimProcessWorkingSets();
     }
@@ -1033,6 +1035,7 @@ function registerIpcHandlers(backend) {
   ipcMain.on("DISCORD_WINDOW_CLOSE", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (getSetting("MINIMIZE_TO_TRAY", true) && tray && !process.argv.includes("--no-tray-hide")) {
+        webContentsSend("CALL_LEAVE");
         mainWindow.hide();
         trimProcessWorkingSets();
       } else {
