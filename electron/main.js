@@ -92,9 +92,6 @@ app.commandLine.appendSwitch(
     "RunVideoCaptureServiceInBrowserProcess"
   ].join(",")
 );
-// The GPU process is folded into the main one: the app shows as two processes
-// (app + page) instead of three
-app.commandLine.appendSwitch("in-process-gpu");
 app.commandLine.appendSwitch("disk-cache-size", "16777216");
 app.commandLine.appendSwitch("media-cache-size", "8388608");
 // GPU acceleration is on by default: without it GIFs, video and screen shares
@@ -110,7 +107,13 @@ function isGpuAccelerationEnabled() {
     return true;
   }
 }
-if (!isGpuAccelerationEnabled()) {
+if (isGpuAccelerationEnabled()) {
+  // The GPU process is folded into the main one: the app shows as two
+  // processes (app + page) instead of three. Only with acceleration on:
+  // in-process GPU with acceleration off crashed the app on every start
+  // (access violation before the window opened).
+  app.commandLine.appendSwitch("in-process-gpu");
+} else {
   app.disableHardwareAcceleration();
   // No SwiftShader: the compositor already rasterises on the CPU, and the GPU
   // process drops from ~12 MB to ~6 MB
