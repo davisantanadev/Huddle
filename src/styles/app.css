@@ -6935,3 +6935,80 @@ video.server-header-banner {
 .update-banner-close:hover {
   opacity: 1;
 }
+
+/* Call chat: same tools as the regular chat */
+.call-chat-msg {
+  position: relative;
+}
+.call-chat-msg:hover .message-toolbar,
+.call-chat-msg:focus-within .message-toolbar {
+  display: flex;
+}
+.call-chat-replying {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Video and audio attachments */
+.message-attachment-card.media {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(420px, 100%);
+  padding: 8px;
+  border: 1px solid var(--border-faint);
+  border-radius: 8px;
+}
+.message-media-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.message-media-head .message-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.message-file-download-btn {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+.message-file-download-btn:hover {
+  color: var(--header-primary);
+}
+.message-media-player {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  border-radius: 6px;
+}
+video.message-media-player {
+  background: #000;
+}
+
+/* Call volume and fullscreen */
+.call-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+.call-volume input {
+  width: 90px;
+}
+body.call-fullscreen .call-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+}

@@ -8,7 +8,8 @@
 // capture runs natively on the GPU (Windows Graphics Capture) and the renderer
 // gets a live MediaStream — no screenshots copied through the main process.
 
-const { desktopCapturer } = require("electron");
+const { app, desktopCapturer } = require("electron");
+const { prepareSystemAudio, startSystemAudio, stopSystemAudio } = require("./systemAudio");
 
 const THUMB_SIZE = { width: 320, height: 180 };
 let selected = { sourceId: null, includeAudio: false };
@@ -76,6 +77,11 @@ function registerScreenCaptureHandlers(ipcMain, ses) {
   });
   ipcMain.handle("DISCORD_DESKTOP_CAPTURER_SELECT_SOURCE", (_e, opts = {}) => selectSource(opts));
   installDisplayMediaHandler(ses);
+  const dataDir = app.getPath("userData");
+  prepareSystemAudio(dataDir).catch(() => null);
+  ipcMain.handle("ECO_SYSTEM_AUDIO_START", (e) => startSystemAudio(e.sender, dataDir));
+  ipcMain.handle("ECO_SYSTEM_AUDIO_STOP", () => stopSystemAudio());
+  app.on("will-quit", stopSystemAudio);
 }
 
 module.exports = { registerScreenCaptureHandlers, listSources };

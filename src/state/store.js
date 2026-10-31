@@ -149,7 +149,7 @@ function createEmptyState() {
       outputVolume: 100
     },
     incomingCall: null, // { channelId, callerId } while another user is ringing us
-    screenShares: {}, // channelId -> { userId, guildId, channelId, sourceName, resolution, fps }
+    screenShares: {}, // "channelId:userId" -> { userId, guildId, channelId, sourceName, resolution, fps }
     typing: {}, // channelId -> { userId: visibleUntil }
     settings: {
       theme: "dark",
@@ -334,13 +334,15 @@ class Store {
       }
 
       if (event === "SCREEN_SHARE_STARTED" && payload?.channelId) {
-        this.state.screenShares[payload.channelId] = payload;
+        this.state.screenShares[`${payload.channelId}:${payload.userId || payload.sharerId}`] = payload;
         this.notify({ skipPersist: true });
         return;
       }
 
       if (event === "SCREEN_SHARE_STOPPED" && payload?.channelId) {
-        delete this.state.screenShares[payload.channelId];
+        for (const [key, share] of Object.entries(this.state.screenShares)) {
+          if (share.channelId === payload.channelId && (!payload.sharerId || share.userId === payload.sharerId)) delete this.state.screenShares[key];
+        }
         this.notify({ skipPersist: true });
         return;
       }
@@ -435,12 +437,13 @@ class Store {
       ...this.unsavedSettings
     };
 
-    // Map active screen shares by channelId
+    // Active screen shares, one per person
     const nextShares = {};
     for (const s of snap.activeScreenShares || []) {
-      nextShares[s.channelId] = {
+      const shareKey = `${s.channelId}:${s.userId}`;
+      nextShares[shareKey] = {
         ...s,
-        frameDataUrl: this.state.screenShares[s.channelId]?.frameDataUrl || s.frameDataUrl || null
+        frameDataUrl: this.state.screenShares[shareKey]?.frameDataUrl || s.frameDataUrl || null
       };
     }
     this.state.screenShares = nextShares;
@@ -1623,7 +1626,7 @@ class Store {
     });
 
     if (res.ok && res.share) {
-      this.state.screenShares[channelId] = res.share;
+      this.state.screenShares[`${channelId}:${meId}`] = res.share;
     }
     this.notify();
     return { ok: true, stream: cap.stream, trackCount: ScreenShare.getActiveTrackCount(), fps: Number(fps) || 30, resolution };
@@ -1638,7 +1641,7 @@ class Store {
     this.state.voice.screenShareSourceId = null;
     this.state.voice.screenShareSourceName = null;
     if (channelId) {
-      delete this.state.screenShares[channelId];
+      delete this.state.screenShares[`${channelId}:${meId}`];
     }
     this.notify();
     await NativeBridge.rpc("stopScreenShare", { userId: meId, channelId });

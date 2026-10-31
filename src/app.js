@@ -56,6 +56,7 @@ const uiState = {
   pinnedPopoverOpen: false,
   replyingToMessageId: null,
   editingMessageId: null,
+  callReplyToId: null,
   stagedAttachment: null,
   contextMenu: null, // null | { x, y, items: [...] }
   quickSwitcherQuery: "",
@@ -116,7 +117,7 @@ const uiState = {
   // Widths of the channel list and the member list (dragged by their edge)
   channelsWidth: readStoredWidth("eco_channels_width", 240, 180, 420),
   membersWidth: readStoredWidth("eco_members_width", 240, 180, 420),
-  stoppedWatching: {}, // channelId -> true when the viewer chose "Parar de assistir"
+  stoppedWatching: {}, // sharer's userId -> true when the viewer chose "Parar de assistir"
   streamAspect: {}, // "userId" -> width/height of their stream, so the tile has its exact shape
   callStripHidden: (() => {
     try {
@@ -962,7 +963,7 @@ function renderSecondarySidebar(state) {
               const isActive = ch.type === "voice" ? callOnScreen === ch.id : state.navigation.activeChannelId === ch.id && !callOnScreen;
               const isVoiceConnected =
                 state.voice.connectedGuildId === guild.id && state.voice.connectedChannelId === ch.id;
-              const activeShare = state.screenShares[ch.id];
+              const channelSharers = new Set(channelShares(state, ch.id).map((s) => s.userId));
               const icon =
                 ch.type === "voice"
                   ? Icons.speaker
@@ -977,7 +978,7 @@ function renderSecondarySidebar(state) {
                         .map((uid) => {
                           const u = state.users[uid];
                           if (!u) return "";
-                          const isSharing = activeShare && activeShare.userId === u.id;
+                          const isSharing = channelSharers.has(u.id);
                           return `
                             <div class="voice-user-row" data-action="open-user-popout" data-user-id="${u.id}">
                               <div class="voice-user-left">
@@ -1438,29 +1439,52 @@ function renderDiscoveryStage(state) {
 // A screen share while reading a text channel: a floating window you can
 // drag by its header, resize from the corner and close (✕ only stops it for
 // you; the person sharing keeps sharing). Closed, a small bar offers "Assistir".
+function channelShares(state, channelId) {
+  return Object.values(state.screenShares || {}).filter((s) => s.channelId === channelId);
+}
+
+// Next time this person shares, it starts visible and audible again
+function forgetEndedStreams(state) {
+  const live = new Set(Object.values(state.screenShares || {}).map((s) => s.userId));
+  if (state.voice.screenShareEnabled) live.add(state.auth.currentUserId);
+  for (const userId of Object.keys(uiState.stoppedWatching)) {
+    if (!live.has(userId)) setStreamWatched(userId, true);
+  }
+}
+
+function setStreamWatched(userId, watched) {
+  if (watched) delete uiState.stoppedWatching[userId];
+  else uiState.stoppedWatching[userId] = true;
+  Voice.setStreamAudioMuted(userId, !watched);
+}
+
 function renderScreenShareBannerAndStage(state) {
+  forgetEndedStreams(state);
   const voiceChannelId = state.voice.connectedChannelId;
-  const activeShare =
-    (voiceChannelId && state.screenShares[voiceChannelId]) ||
-    Object.values(state.screenShares || {})[0] ||
-    null;
+  const me = state.auth.currentUserId;
+  const inMyCall = voiceChannelId ? channelShares(state, voiceChannelId) : [];
+  const candidates = inMyCall.length ? inMyCall : Object.values(state.screenShares || {});
+  // Someone else's stream first; my own only as a preview
+  const ordered = [...candidates].sort((x, y) => (x.userId === me) - (y.userId === me));
+  const activeShare = ordered.find((s) => !uiState.stoppedWatching[s.userId]) || ordered[0] || null;
 
   if (!activeShare && !state.voice.screenShareEnabled) return "";
 
   const channelId = activeShare?.channelId || voiceChannelId || "";
   const sharerUser = activeShare ? state.users[activeShare.userId] : store.getCurrentUser();
-  const isMeSharing = state.voice.screenShareEnabled || activeShare?.userId === state.auth.currentUserId;
+  const isMeSharing = activeShare ? activeShare.userId === me : state.voice.screenShareEnabled;
+  const streamUserId = activeShare?.userId || me;
   const sourceTitle = activeShare?.sourceName || state.voice.screenShareSourceName || "Tela";
   const stats = ScreenShare.getStats ? ScreenShare.getStats() : {};
   const displayFps = stats.requestedFps || activeShare?.fps || 30;
   const displayRes = stats.resolution || activeShare?.resolution || "";
 
-  if (uiState.stoppedWatching[channelId]) {
+  if (uiState.stoppedWatching[streamUserId]) {
     return `
       <div class="stream-mini-bar" data-testid="screenshare-stage">
         <span class="screenshare-live-badge">AO VIVO</span>
         <span>${escapeHtml(sharerUser?.displayName || "Alguém")} está transmitindo ${escapeHtml(sourceTitle)}</span>
-        <button type="button" class="btn btn-primary btn-sm" data-action="watch-stream-popup" data-channel-id="${escapeHtml(channelId)}">${isMeSharing ? "Mostrar prévia" : "Assistir"}</button>
+        <button type="button" class="btn btn-primary btn-sm" data-action="watch-stream-popup" data-user-id="${escapeHtml(streamUserId)}">${isMeSharing ? "Mostrar prévia" : "Assistir"}</button>
         ${isMeSharing ? `<button class="btn btn-danger btn-sm" data-action="stop-screenshare" data-testid="stop-screenshare-btn">Parar Transmissão</button>` : ""}
       </div>`;
   }
@@ -1487,7 +1511,7 @@ function renderScreenShareBannerAndStage(state) {
           ${isMeSharing ? ` · enviando <strong data-share-stat="sent">—</strong>` : ""}
         </span>
         ${isMeSharing ? `<button class="btn btn-danger btn-sm" data-action="stop-screenshare" data-testid="stop-screenshare-btn">Parar</button>` : ""}
-        <button type="button" class="icon-btn" data-action="stop-watching-stream" data-channel-id="${escapeHtml(channelId)}" title="${isMeSharing ? "Fechar a prévia (a transmissão continua)" : "Fechar (para de assistir só para você)"}" aria-label="Fechar">${Icons.close}</button>
+        <button type="button" class="icon-btn" data-action="stop-watching-stream" data-user-id="${escapeHtml(streamUserId)}" title="${isMeSharing ? "Fechar a prévia (a transmissão continua)" : "Fechar (para de assistir só para você)"}" aria-label="Fechar">${Icons.close}</button>
       </div>
       <div class="stream-popup-body">${media}</div>
       <div class="stream-popup-resize" data-stream-resize title="Arraste para redimensionar"></div>
@@ -1498,9 +1522,34 @@ function renderScreenShareBannerAndStage(state) {
 // ==========================================================================
 // Attachments, polls and the composer "+" menu (shared by chat and call chat)
 // ==========================================================================
+function attachmentMediaKind(att) {
+  const mime = String(att.mimeType || "");
+  const ext = String(att.name || "").split(".").pop().toLowerCase();
+  if (mime.startsWith("video/") || ["mp4", "webm", "mov", "m4v"].includes(ext)) return "video";
+  if (mime.startsWith("audio/") || ["mp3", "wav", "ogg", "opus", "m4a", "aac", "flac"].includes(ext)) return "audio";
+  return null;
+}
+
 function renderAttachment(att) {
   if (!att) return "";
   const url = att.url || att.dataUrl || "";
+  const mediaKind = url && !att.isImage ? attachmentMediaKind(att) : null;
+  if (mediaKind) {
+    const saveBtn = `<button type="button" class="message-file-download-btn" data-action="download-file" data-url="${escapeHtml(url)}" title="Baixar ${escapeHtml(att.name)}" data-testid="attachment-download">${Icons.download}</button>`;
+    return `
+      <div class="message-attachment-card media ${mediaKind}">
+        <div class="message-media-head">
+          <span class="message-file-name">${escapeHtml(att.name)}</span>
+          <span class="message-file-size">${escapeHtml(att.size || "")}</span>
+          ${saveBtn}
+        </div>
+        ${
+          mediaKind === "video"
+            ? `<video class="message-media-player" src="${escapeHtml(url)}" controls preload="metadata" playsinline data-testid="attachment-video"></video>`
+            : `<audio class="message-media-player" src="${escapeHtml(url)}" controls preload="metadata" data-testid="attachment-audio"></audio>`
+        }
+      </div>`;
+  }
   if (att.isImage && url) {
     return `
       <div class="message-attachment-card image ${att.spoiler ? "spoiler" : ""}">
@@ -1641,11 +1690,10 @@ function renderCallTile(state, ch, userId, { focused = false, small = false, noS
   const muted = isMe ? state.voice.muted : Boolean(participant?.muted);
   const deafened = isMe ? state.voice.deafened : Boolean(participant?.deafened);
   const speaking = Boolean(state.voice.speakingUsers?.[userId]) && !muted;
-  const share = state.screenShares[ch.id];
-  const isSharing = isMe ? state.voice.screenShareEnabled : share?.userId === userId;
+  const isSharing = isMe ? state.voice.screenShareEnabled : channelShares(state, ch.id).some((s) => s.userId === userId);
   // "Desativar vídeo" from the right-click menu: this person's video stays off here
   const videoHidden = !isMe && store.getUserAudioPrefs().videoHidden.includes(userId);
-  const watching = !noStream && !videoHidden && isSharing && (isMe || !uiState.stoppedWatching[ch.id]);
+  const watching = !noStream && !videoHidden && isSharing && !uiState.stoppedWatching[userId];
   const cameraOn = !videoHidden && (isMe ? state.voice.videoEnabled : Boolean(participant?.videoEnabled));
 
   let media;
@@ -1668,8 +1716,8 @@ function renderCallTile(state, ch, userId, { focused = false, small = false, noS
     ? isMe
       ? `<button class="call-tile-action danger" data-action="stop-screenshare" data-testid="call-stop-share-btn">Parar de compartilhar</button>`
       : watching
-        ? `<button class="call-tile-action" data-action="stop-watching-stream" data-channel-id="${escapeHtml(ch.id)}" data-testid="call-stop-watching-btn">Parar de assistir</button>`
-        : `<button class="call-tile-action primary" data-action="watch-stream" data-channel-id="${escapeHtml(ch.id)}" data-testid="call-watch-btn">Assistir transmissão</button>`
+        ? `<button class="call-tile-action" data-action="stop-watching-stream" data-user-id="${escapeHtml(userId)}" data-testid="call-stop-watching-btn">Parar de assistir</button>`
+        : `<button class="call-tile-action primary" data-action="watch-stream" data-user-id="${escapeHtml(userId)}" data-testid="call-watch-btn">Assistir transmissão</button>`
     : "";
 
   return `
@@ -1722,6 +1770,30 @@ function mentionsMe(content) {
   return new RegExp(`(^|[^\\w.])@${name}(?![\\w.])`, "i").test(content);
 }
 
+const FULLSCREEN_ICON = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`;
+const FULLSCREEN_EXIT_ICON = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`;
+
+// Edit, reactions, reply and delete work here as in the regular chat
+function renderCallChatTools(state, ch, m) {
+  const guild = state.guilds.find((g) => (g.channels || []).some((c) => c.id === ch.id)) || null;
+  const mine = m.authorId === state.auth.currentUserId;
+  const canManage = store.can("MANAGE_MESSAGES", guild);
+  const button = (action, title, icon, extra = "", cls = "") =>
+    `<button class="toolbar-btn ${cls}" data-action="${action}" data-message-id="${m.id}" title="${title}" ${extra}>${icon}</button>`;
+  return `
+    <div class="message-toolbar">
+      ${
+        store.can("ADD_REACTIONS", guild)
+          ? button("toggle-reaction", "Curtir", "👍", `data-emoji="👍"`) + button("open-emoji-picker", "Adicionar Reação", Icons.smile)
+          : ""
+      }
+      ${store.can("SEND_MESSAGES", guild) ? button("reply-message", "Responder", Icons.reply) : ""}
+      ${store.can("PIN_MESSAGES", guild) || canManage ? button("pin-message", m.pinned ? "Desafixar" : "Fixar", Icons.pin) : ""}
+      ${mine ? button("start-edit-message", "Editar", Icons.edit) : ""}
+      ${mine || canManage ? button("delete-message", "Excluir", Icons.trash, "", "danger") : ""}
+    </div>`;
+}
+
 function renderCallChatPanel(state, ch) {
   const messages = state.messages[ch.id] || [];
   const listHtml =
@@ -1730,7 +1802,26 @@ function renderCallChatPanel(state, ch) {
       : messages
           .map((m, idx) => {
             const author = state.users[m.authorId] || { id: m.authorId, displayName: "Usuário", avatarColor: "#5865f2" };
-            const grouped = idx > 0 && messages[idx - 1].authorId === m.authorId;
+            const grouped = idx > 0 && messages[idx - 1].authorId === m.authorId && !m.replyToId;
+            const replyTarget = m.replyToId ? messages.find((item) => item.id === m.replyToId) : null;
+            const replyHtml = replyTarget
+              ? `<div class="message-reply-preview"><span>↱</span><strong style="color:var(--header-primary);">@${escapeHtml(state.users[replyTarget.authorId]?.username || "user")}</strong><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(replyTarget.content)}</span></div>`
+              : "";
+            const reactionsHtml = (m.reactions || []).length
+              ? `<div class="message-reactions">${m.reactions
+                  .map((r) => `<button class="reaction-pill ${r.me ? "me" : ""}" data-action="toggle-reaction" data-message-id="${m.id}" data-emoji="${r.emoji}"><span>${r.emoji}</span><span>${r.count}</span></button>`)
+                  .join("")}</div>`
+              : "";
+            const textHtml =
+              uiState.editingMessageId === m.id
+                ? `<div style="margin-top:4px;">
+                    <input type="text" id="edit-message-input-${m.id}" class="form-input" style="width:100%;" value="${escapeHtml(m.content)}" data-edit-id="${m.id}" />
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                      ESC para <button style="color:var(--link-color);" data-action="cancel-edit">cancelar</button> •
+                      ENTER para <button style="color:var(--link-color);" data-action="save-edit" data-message-id="${m.id}">salvar</button>
+                    </div>
+                  </div>`
+                : `<div class="message-text">${formatMessageMarkdown(m.content)}${m.edited ? `<span style="font-size:10px;color:var(--text-muted);margin-left:4px;">(editado)</span>` : ""}${m.pinned ? `<span style="font-size:10px;color:var(--status-yellow);margin-left:4px;">📌</span>` : ""}</div>`;
             const attachment = renderAttachment(m.attachment) + renderPollCard(m, ch.id);
             return `
               <div class="call-chat-msg ${grouped ? "grouped" : ""} ${mentionsMe(m.content) ? "mentioned" : ""}" data-message-id="${m.id}">
@@ -1741,9 +1832,12 @@ function renderCallChatPanel(state, ch) {
                       ? ""
                       : `<div class="call-chat-msg-head"><span class="message-author" data-action="open-user-popout" data-user-id="${author.id}">${escapeHtml(author.displayName)}</span><span class="message-timestamp">${escapeHtml(m.timestamp)}</span></div>`
                   }
-                  <div class="message-text">${formatMessageMarkdown(m.content)}</div>
+                  ${replyHtml}
+                  ${textHtml}
                   ${attachment}
+                  ${reactionsHtml}
                 </div>
+                ${renderCallChatTools(state, ch, m)}
               </div>
             `;
           })
@@ -1760,6 +1854,11 @@ function renderCallChatPanel(state, ch) {
       <div class="call-chat-messages" id="call-chat-scroller">${listHtml}</div>
       <div class="call-chat-composer">
         ${renderStagedAttachmentBanner(uiState.callStagedAttachment, "clear-call-attachment")}
+        ${
+          uiState.callReplyToId && messages.some((m) => m.id === uiState.callReplyToId)
+            ? `<div class="call-chat-replying"><span>Respondendo a <strong>@${escapeHtml(state.users[messages.find((m) => m.id === uiState.callReplyToId).authorId]?.username || "user")}</strong></span><button type="button" class="icon-btn" data-action="cancel-call-reply" title="Cancelar">${Icons.close}</button></div>`
+            : ""
+        }
         <form class="call-chat-box" id="call-chat-form" data-channel-id="${escapeHtml(ch.id)}">
           ${renderComposerPlus("call", ch.id)}
           <input class="call-chat-input" name="message" autocomplete="off" placeholder="Conversar em ${escapeHtml(ch.name)}" data-testid="call-chat-input" />
@@ -1775,12 +1874,12 @@ function renderCallChatPanel(state, ch) {
 function gridIds(state, ch, participants) {
   if (uiState.showNonVideoTiles !== false) return participants;
   const hidden = new Set(store.getUserAudioPrefs().videoHidden);
-  const share = state.screenShares[ch.id];
+  const sharers = new Set(channelShares(state, ch.id).map((s) => s.userId));
   const withVideo = participants.filter((id) => {
     if (hidden.has(id)) return false;
     if (id === state.auth.currentUserId) return state.voice.videoEnabled || state.voice.screenShareEnabled;
     const p = (ch.voiceParticipants || []).find((x) => x.userId === id);
-    return Boolean(p?.videoEnabled) || share?.userId === id;
+    return Boolean(p?.videoEnabled) || sharers.has(id);
   });
   return withVideo.length ? withVideo : participants;
 }
@@ -1821,12 +1920,14 @@ function renderCallStage(state, ch) {
   // A screen share fills the stage on its own; clicking the big tile (or "Ver
   // todos") goes back to the grid, where the share shows as a smaller tile.
   // callFocusUserId: undefined = automatic, null = grid chosen, id = that tile.
-  const share = state.screenShares[ch.id];
-  const sharerId = state.voice.screenShareEnabled ? state.auth.currentUserId : share?.userId;
-  const autoFocus = uiState.callFocusUserId === undefined && sharerId && !uiState.stoppedWatching[ch.id] ? sharerId : null;
+  forgetEndedStreams(state);
+  const me = state.auth.currentUserId;
+  const sharerIds = channelShares(state, ch.id).map((s) => s.userId).filter((id) => id !== me);
+  if (state.voice.screenShareEnabled) sharerIds.push(me);
+  const autoFocus = uiState.callFocusUserId === undefined ? sharerIds.find((id) => !uiState.stoppedWatching[id]) || null : null;
   const wanted = uiState.callFocusUserId === undefined ? autoFocus : uiState.callFocusUserId;
   const focusId = participants.includes(wanted) ? wanted : null;
-  const focusIsStream = focusId && focusId === sharerId && !uiState.stoppedWatching[ch.id];
+  const focusIsStream = focusId && sharerIds.includes(focusId) && !uiState.stoppedWatching[focusId];
   // While a stream fills the stage, the sharer's own card stays in the strip too
   const stripIds = focusIsStream ? participants : participants.filter((id) => id !== focusId);
   const chatOpen = uiState.callChatOpen;
@@ -1868,6 +1969,13 @@ function renderCallStage(state, ch) {
             <button class="call-ctrl ${v.screenShareEnabled ? "active" : ""}" data-action="toggle-screenshare" title="${v.screenShareEnabled ? "Parar de compartilhar a tela" : "Compartilhar a tela"}" data-testid="call-screenshare-btn">${Icons.screenShare}</button>`
                 : ""
             }
+          </div>
+          <div class="call-controls-group">
+            <label class="call-volume" title="Volume da call">
+              ${Icons.headphones}
+              <input type="range" min="0" max="100" step="1" value="${Number(state.settings.voiceOutputVolume ?? 100)}" data-call-volume aria-label="Volume da call" data-testid="call-volume" />
+            </label>
+            <button class="call-ctrl" data-action="toggle-call-fullscreen" title="${document.fullscreenElement ? "Sair da tela cheia" : "Tela cheia"}" data-testid="call-fullscreen-btn">${document.fullscreenElement ? FULLSCREEN_EXIT_ICON : FULLSCREEN_ICON}</button>
           </div>
           <button class="call-ctrl leave" data-action="leave-voice" title="Sair da call" data-testid="call-leave-btn">${Icons.phoneOff}</button>
         </div>
@@ -5371,8 +5479,46 @@ function setShareStat(key, value) {
   }
 }
 
+ScreenShare.onBlackCapture = () => {
+  showToast("Sua transmissão parece estar preta. Tente compartilhar a tela inteira em vez da janela (ou o contrário).");
+};
+
+// A stream on screen that never produced a picture: asks the sharer to resend it
+const streamsWithoutPicture = new Map();
+function nudgeStreamsWithoutPicture() {
+  const seen = new Set();
+  for (const slot of document.querySelectorAll('[data-remote-video$=":screen"]')) {
+    const userId = slot.getAttribute("data-remote-video").split(":")[0];
+    const video = slot.querySelector("video");
+    if (!video || video.videoWidth) continue;
+    seen.add(userId);
+    const waited = (streamsWithoutPicture.get(userId) || 0) + 1;
+    streamsWithoutPicture.set(userId, waited);
+    if (waited % 4 === 0) {
+      video.play().catch(() => {});
+      Voice.requestStreamRefresh(userId);
+    }
+  }
+  for (const userId of streamsWithoutPicture.keys()) {
+    if (!seen.has(userId)) streamsWithoutPicture.delete(userId);
+  }
+}
+
+document.addEventListener("fullscreenchange", () => {
+  document.body.classList.toggle("call-fullscreen", Boolean(document.fullscreenElement));
+  renderApp();
+});
+document.addEventListener("input", (e) => {
+  if (e.target.matches?.("[data-call-volume]")) Voice.setOutputVolume(e.target.value);
+});
+document.addEventListener("change", (e) => {
+  if (e.target.matches?.("[data-call-volume]")) store.updateSettings({ voiceOutputVolume: Number(e.target.value) });
+});
+
 // Live numbers on the stats overlay, updated in place (no re-render)
 setInterval(async () => {
+  nudgeStreamsWithoutPicture();
+  if (document.fullscreenElement && !document.querySelector(".call-stage")) document.exitFullscreen().catch(() => {});
   if (ScreenShare.getStream()) {
     const stats = ScreenShare.getStats();
     setShareStat("capturedFps", stats.capturedFps || "—");
@@ -6358,7 +6504,15 @@ function bindFormEvents() {
   const callChatForm = document.getElementById("call-chat-form");
   if (callChatForm) {
     const scroller = document.getElementById("call-chat-scroller");
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    // Follows new messages, without pulling back someone reading older ones
+    if (scroller) {
+      const count = scroller.querySelectorAll("[data-message-id]").length;
+      const key = callChatForm.getAttribute("data-channel-id");
+      const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+      if (scroller.dataset.seenKey !== key || (Number(scroller.dataset.seenCount) !== count && nearBottom)) scroller.scrollTop = scroller.scrollHeight;
+      scroller.dataset.seenKey = key;
+      scroller.dataset.seenCount = count;
+    }
     callChatForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const input = callChatForm.querySelector("input[name=message]");
@@ -6367,7 +6521,11 @@ function bindFormEvents() {
       if (!text.trim() && !attachment) return;
       input.value = "";
       uiState.callStagedAttachment = null;
-      await store.sendMessage(callChatForm.getAttribute("data-channel-id"), text, { attachment });
+      const replyToId = uiState.callReplyToId;
+      uiState.callReplyToId = null;
+      await store.sendMessage(callChatForm.getAttribute("data-channel-id"), text, { attachment, replyToId });
+      const list = document.getElementById("call-chat-scroller");
+      if (list) list.scrollTop = list.scrollHeight;
       document.querySelector("#call-chat-form input[name=message]")?.focus();
     });
   }
@@ -6612,12 +6770,12 @@ function bindFormEvents() {
   document.querySelectorAll("[data-edit-id]").forEach((input) => {
     input.addEventListener("keydown", async (e) => {
       const msgId = input.getAttribute("data-edit-id");
-      const channel = store.getActiveChannel();
+      const channelId = channelIdOfMessage(msgId);
       if (e.key === "Escape") {
         uiState.editingMessageId = null;
         renderApp();
-      } else if (e.key === "Enter" && channel) {
-        await store.editMessage(channel.id, msgId, input.value);
+      } else if (e.key === "Enter" && channelId) {
+        await store.editMessage(channelId, msgId, input.value);
         uiState.editingMessageId = null;
         renderApp();
       }
@@ -6679,8 +6837,8 @@ const DESTRUCTIVE_ACTIONS = {
     };
   },
   "delete-message": (btn) => {
-    const ch = store.getActiveChannel();
-    const msg = (store.getState().messages[ch?.id] || []).find((m) => m.id === btn.getAttribute("data-message-id"));
+    const msgChannelId = channelIdOfMessage(btn.getAttribute("data-message-id"));
+    const msg = (store.getState().messages[msgChannelId] || []).find((m) => m.id === btn.getAttribute("data-message-id"));
     return {
       title: "Excluir mensagem",
       message: "Tem certeza que deseja excluir esta mensagem? Esta ação não pode ser desfeita.",
@@ -6977,7 +7135,8 @@ async function handleGlobalClick(e) {
       break;
     case "stop-watching-stream":
       e.stopPropagation();
-      uiState.stoppedWatching[btn.getAttribute("data-channel-id")] = true;
+      setStreamWatched(btn.getAttribute("data-user-id"), false);
+      if (uiState.callFocusUserId === btn.getAttribute("data-user-id")) uiState.callFocusUserId = undefined;
       renderApp();
       break;
     case "toggle-call-strip":
@@ -6989,15 +7148,15 @@ async function handleGlobalClick(e) {
       renderApp();
       break;
     case "watch-stream-popup":
-      delete uiState.stoppedWatching[btn.getAttribute("data-channel-id")];
+      setStreamWatched(btn.getAttribute("data-user-id"), true);
       renderApp();
       break;
     case "watch-stream": {
       e.stopPropagation();
-      const chId = btn.getAttribute("data-channel-id");
-      delete uiState.stoppedWatching[chId];
+      const sharer = btn.getAttribute("data-user-id");
+      setStreamWatched(sharer, true);
       // Watching someone's screen enlarges it
-      uiState.callFocusUserId = store.getState().screenShares[chId]?.userId || uiState.callFocusUserId;
+      uiState.callFocusUserId = sharer;
       renderApp();
       break;
     }
@@ -7893,9 +8052,9 @@ async function handleGlobalClick(e) {
       showToast("Memória RAM otimizada e caches limpos!");
       break;
     case "toggle-reaction": {
-      const ch = store.getActiveChannel();
-      if (ch) {
-        await store.toggleReaction(ch.id, btn.getAttribute("data-message-id"), btn.getAttribute("data-emoji"));
+      const msgChannelId = channelIdOfMessage(btn.getAttribute("data-message-id"));
+      if (msgChannelId) {
+        await store.toggleReaction(msgChannelId, btn.getAttribute("data-message-id"), btn.getAttribute("data-emoji"));
       }
       break;
     }
@@ -7927,13 +8086,27 @@ async function handleGlobalClick(e) {
           inp.setSelectionRange(start + emoji.length, start + emoji.length);
         }
       } else {
-        const ch = store.getActiveChannel();
-        if (ch) await store.toggleReaction(ch.id, target, emoji);
+        const msgChannelId = channelIdOfMessage(target);
+        if (msgChannelId) await store.toggleReaction(msgChannelId, target, emoji);
       }
       renderApp();
       break;
     }
+    case "cancel-call-reply":
+      uiState.callReplyToId = null;
+      renderApp();
+      break;
+    case "toggle-call-fullscreen":
+      if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+      else await document.documentElement.requestFullscreen().catch(() => showToast("Não foi possível abrir a tela cheia."));
+      break;
     case "reply-message":
+      if (btn.closest(".call-chat")) {
+        uiState.callReplyToId = btn.getAttribute("data-message-id");
+        renderApp();
+        document.querySelector("#call-chat-form input[name=message]")?.focus();
+        break;
+      }
       uiState.replyingToMessageId = btn.getAttribute("data-message-id");
       renderApp();
       document.getElementById("composer-text-input")?.focus();
@@ -7949,6 +8122,7 @@ async function handleGlobalClick(e) {
     case "start-edit-message":
       uiState.editingMessageId = btn.getAttribute("data-message-id");
       renderApp();
+      document.getElementById(`edit-message-input-${uiState.editingMessageId}`)?.focus();
       break;
     case "cancel-edit":
       uiState.editingMessageId = null;
@@ -7957,26 +8131,26 @@ async function handleGlobalClick(e) {
     case "save-edit": {
       const msgId = btn.getAttribute("data-message-id");
       const inp = document.getElementById(`edit-message-input-${msgId}`);
-      const ch = store.getActiveChannel();
-      if (ch && inp) {
-        await store.editMessage(channelIdOrFallback(ch), msgId, inp.value);
+      const msgChannelId = channelIdOfMessage(msgId);
+      if (msgChannelId && inp) {
+        await store.editMessage(msgChannelId, msgId, inp.value);
       }
       uiState.editingMessageId = null;
       renderApp();
       break;
     }
     case "pin-message": {
-      const ch = store.getActiveChannel();
-      if (ch) {
-        const pinned = await store.togglePinMessage(ch.id, btn.getAttribute("data-message-id"));
+      const msgChannelId = channelIdOfMessage(btn.getAttribute("data-message-id"));
+      if (msgChannelId) {
+        const pinned = await store.togglePinMessage(msgChannelId, btn.getAttribute("data-message-id"));
         showToast(pinned ? "Mensagem fixada!" : "Mensagem desafixada.");
       }
       break;
     }
     case "delete-message": {
-      const ch = store.getActiveChannel();
-      if (ch) {
-        await store.deleteMessage(ch.id, btn.getAttribute("data-message-id"));
+      const msgChannelId = channelIdOfMessage(btn.getAttribute("data-message-id"));
+      if (msgChannelId) {
+        await store.deleteMessage(msgChannelId, btn.getAttribute("data-message-id"));
         showToast("Mensagem excluída.");
       }
       break;
@@ -8034,9 +8208,15 @@ function channelIdOrFallback(ch) {
 // Right-click Context Menu on Servers
 // Right-click on a message: small menu with the same actions as its toolbar
 // (each item clicks the toolbar button, so deleting still asks to confirm)
+// The call's chat is not the "active" channel, so messages are looked up by id
+function channelIdOfMessage(messageId) {
+  const all = store.getState().messages;
+  return Object.keys(all).find((id) => (all[id] || []).some((m) => m.id === messageId)) || store.getActiveChannel()?.id || null;
+}
+
 function openMessageContextMenu(e, row) {
   const id = row.getAttribute("data-message-id");
-  const toolbarButton = (action) => document.querySelector(`.message-row[data-message-id="${CSS.escape(id)}"] [data-action="${action}"][data-message-id="${CSS.escape(id)}"]`);
+  const toolbarButton = (action) => document.querySelector(`[data-message-id="${CSS.escape(id)}"]:is(.message-row, .call-chat-msg) [data-action="${action}"][data-message-id="${CSS.escape(id)}"]`);
   const all = Object.values(store.getState().messages).flat();
   const msg = all.find((m) => m && m.id === id);
   const items = [];

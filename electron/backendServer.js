@@ -1048,7 +1048,8 @@ class DiscordBackendServer {
     });
 
     const activeScreenShares = [];
-    for (const [chId, share] of this.screenShares.entries()) {
+    for (const share of this.screenShares.values()) {
+      const chId = share.channelId;
       if (!this.channelAudience(chId).includes(activeUserId)) continue;
       activeScreenShares.push({
         channelId: chId,
@@ -1321,6 +1322,12 @@ class DiscordBackendServer {
 
   // Events carrying private data (screen images, WebRTC addresses) go only to
   // these users' connections, never to everyone on the server
+  // One share per person: several people in a call can share at the same time
+  stopUserScreenShare(channelId, userId) {
+    if (!this.screenShares.delete(`${channelId}:${userId}`)) return;
+    this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId, sharerId: userId });
+  }
+
   sendEventToUsers(userIds, type, payload) {
     const allowed = new Set(userIds);
     const frame = `data: ${JSON.stringify({ event: type, type, payload, timestamp: Date.now() })}\n\n`;
@@ -2820,7 +2827,9 @@ class DiscordBackendServer {
         const channelIds = this.db.prepare(`SELECT id FROM channels WHERE guild_id = ?`).all(guildId).map((r) => r.id);
         for (const chId of channelIds) {
           this.voiceRooms.delete(chId);
-          if (this.screenShares.delete(chId)) this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId: chId });
+          for (const share of Array.from(this.screenShares.values())) {
+            if (share.channelId === chId) this.stopUserScreenShare(chId, share.sharerId);
+          }
         }
         this.db.exec("BEGIN IMMEDIATE");
         try {
@@ -3374,10 +3383,7 @@ class DiscordBackendServer {
         for (const [chId, room] of this.voiceRooms.entries()) {
           if (room.has(actorId)) {
             room.delete(actorId);
-            if (this.screenShares.get(chId)?.sharerId === actorId) {
-              this.screenShares.delete(chId);
-              this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId: chId, sharerId: actorId });
-            }
+            this.stopUserScreenShare(chId, actorId);
             // Let whoever is still in the old room know this user left
             if (chId !== channelId) {
               this.broadcastEvent("RTC_ROOM_UPDATED", { channelId: chId, participants: Array.from(room.values()) });
@@ -3412,7 +3418,7 @@ class DiscordBackendServer {
           ok: true,
           channelId,
           participants: Array.from(room.values()),
-          activeScreenShare: this.screenShares.get(channelId) || null
+          activeScreenShare: Array.from(this.screenShares.values()).find((s) => s.channelId === channelId) || null
         };
       }
 
@@ -3457,10 +3463,7 @@ class DiscordBackendServer {
         }
         // Disconnect (or move): the target's app leaves the call / joins the other channel
         room.delete(targetId);
-        if (this.screenShares.get(roomId)?.sharerId === targetId) {
-          this.screenShares.delete(roomId);
-          this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId: roomId, sharerId: targetId });
-        }
+        this.stopUserScreenShare(roomId, targetId);
         this.broadcastEvent("RTC_ROOM_UPDATED", { channelId: roomId, participants: Array.from(room.values()) });
         this.broadcastEvent("VOICE_FORCED", { userId: targetId, op, guildId, channelId: op === "move" ? params.channelId : null });
         return { ok: true };
@@ -3474,10 +3477,7 @@ class DiscordBackendServer {
           if (room.has(actorId)) {
             room.delete(actorId);
             affectedChannels.push(chId);
-            if (this.screenShares.get(chId)?.sharerId === actorId) {
-              this.screenShares.delete(chId);
-              this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId: chId, sharerId: actorId });
-            }
+            this.stopUserScreenShare(chId, actorId);
             this.broadcastEvent("RTC_ROOM_UPDATED", {
               channelId: chId,
               participants: Array.from(room.values())
@@ -3537,7 +3537,7 @@ class DiscordBackendServer {
           frameDataUrl: initialFrameDataUrl || null
         };
 
-        this.screenShares.set(channelId, shareState);
+        this.screenShares.set(`${channelId}:${actorId}`, shareState);
         this.broadcastEvent("SCREEN_SHARE_STARTED", shareState);
         return { ok: true, share: shareState, screenShare: shareState };
       }
@@ -3546,8 +3546,8 @@ class DiscordBackendServer {
       case "broadcastScreenFrame": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const { channelId, frameDataUrl, sdpOffer, sdpAnswer, iceCandidate } = params;
-        const share = this.screenShares.get(channelId);
-        if (!share || share.sharerId !== actorId) {
+        const share = this.screenShares.get(`${channelId}:${actorId}`);
+        if (!share) {
           return { ok: false, error: "Nenhuma transmissão ativa para este usuário." };
         }
         if (frameDataUrl) {
@@ -3571,14 +3571,14 @@ class DiscordBackendServer {
       case "stopScreenShare": {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const { channelId } = params;
-        for (const [chId, share] of this.screenShares.entries()) {
+        for (const share of Array.from(this.screenShares.values())) {
+          const chId = share.channelId;
           if ((!channelId || chId === channelId) && share.sharerId === actorId) {
-            this.screenShares.delete(chId);
             const room = this.voiceRooms.get(chId);
             if (room && room.has(actorId)) {
               room.get(actorId).screenShareEnabled = false;
             }
-            this.broadcastEvent("SCREEN_SHARE_STOPPED", { channelId: chId, sharerId: actorId });
+            this.stopUserScreenShare(chId, actorId);
           }
         }
         return { ok: true };
@@ -4088,7 +4088,14 @@ class DiscordBackendServer {
             ".wav": "audio/wav",
             ".mp3": "audio/mpeg",
             ".ogg": "audio/ogg",
-            ".webm": "audio/webm"
+            ".webm": safeName.startsWith("file_") ? "video/webm" : "audio/webm",
+            ".mp4": "video/mp4",
+            ".m4v": "video/mp4",
+            ".mov": "video/mp4",
+            ".m4a": "audio/mp4",
+            ".aac": "audio/aac",
+            ".flac": "audio/flac",
+            ".opus": "audio/ogg"
           };
           // Anything that is not known media is served as a download, never rendered
           const headers = {
@@ -4097,6 +4104,25 @@ class DiscordBackendServer {
             "X-Content-Type-Options": "nosniff"
           };
           if (!mimeMap[ext]) headers["Content-Disposition"] = "attachment";
+          // Players ask for byte ranges to seek
+          const totalSize = fs.statSync(filePath).size;
+          headers["Accept-Ranges"] = "bytes";
+          const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || "");
+          if (range && (range[1] || range[2])) {
+            const start = range[1] ? Number(range[1]) : Math.max(0, totalSize - Number(range[2]));
+            const end = range[1] && range[2] ? Math.min(Number(range[2]), totalSize - 1) : totalSize - 1;
+            if (start > end || start >= totalSize) {
+              res.writeHead(416, { "Content-Range": `bytes */${totalSize}` });
+              res.end();
+              return;
+            }
+            headers["Content-Range"] = `bytes ${start}-${end}/${totalSize}`;
+            headers["Content-Length"] = end - start + 1;
+            res.writeHead(206, headers);
+            fs.createReadStream(filePath, { start, end }).pipe(res);
+            return;
+          }
+          headers["Content-Length"] = totalSize;
           res.writeHead(200, headers);
           fs.createReadStream(filePath).pipe(res);
           return;

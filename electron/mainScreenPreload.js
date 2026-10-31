@@ -75,7 +75,14 @@ const DiscordNative = {
     getSources: (options) => ipcRenderer.invoke("DISCORD_DESKTOP_CAPTURER_GET_SOURCES", options),
     selectSource: (sourceId, includeAudio) =>
       ipcRenderer.invoke("DISCORD_DESKTOP_CAPTURER_SELECT_SOURCE", { sourceId, includeAudio }),
-    setMediaSessionActive: (active) => ipcRenderer.send("DISCORD_MEDIA_SESSION", Boolean(active))
+    setMediaSessionActive: (active) => ipcRenderer.send("DISCORD_MEDIA_SESSION", Boolean(active)),
+    startSystemAudio: () => ipcRenderer.invoke("ECO_SYSTEM_AUDIO_START"),
+    stopSystemAudio: () => ipcRenderer.invoke("ECO_SYSTEM_AUDIO_STOP"),
+    onSystemAudio: (callback) => {
+      const listener = (_e, chunk) => callback(chunk);
+      ipcRenderer.on("ECO_SYSTEM_AUDIO_PCM", listener);
+      return () => ipcRenderer.removeListener("ECO_SYSTEM_AUDIO_PCM", listener);
+    }
   },
   startup: {
     getOpenOnStartup: () => ipcRenderer.sendSync("DISCORD_APP_GET_OPEN_ON_STARTUP_SYNC"),

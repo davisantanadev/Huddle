@@ -866,6 +866,7 @@ class VoiceMesh {
     this.deafened = false;
     this.outputDeviceId = "default";
     this.outputVolume = 1;
+    this.streamAudioMuted = new Set();
     this.sendSignal = null; // (targetUserId, signalType, signalData) => Promise
     this.onRemoteSpeaking = null; // (userId, speaking) => void
     this.remoteSpeaking = new Map(); // userId -> { speaking, lastLoudAt }
@@ -991,6 +992,33 @@ class VoiceMesh {
     for (const slot of SLOTS) this.applyTrack(peer, slot);
   }
 
+  // "Parar de assistir" also silences that person's stream (their voice stays on)
+  isStreamAudioMuted(userId) {
+    return this.deafened || this.localMuted.has(userId) || this.streamAudioMuted.has(userId);
+  }
+
+  setStreamAudioMuted(userId, muted) {
+    if (muted) this.streamAudioMuted.add(userId);
+    else this.streamAudioMuted.delete(userId);
+    const peer = this.peers.get(userId);
+    if (peer) peer.screenAudio.muted = this.isStreamAudioMuted(userId);
+  }
+
+  // A viewer who never got a picture asks the sharer to send the video again
+  requestStreamRefresh(userId) {
+    if (this.peers.has(userId)) this.signal(userId, "refresh-screen", {});
+  }
+
+  async refreshScreenFor(peer) {
+    const transceiver = peer.pc.getTransceivers()[SLOTS.indexOf("screen")];
+    const track = this.tracks.screen;
+    if (!transceiver || !track) return;
+    // Re-attaching the track makes the encoder start over with a full frame
+    await transceiver.sender.replaceTrack(null).catch(() => {});
+    await transceiver.sender.replaceTrack(track).catch(() => {});
+    this.applyEncoding(transceiver.sender, "screen");
+  }
+
   // The <video> showing someone's screen or camera; the UI mounts it where needed
   getRemoteVideo(userId, slot = "screen") {
     return this.remoteVideos.get(`${userId}:${slot}`) || null;
@@ -1080,7 +1108,7 @@ class VoiceMesh {
     audio.volume = this.volumeFor(userId);
     const screenAudio = makeAudio();
     screenAudio.volume = this.volumeFor(userId);
-    screenAudio.muted = this.deafened || this.localMuted.has(userId);
+    screenAudio.muted = this.isStreamAudioMuted(userId);
 
     const peer = { pc, audio, screenAudio, pendingCandidates: [], initiator, restartTimer: null };
     this.peers.set(userId, peer);
@@ -1164,7 +1192,9 @@ class VoiceMesh {
     if (!this.channelId || !fromUserId || fromUserId === this.meId) return;
     let peer = this.peers.get(fromUserId);
     try {
-      if (signalType === "offer") {
+      if (signalType === "refresh-screen") {
+        if (peer) await this.refreshScreenFor(peer);
+      } else if (signalType === "offer") {
         if (!peer) peer = this.createPeer(fromUserId, false);
         await peer.pc.setRemoteDescription(signalData);
         // Send our tracks on the transceivers the offer created
@@ -1251,7 +1281,7 @@ class VoiceMesh {
     this.deafened = Boolean(deafened);
     for (const [userId, peer] of this.peers) {
       peer.audio.muted = this.isUserMuted(userId);
-      peer.screenAudio.muted = this.deafened || this.localMuted.has(userId);
+      peer.screenAudio.muted = this.isStreamAudioMuted(userId);
     }
     if (this.localTrack) this.localTrack.enabled = !this.muted && !this.deafened;
   }
@@ -1276,7 +1306,7 @@ class VoiceMesh {
     this.userVolumes = new Map(Object.entries(volumes).map(([id, pct]) => [id, Math.max(0, Math.min(1, Number(pct) / 100))]));
     for (const [userId, peer] of this.peers) {
       peer.audio.muted = this.isUserMuted(userId);
-      peer.screenAudio.muted = this.deafened || this.localMuted.has(userId);
+      peer.screenAudio.muted = this.isStreamAudioMuted(userId);
       peer.audio.volume = this.volumeFor(userId);
       peer.screenAudio.volume = this.volumeFor(userId);
     }
@@ -1368,7 +1398,72 @@ class ScreenShareManager {
     this.fpsTimer = null;
     this.framesThisSecond = 0;
     this.onTrackEnded = null;
+    this.onBlackCapture = null;
+    this.blackCheckTimer = null;
+    this.systemAudio = null;
     this.stats = this.emptyStats();
+  }
+
+  // The PC's sound without the app's own audio, so the call is not sent back to
+  // the people in it. Null if this PC cannot do that.
+  async startSystemAudio() {
+    const api = window.DiscordNative?.desktopCapture;
+    if (!api?.startSystemAudio) return null;
+    let ctx = null;
+    let unsubscribe = null;
+    try {
+      ctx = new AudioContext({ sampleRate: 48000 });
+      await ctx.audioWorklet.addModule(new URL("./systemAudioWorklet.js", import.meta.url).href);
+      const node = new AudioWorkletNode(ctx, "eco-pcm", { numberOfInputs: 0, outputChannelCount: [2] });
+      const dest = ctx.createMediaStreamDestination();
+      node.connect(dest);
+      unsubscribe = api.onSystemAudio((chunk) => {
+        const copy = chunk.slice().buffer;
+        node.port.postMessage(copy, [copy]);
+      });
+      const res = await api.startSystemAudio();
+      if (!res?.ok) throw new Error("unavailable");
+      await ctx.resume().catch(() => {});
+      this.systemAudio = { ctx, unsubscribe };
+      return dest.stream.getAudioTracks()[0] || null;
+    } catch (_) {
+      if (unsubscribe) unsubscribe();
+      if (ctx) ctx.close().catch(() => {});
+      return null;
+    }
+  }
+
+  stopSystemAudio() {
+    if (!this.systemAudio) return;
+    this.systemAudio.unsubscribe();
+    this.systemAudio.ctx.close().catch(() => {});
+    this.systemAudio = null;
+    window.DiscordNative?.desktopCapture?.stopSystemAudio?.();
+  }
+
+  // Some PCs (two GPUs, protected or minimized windows) capture only black.
+  // Looks at the first seconds of the share and warns the person sharing.
+  startBlackCheck(video) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 18;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    let checks = 0;
+    let black = 0;
+    this.blackCheckTimer = setInterval(() => {
+      if (this.previewVideo !== video || ++checks > 4) {
+        clearInterval(this.blackCheckTimer);
+        this.blackCheckTimer = null;
+        if (this.previewVideo === video && black === 4 && this.onBlackCapture) this.onBlackCapture();
+        return;
+      }
+      if (!video.videoWidth) return void black++;
+      ctx.drawImage(video, 0, 0, 32, 18);
+      const { data } = ctx.getImageData(0, 0, 32, 18);
+      let brightest = 0;
+      for (let i = 0; i < data.length; i += 4) brightest = Math.max(brightest, data[i], data[i + 1], data[i + 2]);
+      if (brightest < 12) black++;
+    }, 2000);
   }
 
   emptyStats() {
@@ -1405,16 +1500,20 @@ class ScreenShareManager {
   async startCapture(sourceId, { width = 1920, height = 1080, frameRate = 60, includeAudio = false } = {}) {
     this.stopCapture();
     const fps = Math.min(120, Number(frameRate) || 60);
+    let systemTrack = null;
     try {
       if (NativeBridge.isElectron() && window.DiscordNative.desktopCapture?.selectSource) {
-        await window.DiscordNative.desktopCapture.selectSource(sourceId, includeAudio);
+        // A whole screen with sound: our own capture, which leaves out the call's voices
+        systemTrack = includeAudio && String(sourceId).startsWith("screen:") ? await this.startSystemAudio() : null;
+        await window.DiscordNative.desktopCapture.selectSource(sourceId, includeAudio && !systemTrack);
       }
       const videoConstraints = { frameRate: { ideal: fps, max: fps } };
       if (width && height) {
         videoConstraints.width = { max: width };
         videoConstraints.height = { max: height };
       }
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints, audio: Boolean(includeAudio) });
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints, audio: Boolean(includeAudio) && !systemTrack });
+      if (systemTrack) stream.addTrack(systemTrack);
 
       const [track] = stream.getVideoTracks();
       if (!track) throw new Error("A fonte escolhida não entregou vídeo.");
@@ -1449,6 +1548,7 @@ class ScreenShareManager {
       await video.play().catch(() => {});
 
       this.startFpsMeter(video);
+      this.startBlackCheck(video);
       return { ok: true, stream, stats: this.getStats() };
     } catch (err) {
       this.stopCapture();
@@ -1483,7 +1583,10 @@ class ScreenShareManager {
   stopCapture() {
     clearInterval(this.fpsTimer);
     this.fpsTimer = null;
+    clearInterval(this.blackCheckTimer);
+    this.blackCheckTimer = null;
     this.framesThisSecond = 0;
+    this.stopSystemAudio();
 
     if (this.previewVideo) {
       try {
