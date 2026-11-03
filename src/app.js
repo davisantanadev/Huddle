@@ -335,9 +335,8 @@ function getInitials(name) {
 // GIFs from the Giphy library are played as MP4 (what Giphy serves for every
 // GIF): a fraction of the size, decoded by the GPU at the clip's own frame
 // rate. GIF files themselves can't be smooth: Chromium plays frames shorter
-// than 20 ms as 100 ms. In chat and lists an animated avatar shows a still
-// frame and plays on hover (like Discord), so a long chat doesn't run dozens
-// of videos at once; profile cards and banners always play.
+// than 20 ms as 100 ms. Animated avatars, server icons and banners always
+// play (the small 200w clip is used for avatars, so it stays light).
 const GIPHY_MEDIA = /^(https:\/\/media\d*\.giphy\.com\/media\/(?:[^/?#]+\/)?[A-Za-z0-9]+)\/[^/?#]+\.(?:gif|webp)(?:\?.*)?$/i;
 
 function giphyRenditions(url) {
@@ -411,7 +410,7 @@ function renderAvatar(user, sizeClass = "", includeStatus = false, extraStyle = 
     : "";
 
   const inner = avatarUrl
-    ? `<span class="avatar-clip">${animatedImageHtml(avatarUrl, { cls: "avatar-img", style: transformStyle, alt: u.displayName, mode: options.animate ? "animate" : "hover" })}</span>`
+    ? `<span class="avatar-clip">${animatedImageHtml(avatarUrl, { cls: "avatar-img", style: transformStyle, alt: u.displayName, mode: "animate" })}</span>`
     : escapeHtml(getInitials(u.displayName));
   const dot = includeStatus ? `<span class="status-dot ${escapeHtml(u.status || "offline")}"></span>` : "";
   return `
@@ -724,7 +723,7 @@ function renderGuildsRail(state) {
           >
             <div class="guild-avatar-inner">${
               g.iconUrl
-                ? animatedImageHtml(g.iconUrl, { cls: "guild-icon-img", alt: g.name, mode: "hover" })
+                ? animatedImageHtml(g.iconUrl, { cls: "guild-icon-img", alt: g.name })
                 : escapeHtml(g.shortName)
             }</div>
             ${g.unreadCount > 0 && !isActive ? `<span class="guild-badge" data-testid="guild-unread-badge">${g.unreadCount > 99 ? "99+" : g.unreadCount}</span>` : ""}
