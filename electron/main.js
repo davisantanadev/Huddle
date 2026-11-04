@@ -37,9 +37,36 @@ const APP_DATA_DIR = process.env.ECO_USER_DATA_DIR || path.join(app.getPath("app
 const DB_FILE = "discord_platform_v2.sqlite";
 // Shown everywhere: window and taskbar titles, tray, notifications (the
 // executable's own name/description is set by scripts/build-exe.js)
-const APP_DISPLAY_NAME = loadAppConfig().appName || "Invadominio zak' zak";
+const APP_DISPLAY_NAME = loadAppConfig().appName || "Huddle";
+// The app was called this up to 1.2.10: its shortcuts are renamed on start
+const OLD_DISPLAY_NAME = "Invadominio zak' zak";
 app.setName(APP_DISPLAY_NAME);
+// (kept from the old name: taskbar pins and notification settings stay valid)
 if (process.platform === "win32") app.setAppUserModelId("com.invadominio.zakzak");
+
+// Shortcuts made under the old name (Desktop, Start menu) become "Huddle"
+// shortcuts pointing at this executable
+function renameOldShortcuts() {
+  if (process.platform !== "win32" || !app.isPackaged) return;
+  const startMenu = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs");
+  for (const dir of [app.getPath("desktop"), startMenu]) {
+    const oldLink = path.join(dir, `${OLD_DISPLAY_NAME}.lnk`);
+    if (!fs.existsSync(oldLink)) continue;
+    try {
+      shell.writeShortcutLink(path.join(dir, `${APP_DISPLAY_NAME}.lnk`), "create", {
+        target: process.execPath,
+        cwd: path.dirname(process.execPath),
+        icon: process.execPath,
+        iconIndex: 0,
+        description: APP_DISPLAY_NAME,
+        appUserModelId: "com.invadominio.zakzak"
+      });
+      fs.rmSync(oldLink, { force: true });
+    } catch (err) {
+      console.error("Failed to rename the old shortcut:", err);
+    }
+  }
+}
 
 function migrateFromSharedDiscordFolder() {
   if (fs.existsSync(path.join(APP_DATA_DIR, DB_FILE))) return;
@@ -1249,6 +1276,7 @@ app.whenReady().then(async () => {
   }
 
   registerIpcHandlers(backendServer);
+  renameOldShortcuts();
   setupSystemTray();
   applyMuteHotkey(getMuteHotkey());
   // Compiles the tiny memory helper the first time (a second or two, in the background)

@@ -1,4 +1,4 @@
-// E-mail verification codes for the Invadominio zak' zak app, sent through Brevo's API.
+// E-mail verification codes for the Huddle app, sent through Brevo's API.
 //
 //   POST { action: "send",   email }        -> e-mails a 6-digit code
 //   POST { action: "verify", email, code }  -> { valid: true } when it matches
@@ -21,7 +21,7 @@ const MAX_PER_EMAIL_PER_HOUR = 5;
 const MAX_PER_DAY = 250; // Brevo free plan allows 300/day
 const MAX_ATTEMPTS = 5;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const APP_NAME = "Invadominio zak' zak";
+const APP_NAME = "Huddle";
 
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false }

@@ -1,10 +1,11 @@
-# Instala (ou atualiza) o Invadominio zak' zak a partir do servidor.
+# Instala (ou atualiza) o Huddle a partir do servidor.
+# (Quem prefere não usar comando baixa o instalador com janela: /download/Instalar-Huddle.exe)
 #
 # Uso, no PowerShell:
 #   irm https://129-159-51-96.sslip.io/download/install.ps1 | iex
 #
 # Baixa Eco.zip do servidor, confere o SHA-256 publicado ao lado, instala em
-# %LOCALAPPDATA%\Invadominio (sem precisar de administrador), cria o atalho na
+# %LOCALAPPDATA%\Huddle (sem precisar de administrador), cria o atalho na
 # Área de Trabalho e no Menu Iniciar e abre o app. Contas e configurações
 # ficam em %APPDATA%\Eco e não são tocadas por uma atualização. Instalações
 # antigas (com o nome "Eco") são fechadas e removidas.
@@ -12,11 +13,15 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue" # a barra de progresso deixa o download muito lento no PowerShell 5
 
-$appName = "Invadominio zak' zak"
+$appName = "Huddle"
+$oldAppName = "Invadominio zak' zak"
 $base = "https://129-159-51-96.sslip.io/download"
-$installDir = Join-Path $env:LOCALAPPDATA "Invadominio"
+$installDir = Join-Path $env:LOCALAPPDATA "Huddle"
+# Quem instalou antes da troca de nome continua na mesma pasta
+$renamedDir = Join-Path $env:LOCALAPPDATA "Invadominio"
+if ((Test-Path $renamedDir) -and -not (Test-Path $installDir)) { $installDir = $renamedDir }
 $oldInstallDir = Join-Path $env:LOCALAPPDATA "Eco"
-$zipPath = Join-Path $env:TEMP "Invadominio-download.zip"
+$zipPath = Join-Path $env:TEMP "Huddle-download.zip"
 $desktop = [Environment]::GetFolderPath("Desktop")
 $programs = [Environment]::GetFolderPath("Programs")
 
@@ -51,7 +56,7 @@ try {
 
     # Restos da versão com o nome antigo
     if (Test-Path $oldInstallDir) { Remove-Item $oldInstallDir -Recurse -Force -ErrorAction SilentlyContinue }
-    foreach ($old in @((Join-Path $desktop "Eco.lnk"), (Join-Path $programs "Eco.lnk"))) {
+    foreach ($old in @((Join-Path $desktop "Eco.lnk"), (Join-Path $programs "Eco.lnk"), (Join-Path $desktop "$oldAppName.lnk"), (Join-Path $programs "$oldAppName.lnk"))) {
         if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue }
     }
 

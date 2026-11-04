@@ -498,7 +498,7 @@ function formatMessageMarkdown(rawText) {
 // ==========================================================================
 
 function getAppName() {
-  return store.getState().appConfig?.appName || "Invadominio zak' zak";
+  return store.getState().appConfig?.appName || "Huddle";
 }
 
 // Mirrors the backend's buildInviteUrl so placeholders show the real link format

@@ -3995,7 +3995,7 @@ class DiscordBackendServer {
          <a class="join" href="eco://convite/${encodeURIComponent(p.code)}">Entrar no servidor</a>
          <p class="hint">O botão abre o ${appName} e entra no servidor. Se nada acontecer, abra o app, clique em <b>+</b> &rsaquo; <b>Entrar em um servidor</b> e cole o código:</p>
          <div class="code">${esc(p.code)}</div>
-         <p class="hint small">Ainda não tem o ${appName}? No PowerShell do Windows, rode:<br><code>irm ${esc(this.getPublicBaseUrl())}/download/install.ps1 | iex</code></p>`
+         <p class="hint small">Ainda não tem o ${appName}? <a href="${esc(this.getPublicBaseUrl())}/download/">Baixe o instalador aqui</a>.</p>`
       : `<h1>Convite inválido</h1><p class="muted">${esc(result.error || "Este convite não existe.")}</p>`;
     return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
       <title>Convite · ${appName}</title>
@@ -4007,7 +4007,7 @@ class DiscordBackendServer {
         h1{margin:6px 0;font-size:24px}.muted{color:#a3a6b8;margin:4px 0}
         .code{margin:18px auto 10px;padding:10px 14px;border-radius:8px;background:#15161f;font-family:monospace;font-size:16px;user-select:all}
         .hint{color:#a3a6b8;font-size:13px;line-height:1.5}
-        .hint.small{font-size:12px;margin-top:18px}.hint code{display:inline-block;margin-top:6px;padding:4px 8px;border-radius:6px;background:#15161f;color:#dfe1ff;user-select:all;word-break:break-all}
+        .hint.small{font-size:12px;margin-top:18px}.hint a{color:#8b93ff}.hint code{display:inline-block;margin-top:6px;padding:4px 8px;border-radius:6px;background:#15161f;color:#dfe1ff;user-select:all;word-break:break-all}
         .join{display:block;margin:20px 0 6px;padding:12px 16px;border-radius:8px;background:#5865f2;color:#fff;font-weight:700;font-size:15px;text-decoration:none}
         .join:hover{background:#4752c4}
       </style></head><body><div class="card"><div class="brand">${appName}</div>${body}</div></body></html>`;

@@ -218,7 +218,7 @@ function createEmptyState() {
     dms: [],
     guilds: [],
     discoverableGuilds: [],
-    appConfig: { appName: "Invadominio zak' zak", publicUrl: "" },
+    appConfig: { appName: "Huddle", publicUrl: "" },
     messages: {}
   };
 }

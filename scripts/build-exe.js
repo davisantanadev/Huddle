@@ -49,6 +49,19 @@ async function build() {
   const packagedExe = path.join(packagedDir, `${appName}.exe`);
   console.log("Packaged Electron binary at:", packagedExe);
 
+  // "Invadominio zak' zak.exe" (the old name) opens Huddle.exe: versions up to
+  // 1.2.10 restart the app by that name after updating, and old pins use it
+  const csc = path.join(process.env.WINDIR || "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+  execFileSync(csc, [
+    "/nologo",
+    "/optimize+",
+    "/target:winexe",
+    `/win32icon:${iconPath}`,
+    "/r:System.Core.dll",
+    `/out:${path.join(packagedDir, "Invadominio zak' zak.exe")}`,
+    path.join(rootDir, "installer", "LegacyLauncher.cs")
+  ]);
+
   if (process.env.NO_SHORTCUT === "1") return;
 
   // Desktop shortcut (.lnk) to the packaged app, named after app.config.json →
