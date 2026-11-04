@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Huddle: A call da turma</title>
-  <meta name="description" content="App de chat, voz limpa e compartilhamento de tela para Windows feito para a sua turma jogar junta, sem anúncios nem servidores de terceiros." />
+  <title>Huddle: Chat, voz e tela para Windows</title>
+  <meta name="description" content="App de chat, voz limpa e compartilhamento de tela para Windows feito para jogar com os amigos, sem anúncios nem servidores de terceiros." />
   <link rel="icon" href="img/favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -17,19 +17,51 @@
   <!-- Top Navigation -->
   <header class="site-header animate-in delay-1">
     <div class="container nav-row">
-      <a class="brand" href="#" aria-label="Huddle Início">
+      <a class="brand" href="#" aria-label="Huddle">
         <img class="brand-icon" src="img/favicon.ico" alt="" width="32" height="32" />
         Huddle
       </a>
+
       <nav class="nav-links" aria-label="Navegação principal">
-        <a href="#recursos">O que tem</a>
-        <a href="#instalar">Como instalar</a>
-        <a href="#powershell">PowerShell</a>
+        <a href="#recursos" data-i18n="navFeatures">Recursos</a>
+        <a href="#instalar" data-i18n="navInstall">Como instalar</a>
+        <a href="#powershell" data-i18n="navPowerShell">PowerShell</a>
       </nav>
-      <a class="nav-cta" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download data-testid="download-nav">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
-        <span>Baixar .exe</span>
-      </a>
+
+      <div class="nav-controls">
+        <!-- Language Switcher -->
+        <div class="lang-switch" role="group" aria-label="Idioma / Language">
+          <button type="button" class="lang-btn active" id="lang-pt" aria-pressed="true">PT</button>
+          <span class="lang-divider" aria-hidden="true">|</span>
+          <button type="button" class="lang-btn" id="lang-en" aria-pressed="false">EN</button>
+        </div>
+
+        <!-- Animated Theme Toggle -->
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Alternar modo claro e escuro">
+          <!-- Sun Icon (shown in dark mode to switch to light) -->
+          <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <!-- Moon Icon (shown in light mode to switch to dark) -->
+          <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+
+        <!-- Compact Top CTA -->
+        <a class="nav-cta" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download data-testid="download-nav">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+          <span data-i18n="navDownload">Baixar .exe</span>
+        </a>
+      </div>
     </div>
   </header>
 
@@ -38,12 +70,12 @@
     <section class="hero">
       <div class="container hero-grid">
         <div class="hero-content">
-          <h1 class="animate-in delay-2">A call da turma.</h1>
-          <p class="lead animate-in delay-3">
-            Chat, voz limpa e transmissão de tela para jogar com os amigos no servidor de vocês. Sem anúncio, sem lentidão e sem servidores de terceiros.
+          <h1 class="animate-in delay-2" data-i18n="heroH1">Voz limpa, chat e gameplay sem lag.</h1>
+          <p class="lead animate-in delay-3" data-i18n="heroLead">
+            Conecte-se com seus amigos em chamadas de alto desempenho, compartilhe sua tela com som e converse sem anúncios nem servidores lentos.
           </p>
 
-          <!-- Active Squad Pill placed directly below lead -->
+          <!-- Active Squad Pill -->
           <div class="squad-status animate-in delay-4" aria-label="Quatro amigos em chamada ativa">
             <div class="avatar-stack" aria-hidden="true">
               <span class="avatar bia" title="Bia">BI</span>
@@ -53,17 +85,17 @@
             </div>
             <span class="status-text">
               <span class="live-dot" aria-hidden="true"></span>
-              Léo falando na call da turma
+              <span data-i18n="heroStatus">Léo está falando na sala de jogo</span>
             </span>
           </div>
 
           <div class="cta-cluster animate-in delay-5">
             <a class="btn-download" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download data-testid="download">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
-              <span>Baixar para Windows</span>
+              <span data-i18n="heroBtn">Baixar para Windows</span>
             </a>
-            <p class="download-meta" id="version-line">
-              <strong>Windows 10 e 11, 64 bits</strong> · Instalador baixa cerca de 120 MB
+            <p class="download-meta" id="version-line" data-i18n="heroMeta">
+              <strong>Windows 10 e 11 (64 bits)</strong> · Instalador leve (~120 MB)
             </p>
           </div>
         </div>
@@ -80,37 +112,37 @@
     <section class="section section-alt" id="recursos">
       <div class="container">
         <div class="section-header animate-in delay-7">
-          <h2>Tudo pronto para a gameplay da noite</h2>
-          <p class="section-desc">
-            Canais de texto, voz rápida e transmissão fluida com a autonomia de rodar no próprio servidor da turma.
+          <h2 data-i18n="featuresH2">Feito sob medida para jogar e conversar</h2>
+          <p class="section-desc" data-i18n="featuresDesc">
+            Canais de texto rápidos, voz cristalina e transmissão fluida no servidor da sua comunidade.
           </p>
         </div>
 
         <div class="features-showcase">
           <div class="features-list">
             <div class="feature-item animate-in delay-8">
-              <h3>Voz limpa e sem eco <span class="feature-tag">Áudio</span></h3>
-              <p>Supressão de ruído nativa, controle de volume individual para cada amigo na call e atalho de uma tecla para mutar na hora.</p>
+              <h3><span data-i18n="f1Title">Voz limpa e sem eco</span> <span class="feature-tag" data-i18n="f1Tag">Áudio</span></h3>
+              <p data-i18n="f1Desc">Supressão de ruído nativa, controle de volume individual para cada amigo na call e atalho de uma tecla para mutar na hora.</p>
             </div>
 
             <div class="feature-item animate-in delay-9">
-              <h3>Telas simultâneas com som <span class="feature-tag">Transmissão</span></h3>
-              <p>Várias pessoas podem transmitir suas partidas ao mesmo tempo com som do jogo, sem o microfone voltar como eco na transmissão dos outros.</p>
+              <h3><span data-i18n="f2Title">Telas simultâneas com som</span> <span class="feature-tag" data-i18n="f2Tag">Transmissão</span></h3>
+              <p data-i18n="f2Desc">Várias pessoas podem transmitir suas partidas ao mesmo tempo com áudio do jogo, sem retorno de eco no microfone.</p>
             </div>
 
             <div class="feature-item animate-in delay-10">
-              <h3>Chat completo dentro da call <span class="feature-tag">Mensagens</span></h3>
-              <p>Responder, reagir com emojis, editar, apagar, mencionar com @ e reproduzir arquivos de áudio e vídeo diretamente na conversa.</p>
+              <h3><span data-i18n="f3Title">Chat completo dentro da chamada</span> <span class="feature-tag" data-i18n="f3Tag">Mensagens</span></h3>
+              <p data-i18n="f3Desc">Respostas, reações com emojis, edição, menções com @ e reprodução de áudio e vídeo diretamente na conversa.</p>
             </div>
 
             <div class="feature-item animate-in delay-11">
-              <h3>Perfis com a cara de cada um <span class="feature-tag">Personalização</span></h3>
-              <p>Avatares e banners em GIF liberados, cargos com cores personalizadas no servidor e indicador de quem está online.</p>
+              <h3><span data-i18n="f4Title">Perfis e identidade própria</span> <span class="feature-tag" data-i18n="f4Tag">Personalização</span></h3>
+              <p data-i18n="f4Desc">Avatares e banners em GIF liberados, cargos com cores personalizadas no servidor e indicador de quem está online.</p>
             </div>
 
             <div class="feature-item animate-in delay-12">
-              <h3>Atualização automática <span class="feature-tag">Praticidade</span></h3>
-              <p>Quando sai uma versão nova, o app avisa e atualiza com um único clique, preservando todas as suas contas e preferências.</p>
+              <h3><span data-i18n="f5Title">Atualização automática e segura</span> <span class="feature-tag" data-i18n="f5Tag">Praticidade</span></h3>
+              <p data-i18n="f5Desc">O aplicativo avisa quando há novidades e atualiza com um único clique, preservando todas as suas contas e preferências.</p>
             </div>
           </div>
 
@@ -120,9 +152,9 @@
               <div class="live-demo-header">
                 <span class="live-demo-title">
                   <span class="live-indicator" aria-hidden="true"></span>
-                  Controles rápidos da chamada
+                  <span data-i18n="demoTitle">Controles rápidos da chamada</span>
                 </span>
-                <span class="mute-key-badge">Mudo: <span class="key-cap">F8</span></span>
+                <span class="mute-key-badge" data-i18n="demoMute">Mudo: <span class="key-cap">F8</span></span>
               </div>
 
               <div class="live-demo-vol-row">
@@ -174,8 +206,8 @@
     <section class="section" id="instalar">
       <div class="container">
         <div class="section-header">
-          <h2>Instalação simples no seu Windows</h2>
-          <p class="section-desc">
+          <h2 data-i18n="installH2">Instalação simples no seu Windows</h2>
+          <p class="section-desc" data-i18n="installDesc">
             Três passos rápidos para entrar na sala. Sem configurações complicadas nem permissões desnecessárias.
           </p>
         </div>
@@ -183,18 +215,18 @@
         <div class="steps-grid">
           <div class="step-card">
             <span class="step-number" aria-hidden="true">1</span>
-            <h3>Baixe o arquivo</h3>
-            <p>Clique em <strong>Baixar para Windows</strong> para receber o <strong>Instalar-Huddle.exe</strong> oficial.</p>
+            <h3 data-i18n="step1Title">Baixe o arquivo</h3>
+            <p data-i18n="step1Desc">Clique em <strong>Baixar para Windows</strong> para receber o <strong>Instalar-Huddle.exe</strong> oficial.</p>
           </div>
           <div class="step-card">
             <span class="step-number" aria-hidden="true">2</span>
-            <h3>Escolha a pasta</h3>
-            <p>Abra o instalador, escolha onde salvar pelo botão <strong>Procurar...</strong> (ou mantenha a pasta sugerida) e marque seus atalhos.</p>
+            <h3 data-i18n="step2Title">Escolha a pasta</h3>
+            <p data-i18n="step2Desc">Abra o instalador, escolha onde salvar pelo botão <strong>Procurar...</strong> (ou mantenha a pasta sugerida) e marque seus atalhos.</p>
           </div>
           <div class="step-card">
             <span class="step-number" aria-hidden="true">3</span>
-            <h3>Clique em Instalar</h3>
-            <p>O instalador baixa o app, valida os arquivos com segurança e abre o Huddle pronto para o login.</p>
+            <h3 data-i18n="step3Title">Clique em Instalar</h3>
+            <p data-i18n="step3Desc">O instalador baixa o app, valida os arquivos com segurança e abre o Huddle pronto para o login.</p>
           </div>
         </div>
 
@@ -207,34 +239,34 @@
             <div class="smartscreen-alert">
               <h3>
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                Se aparecer "O Windows protegeu o computador"
+                <span data-i18n="smartH3">Se aparecer "O Windows protegeu o computador"</span>
               </h3>
-              <p>
+              <p data-i18n="smartP1">
                 Esse aviso do Windows SmartScreen é normal em versões novas de programas independentes que ainda não compraram certificados corporativos pagos da Microsoft. O arquivo é 100% seguro.
               </p>
-              <p>
+              <p data-i18n="smartP2">
                 Para continuar: clique em <strong>Mais informações</strong> e depois em <strong>Executar assim mesmo</strong>.
               </p>
             </div>
 
             <div class="secondary-options">
               <details class="option-card">
-                <summary>Já tem o Huddle instalado no computador?</summary>
+                <summary data-i18n="opt1Summary">Já tem o Huddle instalado no computador?</summary>
                 <div class="option-content">
-                  <p>Basta abrir o instalador e clicar em <strong>Atualizar</strong>: ele reconhece a pasta anterior e atualiza apenas os arquivos necessários, mantendo todas as suas conversas e credenciais intactas.</p>
-                  <p>Para desinstalar no futuro: acesse <strong>Configurações &gt; Aplicativos &gt; Aplicativos instalados &gt; Huddle</strong>.</p>
+                  <p data-i18n="opt1P1">Basta abrir o instalador e clicar em <strong>Atualizar</strong>: ele reconhece a pasta anterior e atualiza apenas os arquivos necessários, mantendo todas as suas conversas e credenciais intactas.</p>
+                  <p data-i18n="opt1P2">Para desinstalar no futuro: acesse <strong>Configurações &gt; Aplicativos &gt; Aplicativos instalados &gt; Huddle</strong>.</p>
                 </div>
               </details>
 
               <details class="option-card" id="powershell">
-                <summary>Prefere instalar direto pelo PowerShell?</summary>
+                <summary data-i18n="opt2Summary">Prefere instalar direto pelo PowerShell?</summary>
                 <div class="option-content">
-                  <p>Copie e cole o comando abaixo no terminal do PowerShell:</p>
+                  <p data-i18n="opt2P">Copie e cole o comando abaixo no terminal do PowerShell:</p>
                   <div class="cmd-box">
                     <code class="cmd-code" id="ps-cmd">irm https://129-159-51-96.sslip.io/download/install.ps1 | iex</code>
                     <button class="btn-copy" type="button" id="copy-btn" aria-label="Copiar comando PowerShell">
                       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                      <span id="copy-label">Copiar</span>
+                      <span id="copy-label" data-i18n="copyBtn">Copiar</span>
                     </button>
                   </div>
                 </div>
@@ -245,11 +277,11 @@
 
         <!-- Bottom CTA -->
         <div class="final-cta">
-          <h2>Pronto para reunir os amigos?</h2>
-          <p>Baixe o Huddle para Windows e entre na call agora mesmo.</p>
+          <h2 data-i18n="ctaH2">Pronto para jogar e conversar?</h2>
+          <p data-i18n="ctaP">Baixe o Huddle para Windows e conecte-se agora mesmo.</p>
           <a class="btn-download" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
-            <span>Baixar para Windows</span>
+            <span data-i18n="ctaBtn">Baixar para Windows</span>
           </a>
         </div>
       </div>
@@ -261,9 +293,9 @@
     <div class="container footer-row">
       <div class="footer-brand">
         <img src="img/favicon.ico" alt="" width="20" height="20" />
-        <span>Huddle · A call da turma</span>
+        <span data-i18n="footerBrand">Huddle · Chat, voz e tela para Windows</span>
       </div>
-      <div id="version-footer">
+      <div id="version-footer" data-i18n="footerSys">
         Compatível com Windows 10 e 11 (64 bits)
       </div>
     </div>

@@ -1,5 +1,5 @@
 :root {
-  /* Palette: Gamer twilight ground + vivid coral accent + squad voice tones */
+  /* Palette: Dark gamer twilight ground + vivid coral accent + squad voice tones */
   --bg: #0c0f1d;
   --bg-surface: #151b30;
   --bg-elevated: #1e2544;
@@ -26,11 +26,35 @@
   --radius-full: 9999px;
 
   /* Strict 5-step typography scale */
-  --fs-display: clamp(40px, 6vw, 64px);
+  --fs-display: clamp(38px, 5.8vw, 60px);
   --fs-title: clamp(26px, 3.8vw, 36px);
   --fs-card: 20px;
   --fs-body: 16px;
   --fs-small: 14px;
+}
+
+/* Light Mode Theme */
+[data-theme="light"] {
+  --bg: #f3f5fa;
+  --bg-surface: #ffffff;
+  --bg-elevated: #e6e9f4;
+  --bg-subtle: #d8dceb;
+  --text-main: #0e1326;
+  --text-muted: #384163;
+  --accent: #ff5e28;
+  --accent-hover: #ff7445;
+  --accent-active: #e64c18;
+  --accent-ink: #ffffff;
+  --voice-green: #15803d;
+  --focus-ring: #ff5e28;
+}
+
+/* Smooth Theme Transitions */
+html.theme-transition,
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition: background-color 0.35s ease, color 0.35s ease, border-color 0.35s ease !important;
 }
 
 /* Reset & Base */
@@ -92,7 +116,7 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
 
 /* Header Nav */
 .site-header {
-  padding: 20px 0;
+  padding: 18px 0;
   background: var(--bg);
   position: sticky;
   top: 0;
@@ -102,7 +126,7 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
 }
 .brand {
   display: inline-flex;
@@ -119,7 +143,7 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
 .nav-links {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 22px;
   font-weight: 500;
   color: var(--text-muted);
   font-size: var(--fs-body);
@@ -131,6 +155,87 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
 .nav-links a:hover {
   color: var(--text-main);
 }
+
+/* Header Controls: Lang Switcher & Theme Toggle & CTA */
+.nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Language Switcher */
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-surface);
+  padding: 3px 6px;
+  border-radius: var(--radius-full);
+}
+.lang-btn {
+  padding: 4px 8px;
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  font-weight: 700;
+  line-height: 1;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.lang-btn.active {
+  color: var(--text-main);
+  background: var(--bg-elevated);
+}
+.lang-divider {
+  color: var(--text-muted);
+  font-size: 11px;
+  opacity: 0.4;
+  user-select: none;
+}
+
+/* Theme Toggle Button with Animation */
+.theme-toggle {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-full);
+  display: grid;
+  place-items: center;
+  background: var(--bg-surface);
+  color: var(--text-main);
+  position: relative;
+  overflow: hidden;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+.theme-toggle:hover {
+  background: var(--bg-elevated);
+  transform: scale(1.06);
+}
+.theme-toggle:active {
+  transform: scale(0.96);
+}
+.theme-icon-sun,
+.theme-icon-moon {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+}
+[data-theme="dark"] .theme-icon-sun {
+  transform: rotate(90deg) scale(0);
+  opacity: 0;
+}
+[data-theme="dark"] .theme-icon-moon {
+  transform: rotate(0deg) scale(1);
+  opacity: 1;
+}
+[data-theme="light"] .theme-icon-sun {
+  transform: rotate(0deg) scale(1);
+  opacity: 1;
+}
+[data-theme="light"] .theme-icon-moon {
+  transform: rotate(-90deg) scale(0);
+  opacity: 0;
+}
+
 .nav-cta {
   display: inline-flex;
   align-items: center;
@@ -164,7 +269,7 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
 
 /* Hero Typography */
 h1 {
-  font: 800 var(--fs-display)/1.02 "Bricolage Grotesque", sans-serif;
+  font: 800 var(--fs-display)/1.04 "Bricolage Grotesque", sans-serif;
   letter-spacing: -0.03em;
   margin: 0 0 16px;
   color: var(--text-main);
@@ -689,7 +794,7 @@ h2 {
     padding: 64px 0;
   }
 }
-@media (max-width: 580px) {
+@media (max-width: 640px) {
   .nav-links { display: none; }
   .container { width: min(100% - 32px, 1140px); }
   .btn-download { width: 100%; }
@@ -697,6 +802,7 @@ h2 {
   .final-cta { padding: 44px 20px; }
   .cmd-box { flex-direction: column; align-items: stretch; }
   .btn-copy { justify-content: center; }
+  .nav-controls { gap: 8px; }
 }
 
 /* Reduced Motion */
@@ -704,5 +810,5 @@ h2 {
   html { scroll-behavior: auto; }
   .animate-in { animation: none; }
   .live-dot { animation: none; }
-  .btn-download, .nav-cta { transition: none; transform: none; }
+  .btn-download, .nav-cta, .theme-toggle, .lang-btn { transition: none; transform: none; }
 }
