@@ -514,6 +514,10 @@ class DiscordBackendServer {
     addCol("dm_channels", "hidden_for_json", "TEXT NOT NULL DEFAULT '[]'");
     addCol("user_activities", "icon_data_url", "TEXT NOT NULL DEFAULT ''");
     addCol("guilds", "banner_url", "TEXT");
+    // Per-server nickname ("Editar perfil por servidor") and whether members of
+    // that server who are not friends may open a DM ("Config. de privacidade")
+    addCol("guild_members", "nickname", "TEXT NOT NULL DEFAULT ''");
+    addCol("guild_members", "allow_dms", "INTEGER NOT NULL DEFAULT 1");
     addCol("user_preferences", "call_join_custom_name", "TEXT NOT NULL DEFAULT ''");
     addCol("user_preferences", "call_leave_custom_name", "TEXT NOT NULL DEFAULT ''");
     addCol("user_preferences", "call_mute_sound_enabled", "INTEGER NOT NULL DEFAULT 1");
@@ -1030,9 +1034,9 @@ class DiscordBackendServer {
 
     const publicGuildRows = this.db.prepare(`SELECT * FROM guilds WHERE is_public = 1 ORDER BY created_at DESC`).all();
     const discoverableGuilds = publicGuildRows.map((g) => {
-      const memberCount = this.db
-        .prepare(`SELECT COUNT(*) AS cnt FROM guild_members WHERE guild_id = ?`)
-        .get(g.id).cnt;
+      const memberRows = this.db.prepare(`SELECT gm.user_id, u.status FROM guild_members gm LEFT JOIN users u ON u.id = gm.user_id WHERE gm.guild_id = ?`).all(g.id);
+      const online = memberRows.filter((m) => this.visibleStatus(m.user_id, m.status) !== "offline").length;
+      const owner = this.db.prepare(`SELECT username FROM users WHERE id = ?`).get(g.owner_id);
       return {
         id: g.id,
         name: g.name,
@@ -1040,9 +1044,11 @@ class DiscordBackendServer {
         category: g.category || "Science & Tech",
         iconColor: g.icon_color,
         bannerColor: g.icon_color,
-        description: g.description || `Public server owned by @${usersMap[g.owner_id]?.username || "user"}.`,
-        membersCount: String(memberCount),
-        onlineCount: String(memberCount),
+        iconUrl: this.resolveMediaUrl(g.icon_url),
+        bannerUrl: this.resolveMediaUrl(g.banner_url),
+        description: g.description || `Servidor público de @${owner?.username || "usuário"}.`,
+        membersCount: String(memberRows.length),
+        onlineCount: String(online),
         isMember: guilds.some((mg) => mg.id === g.id)
       };
     });
@@ -1197,7 +1203,10 @@ class DiscordBackendServer {
       .map((m) => ({
         userId: m.user_id,
         roles: JSON.parse(m.roles_json || "[]"),
-        joinedAt: m.joined_at
+        joinedAt: m.joined_at,
+        nickname: m.nickname || "",
+        // Only the person themself needs to see their own privacy choice
+        ...(m.user_id === viewerId ? { allowDms: m.allow_dms !== 0 } : {})
       }));
 
     const memberIds = members.map((m) => m.userId);
@@ -2462,6 +2471,25 @@ class DiscordBackendServer {
           .get(u1, u2);
         const now = Date.now();
         if (!dm) {
+          // A first DM from someone who is not a friend: allowed unless every
+          // server we share is one where they turned off DMs from members
+          const friends = this.db
+            .prepare(
+              `SELECT 1 FROM friendships WHERE status = 'accepted' AND ((requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?))`
+            )
+            .get(actorId, targetUserId, targetUserId, actorId);
+          if (!friends) {
+            const shared = this.db
+              .prepare(
+                `SELECT theirs.allow_dms AS allow FROM guild_members mine
+                 INNER JOIN guild_members theirs ON theirs.guild_id = mine.guild_id AND theirs.user_id = ?
+                 WHERE mine.user_id = ?`
+              )
+              .all(targetUserId, actorId);
+            if (shared.length && shared.every((r) => r.allow === 0)) {
+              return { ok: false, status: 403, error: "Essa pessoa não aceita mensagens diretas de membros dos servidores em comum." };
+            }
+          }
           const dmId = "dm_" + crypto.randomBytes(6).toString("hex");
           this.db
             .prepare(`INSERT INTO dm_channels (id, user1_id, user2_id, updated_at) VALUES (?, ?, ?, ?)`)
@@ -2701,12 +2729,18 @@ class DiscordBackendServer {
           return { ok: false, status: 400, error: "Use uma imagem enviada pelo app ou um GIF da biblioteca." };
         }
 
+        // Public servers show up in "Explorar servidores" for everyone
+        const isPublic = params.isPublic !== undefined ? (params.isPublic ? 1 : 0) : guild.is_public;
+        const description = params.description !== undefined ? String(params.description || "").trim().slice(0, 300) : guild.description || "";
+
         this.db
-          .prepare(`UPDATE guilds SET name = ?, short_name = ?, icon_url = ?, banner_url = ? WHERE id = ?`)
-          .run(name, this.getShortName(name), iconUrl, bannerUrl, guildId);
+          .prepare(`UPDATE guilds SET name = ?, short_name = ?, icon_url = ?, banner_url = ?, is_public = ?, description = ? WHERE id = ?`)
+          .run(name, this.getShortName(name), iconUrl, bannerUrl, isPublic, description, guildId);
 
         const changes = [];
         if (name !== guild.name) changes.push(`renamed the server to "${name}"`);
+        if (isPublic !== guild.is_public) changes.push(isPublic ? "made the server public" : "made the server private");
+        if (description !== (guild.description || "")) changes.push("updated the server description");
         if (iconUrl !== guild.icon_url) changes.push(iconUrl ? "updated the server icon" : "removed the server icon");
         if (bannerUrl !== guild.banner_url) changes.push(bannerUrl ? "updated the server banner" : "removed the server banner");
         const now = Date.now();
@@ -2750,6 +2784,37 @@ class DiscordBackendServer {
           .run("al_" + crypto.randomBytes(6).toString("hex"), guildId, actorId, "updated @everyone permissions", this.formatTimeLabel(now), now);
         this.broadcastEvent("GUILD_UPDATED", { guildId });
         return { ok: true, permissions: flags };
+      }
+
+      // "Sair do servidor": the owner has to delete it (or it would be left with no owner)
+      case "leaveGuild": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId } = params;
+        const guild = this.db.prepare(`SELECT * FROM guilds WHERE id = ?`).get(guildId);
+        if (!guild) return { ok: false, status: 404, error: "Servidor não encontrado." };
+        if (guild.owner_id === actorId) return { ok: false, status: 400, error: "Você é o dono deste servidor: para sair, apague o servidor nas configurações." };
+        const removed = this.db.prepare(`DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?`).run(guildId, actorId);
+        if (!removed.changes) return { ok: false, status: 404, error: "Você não faz parte deste servidor." };
+        for (const ch of this.db.prepare(`SELECT id FROM channels WHERE guild_id = ?`).all(guildId)) {
+          const room = this.voiceRooms.get(ch.id);
+          if (room?.delete(actorId)) this.broadcastEvent("RTC_ROOM_UPDATED", { channelId: ch.id, participants: Array.from(room.values()) });
+        }
+        this.broadcastEvent("GUILD_MEMBER_REMOVED", { guildId, userId: actorId });
+        return { ok: true };
+      }
+
+      // "Editar perfil por servidor" (nickname) and "Config. de privacidade"
+      // (DMs from members): each member changes only their own
+      case "updateGuildMemberSelf": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
+        const { guildId } = params;
+        const member = this.db.prepare(`SELECT * FROM guild_members WHERE guild_id = ? AND user_id = ?`).get(guildId, actorId);
+        if (!member) return { ok: false, status: 404, error: "Você não faz parte deste servidor." };
+        const nickname = params.nickname !== undefined ? String(params.nickname || "").trim().slice(0, 32) : member.nickname || "";
+        const allowDms = params.allowDms !== undefined ? (params.allowDms ? 1 : 0) : member.allow_dms;
+        this.db.prepare(`UPDATE guild_members SET nickname = ?, allow_dms = ? WHERE guild_id = ? AND user_id = ?`).run(nickname, allowDms, guildId, actorId);
+        this.broadcastEvent("GUILD_UPDATED", { guildId });
+        return { ok: true, nickname, allowDms: allowDms !== 0 };
       }
 
       // Removes a member; unlike a ban they can come back with an invite

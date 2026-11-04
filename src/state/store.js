@@ -41,6 +41,8 @@ const ICE_SERVERS_REFRESH_MS = 6 * 60 * 60 * 1000;
 const GIF_CACHE_TTL_MS = 10 * 60 * 1000;
 // An unanswered DM call stops ringing and hangs up after this long
 const DM_CALL_RING_TIMEOUT_MS = 30000;
+// Unanswered: how long I stay in the call waiting before it hangs up by itself
+const DM_CALL_WAIT_MS = 3 * 60 * 1000;
 
 export const AVAILABLE_THEMES = [
   {
@@ -1272,6 +1274,8 @@ class Store {
     const dm = this.state.dms.find((d) => d.id === dmChannelId);
     if (!dm) return { ok: false, error: "Conversa não encontrada." };
     if (this.state.voice.connectedChannelId === dmChannelId) return { ok: true, alreadyConnected: true };
+    // They are already waiting in the call: this joins it (no ringing on my side)
+    if (this.roomUserIds(dmChannelId).includes(dm.userId)) answering = true;
     if (this.state.voice.connectedChannelId) {
       await this.leaveVoiceChannel();
     }
@@ -1288,12 +1292,24 @@ class Store {
     if (answering) {
       await this.markDmCallConnected();
     } else {
-      CallSounds.startRinging(this.state.settings);
+      // Rings for 30 s; unanswered, the music stops and I stay in the call
+      // waiting for 3 more minutes (they can still join), then it hangs up
+      CallSounds.startRinging(this.state.settings, { outgoing: true });
+      this.state.voice.dmCall.ringingUntil = Date.now() + DM_CALL_RING_TIMEOUT_MS;
       clearTimeout(this.dmRingTimeout);
+      clearTimeout(this.dmWaitTimeout);
       this.dmRingTimeout = setTimeout(() => {
-        if (this.state.voice.dmCall?.channelId === dmChannelId && this.state.voice.dmCall.status === "ringing") {
-          this.leaveVoiceChannel();
-        }
+        const call = this.state.voice.dmCall;
+        if (call?.channelId !== dmChannelId || call.status !== "ringing") return;
+        CallSounds.stopRinging();
+        call.status = "waiting";
+        call.waitingUntil = Date.now() + DM_CALL_WAIT_MS;
+        this.notify({ skipPersist: true });
+        this.dmWaitTimeout = setTimeout(() => {
+          if (this.state.voice.dmCall?.channelId === dmChannelId && this.state.voice.dmCall.status === "waiting") {
+            this.leaveVoiceChannel();
+          }
+        }, DM_CALL_WAIT_MS);
       }, DM_CALL_RING_TIMEOUT_MS);
     }
 
@@ -1312,6 +1328,7 @@ class Store {
     if (!call || call.status === "connected") return;
     CallSounds.stopRinging();
     clearTimeout(this.dmRingTimeout);
+    clearTimeout(this.dmWaitTimeout);
     call.status = "connected";
     this.notify({ skipPersist: true });
     await CallSounds.play("join", this.state.settings, this.state.voice.sessionId);
@@ -1325,6 +1342,7 @@ class Store {
   }
 
   declineIncomingCall() {
+    clearTimeout(this.incomingRingTimeout);
     this.dismissedCallChannelId = this.state.incomingCall?.channelId || null;
     this.state.incomingCall = null;
     CallSounds.stopRinging();
@@ -1347,6 +1365,11 @@ class Store {
     }
   }
 
+  // Who is in a call room right now (as last reported by the server)
+  roomUserIds(channelId) {
+    return this.roomParticipants?.get(channelId) || [];
+  }
+
   handleDmCallRoomUpdate(channelId, participants) {
     const meId = this.state.auth.currentUserId;
     const call = this.state.voice.dmCall;
@@ -1354,7 +1377,7 @@ class Store {
     // Outgoing call: the person we are ringing picked up
     if (call && call.channelId === channelId) {
       const peerPresent = participants.some((p) => p.userId === call.peerId);
-      if (call.status === "ringing" && peerPresent) {
+      if (call.status !== "connected" && peerPresent) {
         this.markDmCallConnected();
       } else if (call.status === "connected" && !peerPresent) {
         // The other person hung up
@@ -1373,6 +1396,12 @@ class Store {
       this.state.incomingCall = { channelId, callerId: dm.userId };
       CallSounds.startRinging(this.state.settings);
       this.notify({ skipPersist: true });
+      // Like the caller's side: rings for 30 s, then goes quiet (the call can
+      // still be joined from the DM while the caller waits)
+      clearTimeout(this.incomingRingTimeout);
+      this.incomingRingTimeout = setTimeout(() => {
+        if (this.state.incomingCall?.channelId === channelId) this.declineIncomingCall();
+      }, DM_CALL_RING_TIMEOUT_MS);
     } else if (!callerPresent) {
       if (this.dismissedCallChannelId === channelId) this.dismissedCallChannelId = null;
       if (this.state.incomingCall?.channelId === channelId) {
@@ -1390,8 +1419,55 @@ class Store {
     if (!msg || msg.authorId === this.state.auth.currentUserId) return;
     const viewing = this.isViewingChannel(channelId) && typeof document !== "undefined" && document.hasFocus();
     if (viewing) return;
+    // People I ignore: nothing at all
+    if (this.isIgnored(msg.authorId)) return;
     this.markUnread(channelId);
-    CallSounds.playNotification(this.state.settings);
+
+    const dm = this.state.dms.find((d) => d.id === channelId);
+    const guild = dm ? null : this.state.guilds.find((g) => (g.channels || []).some((c) => c.id === channelId));
+    if (dm) {
+      if (this.isDmMuted(dm.id)) return;
+    } else if (guild) {
+      const prefs = this.guildPrefs(guild.id);
+      if (this.isGuildMuted(guild.id) || this.isChannelMuted(channelId) || prefs.notify === "none") return;
+      if (prefs.notify === "mentions" && !this.messageMentionsMe(msg.content, guild, prefs)) return;
+    }
+    // While a call rings only its music plays (the message still counts as unread)
+    if (!CallSounds.isRinging()) CallSounds.playNotification(this.state.settings);
+    if (!dm && guild && !this.guildPrefs(guild.id).desktop) return;
+    this.showDesktopNotification(msg, dm, guild, channelId);
+  }
+
+  // @me, and (unless turned off in that server) @everyone/@here and my roles
+  messageMentionsMe(content, guild, prefs) {
+    const text = String(content || "");
+    const me = this.getCurrentUser();
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const has = (name) => new RegExp(`(^|[^\\w.])@${esc(name)}(?![\\w.])`, "i").test(text);
+    if (me?.username && has(me.username)) return true;
+    if (!prefs.suppressEveryone && /(^|\s)@(everyone|here)\b/i.test(text)) return true;
+    if (!prefs.suppressRoles && guild) {
+      const mine = (guild.members || []).find((m) => m.userId === me?.id)?.roles || [];
+      if (guild.roles.some((r) => mine.includes(r.id) && has(r.name))) return true;
+    }
+    return false;
+  }
+
+  // Windows notification, only while the app is not in front
+  showDesktopNotification(msg, dm, guild, channelId) {
+    if (typeof Notification === "undefined" || (typeof document !== "undefined" && document.hasFocus())) return;
+    try {
+      const author = this.state.users[msg.authorId];
+      const channel = guild?.channels.find((c) => c.id === channelId);
+      const title = dm ? author?.displayName || "Nova mensagem" : `${author?.displayName || "Alguém"} (#${channel?.name || ""}, ${guild?.name || ""})`;
+      const body = msg.content ? String(msg.content).slice(0, 180) : msg.attachment ? "Enviou um arquivo" : "Nova mensagem";
+      const n = new Notification(title, { body, silent: true, icon: author?.avatarUrl || undefined });
+      n.onclick = () => {
+        window.focus?.();
+        if (dm) this.selectHome("dm", dm.id);
+        else if (guild) this.selectGuild(guild.id, channelId);
+      };
+    } catch {}
   }
 
   // ==========================================================================
@@ -1469,6 +1545,7 @@ class Store {
 
     CallSounds.stopRinging();
     clearTimeout(this.dmRingTimeout);
+    clearTimeout(this.dmWaitTimeout);
     this.stopLocalMicrophone();
 
     if (this.state.voice.screenShareEnabled) {
@@ -1852,11 +1929,12 @@ class Store {
   // ==========================================================================
   // Guilds, Channels & Phase 11 Cryptographic Server Invites
   // ==========================================================================
-  async createGuild({ name, iconColor }) {
+  async createGuild({ name, iconColor, isPublic = false }) {
     const res = await NativeBridge.rpc("createGuild", {
       ownerId: this.state.auth.currentUserId,
       name,
-      iconColor
+      iconColor,
+      isPublic
     });
     if (res.ok) {
       await this.syncFromBackend({ silent: true });
@@ -2110,6 +2188,188 @@ class Store {
     } catch {}
     Voice.setLocalUserPrefs(prefs);
     if (key !== "volume") this.notify({ skipPersist: true });
+  }
+
+  // ==========================================================================
+  // Chat preferences of this PC, per account (right-click menus of DMs and
+  // servers): pinned / favorite DMs, muted DMs, servers and channels,
+  // ignored people, server notification settings and the server order
+  // ==========================================================================
+  chatPrefsKey() {
+    return `eco_chat_prefs_${this.state.auth.currentUserId || ""}`;
+  }
+
+  getChatPrefs() {
+    const key = this.chatPrefsKey();
+    if (this.chatPrefs?.key !== key) {
+      let saved = null;
+      try {
+        saved = JSON.parse(localStorage.getItem(key) || "null");
+      } catch {}
+      this.chatPrefs = {
+        key,
+        pinnedDms: [],
+        favoriteDms: [],
+        mutedDms: {}, // dmId -> until (ms) or -1 = until I turn it back on
+        ignored: [],
+        guilds: {}, // guildId -> see guildPrefs()
+        mutedChannels: {}, // channelId -> until
+        guildOrder: [],
+        ...(saved || {}),
+        key
+      };
+    }
+    return this.chatPrefs;
+  }
+
+  updateChatPrefs(change) {
+    const prefs = this.getChatPrefs();
+    change(prefs);
+    try {
+      const { key, ...rest } = prefs;
+      localStorage.setItem(key, JSON.stringify(rest));
+    } catch {}
+    this.notify({ skipPersist: true });
+  }
+
+  guildPrefs(guildId) {
+    return {
+      mutedUntil: 0,
+      notify: "all", // "all" | "mentions" | "none"
+      suppressEveryone: false,
+      suppressRoles: false,
+      desktop: true, // Windows notification when the app is not in front
+      hideMutedChannels: false,
+      showAllChannels: true,
+      ...(this.getChatPrefs().guilds[guildId] || {})
+    };
+  }
+
+  setGuildPref(guildId, key, value) {
+    this.updateChatPrefs((p) => {
+      p.guilds[guildId] = { ...(p.guilds[guildId] || {}), [key]: value };
+    });
+  }
+
+  // until: ms from now, or -1 for "Até eu ligá-las de novo"; 0 turns it back on
+  static muteUntil(durationMs) {
+    if (!durationMs) return 0;
+    return durationMs < 0 ? -1 : Date.now() + durationMs;
+  }
+
+  isMutedUntil(until) {
+    return until === -1 || (Number(until) || 0) > Date.now();
+  }
+
+  isGuildMuted(guildId) {
+    return this.isMutedUntil(this.guildPrefs(guildId).mutedUntil);
+  }
+
+  isDmMuted(dmId) {
+    return this.isMutedUntil(this.getChatPrefs().mutedDms[dmId]);
+  }
+
+  isChannelMuted(channelId) {
+    return this.isMutedUntil(this.getChatPrefs().mutedChannels[channelId]);
+  }
+
+  muteGuild(guildId, durationMs) {
+    this.setGuildPref(guildId, "mutedUntil", Store.muteUntil(durationMs));
+  }
+
+  muteDm(dmId, durationMs) {
+    this.updateChatPrefs((p) => {
+      const until = Store.muteUntil(durationMs);
+      if (until) p.mutedDms[dmId] = until;
+      else delete p.mutedDms[dmId];
+    });
+  }
+
+  muteChannel(channelId, durationMs) {
+    this.updateChatPrefs((p) => {
+      const until = Store.muteUntil(durationMs);
+      if (until) p.mutedChannels[channelId] = until;
+      else delete p.mutedChannels[channelId];
+    });
+  }
+
+  toggleListPref(listName, id, on) {
+    this.updateChatPrefs((p) => {
+      const set = new Set(p[listName]);
+      if (on) set.add(id);
+      else set.delete(id);
+      p[listName] = [...set];
+    });
+  }
+
+  isIgnored(userId) {
+    return this.getChatPrefs().ignored.includes(userId);
+  }
+
+  // DMs: pinned first, then favorites, then the rest in the server's order
+  sortedDms() {
+    const { pinnedDms, favoriteDms } = this.getChatPrefs();
+    const rank = (dm) => (pinnedDms.includes(dm.id) ? 0 : favoriteDms.includes(dm.id) ? 1 : 2);
+    return this.state.dms.map((dm, i) => ({ dm, i })).sort((a, b) => rank(a.dm) - rank(b.dm) || a.i - b.i).map((x) => x.dm);
+  }
+
+  // Servers in the order chosen with "Mover para..." (new ones at the end)
+  sortedGuilds() {
+    const order = this.getChatPrefs().guildOrder;
+    const pos = (g) => {
+      const i = order.indexOf(g.id);
+      return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    return this.state.guilds.map((g, i) => ({ g, i })).sort((a, b) => pos(a.g) - pos(b.g) || a.i - b.i).map((x) => x.g);
+  }
+
+  // where: "top" | "up" | "down" | "bottom"
+  moveGuild(guildId, where) {
+    const ids = this.sortedGuilds().map((g) => g.id);
+    const from = ids.indexOf(guildId);
+    if (from === -1) return;
+    ids.splice(from, 1);
+    const to = where === "top" ? 0 : where === "bottom" ? ids.length : where === "up" ? Math.max(0, from - 1) : Math.min(ids.length, from + 1);
+    ids.splice(to, 0, guildId);
+    this.updateChatPrefs((p) => {
+      p.guildOrder = ids;
+    });
+  }
+
+  markChannelsRead(channelIds) {
+    this.loadUnread();
+    for (const id of channelIds) delete this.unreadCounts[id];
+    this.saveUnread();
+    this.applyUnread();
+    this.notify({ skipPersist: true });
+  }
+
+  markGuildRead(guildId) {
+    const guild = this.state.guilds.find((g) => g.id === guildId);
+    if (guild) this.markChannelsRead(guild.channels.map((c) => c.id));
+  }
+
+  async leaveGuild(guildId) {
+    const res = await NativeBridge.rpc("leaveGuild", { guildId });
+    if (res?.ok) {
+      this.state.guilds = this.state.guilds.filter((g) => g.id !== guildId);
+      if (this.state.voice.connectedGuildId === guildId) await this.leaveVoiceChannel();
+      if (this.state.navigation.activeGuildId === guildId) this.selectHome("friends");
+      await this.requestSync();
+    }
+    return res || { ok: false, error: "Não foi possível sair do servidor." };
+  }
+
+  // { nickname?, allowDms? } for me in that server
+  async updateMyGuildMember(guildId, changes) {
+    const res = await NativeBridge.rpc("updateGuildMemberSelf", { guildId, ...changes });
+    if (res?.ok) await this.requestSync();
+    return res || { ok: false, error: "Não foi possível salvar." };
+  }
+
+  // My nickname in that server, if I set one
+  memberNickname(guild, userId) {
+    return (guild?.members || []).find((m) => m.userId === userId)?.nickname || "";
   }
 
   // Everyone in my call without "Falar" is never played on this PC

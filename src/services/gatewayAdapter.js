@@ -218,6 +218,8 @@ export const AUDIO_ASSETS = {
   join: "../assets/audio/entrar-na-call.mp3", // discord-join: server voice join & answered DM call
   leave: "../assets/audio/discord-leave-noise.mp3", // played when you or someone else leaves the call
   ringtone: "../assets/audio/ligando.mp3", // SomLigandoPraAlguemDiscord: loops while a DM call rings (DMs only)
+  // While I call someone: an original lo-fi loop composed by scripts/make-lofi-ringback.js
+  calling: "../assets/audio/chamando-lofi.wav",
   notification: "../assets/audio/notificacao.mp3"
 };
 
@@ -496,17 +498,20 @@ export class CallAudioEngine {
   }
 
   // Looping "calling someone" tone; uses its own element so one-shot sounds don't cut it
-  startRinging(prefs = {}) {
+  // A DM call rings with the lo-fi loop only, on both sides ({ outgoing: true }
+  // = I am the one calling, a bit quieter; otherwise someone is calling me)
+  startRinging(prefs = {}, { outgoing = false } = {}) {
     this.stopRinging();
     const volumeScalar = Math.max(0, Math.min(100, Number(prefs.callSoundVolume ?? 80))) / 100;
-    const audio = new Audio(AUDIO_ASSETS.ringtone);
+    const file = AUDIO_ASSETS.calling;
+    const audio = new Audio(file);
     audio.loop = true;
-    audio.volume = volumeScalar;
+    audio.volume = outgoing ? volumeScalar * 0.7 : volumeScalar;
     this.ringAudio = audio;
     audio
       .play()
       .then(() => {
-        this.lastPlayedEvent = { type: "ringtone", file: AUDIO_ASSETS.ringtone, timestamp: Date.now() };
+        this.lastPlayedEvent = { type: outgoing ? "calling" : "ringtone", file, timestamp: Date.now() };
       })
       .catch(() => {});
   }
@@ -812,10 +817,11 @@ const CAMERA_MAX_BITRATE = 2_500_000;
 const SPEAKING_LEVEL = 0.02;
 const SPEAKING_HANGOVER_MS = 450;
 
-// Bits per second for a screen share: enough for sharp text and fluid motion
+// Bits per second for a screen share: enough to keep the chosen resolution
+// sharp even when the whole screen moves (1080p60 ≈ 12 Mbps, 1440p60 ≈ 22 Mbps)
 export function screenBitrateFor(width, height, fps) {
-  const bits = width * height * fps * 0.07;
-  return Math.round(Math.min(30_000_000, Math.max(2_000_000, bits)));
+  const bits = width * height * fps * 0.1;
+  return Math.round(Math.min(30_000_000, Math.max(3_000_000, bits)));
 }
 
 // Starts video at a sane bitrate instead of ramping up from ~300 kbps (which
@@ -823,17 +829,19 @@ export function screenBitrateFor(width, height, fps) {
 // home upload link, with a low floor so congestion control can back off.
 // The old 8 Mbps start / 1.5 Mbps floor per viewer flooded the uplink at the
 // start of every share: packets were lost and the picture froze for seconds.
+// The floor (800 kbps) keeps congestion control from sinking the picture to a
+// smear on a short hiccup, while still being far below the old 1.5 Mbps one.
 function tuneVideoSdp(sdp) {
   return sdp.replace(/^(a=fmtp:\d+ .*)$/gm, (line) => {
     if (/x-google-start-bitrate|apt=/.test(line)) return line;
-    return `${line};x-google-start-bitrate=2500;x-google-min-bitrate=300`;
+    return `${line};x-google-start-bitrate=4000;x-google-min-bitrate=800`;
   });
 }
 
 // Every viewer gets their own encoded copy (mesh), so the uplink is shared:
 // each one gets an equal slice of this budget, never less than the floor
-const SCREEN_UPLOAD_BUDGET = 16_000_000;
-const SCREEN_MIN_PER_VIEWER = 1_500_000;
+const SCREEN_UPLOAD_BUDGET = 20_000_000;
+const SCREEN_MIN_PER_VIEWER = 2_500_000;
 
 function preferredVideoCodecs() {
   const caps = typeof RTCRtpReceiver !== "undefined" && RTCRtpReceiver.getCapabilities?.("video");
@@ -978,9 +986,11 @@ class VoiceMesh {
       enc.scaleResolutionDownBy = 1;
       enc.priority = "high";
       enc.networkPriority = "high";
-      // Short of CPU/GPU (e.g. a game running) or bandwidth: keep it fluid and
-      // lower the sharpness, instead of dropping frames
-      params.degradationPreference = "maintain-framerate";
+      // Short of CPU/GPU or bandwidth: keep the resolution that was chosen
+      // (sharp text and image even while everything moves) and give up a few
+      // frames instead. "maintain-framerate" dropped to a blurry lower
+      // resolution whenever the screen moved a lot.
+      params.degradationPreference = "maintain-resolution";
     } else {
       enc.maxBitrate = CAMERA_MAX_BITRATE;
       enc.maxFramerate = 30;
@@ -1512,13 +1522,22 @@ class ScreenShareManager {
         videoConstraints.width = { max: width };
         videoConstraints.height = { max: height };
       }
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints, audio: Boolean(includeAudio) && !systemTrack });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints, audio: Boolean(includeAudio) && !systemTrack });
+      } catch (err) {
+        if (err?.name === "AbortError") throw err;
+        // Some antivirus programs block this capture path (Windows Graphics
+        // Capture): try Chromium's classic desktop capture of the same source
+        stream = await this.captureClassic(sourceId, { width, height, fps });
+      }
       if (systemTrack) stream.addTrack(systemTrack);
 
       const [track] = stream.getVideoTracks();
       if (!track) throw new Error("A fonte escolhida não entregou vídeo.");
-      // "motion" keeps the frame rate; at 30 FPS or less, sharp text matters more
-      track.contentHint = fps > 30 ? "motion" : "detail";
+      // "detail": the encoder keeps every pixel of the chosen resolution ("motion"
+      // let it shrink the picture whenever the screen moved a lot)
+      track.contentHint = "detail";
       track.onended = () => {
         // The shared window was closed (or the screen disconnected)
         this.stopCapture();
@@ -1552,11 +1571,31 @@ class ScreenShareManager {
       return { ok: true, stream, stats: this.getStats() };
     } catch (err) {
       this.stopCapture();
-      if (err && (err.name === "NotAllowedError" || err.name === "AbortError")) {
+      if (err && err.name === "AbortError") {
         return { ok: false, canceled: true, error: "A janela escolhida não está mais disponível. Escolha outra." };
+      }
+      if (err && (err.name === "NotAllowedError" || err.name === "NotReadableError" || err.name === "SecurityError")) {
+        // Both capture paths refused: almost always an antivirus "proteção de
+        // tela/webcam" or Windows' privacy settings
+        return {
+          ok: false,
+          blocked: true,
+          error:
+            "O Windows ou o antivírus bloqueou a captura de tela. No antivírus, libere o Huddle (adicione a pasta do app às exceções ou permita a captura de tela para ele) e tente de novo."
+        };
       }
       return { ok: false, error: err?.message || "Falha ao capturar a tela." };
     }
+  }
+
+  // Chromium's classic desktop capture (DXGI/GDI), used when getDisplayMedia is refused
+  async captureClassic(sourceId, { width, height, fps }) {
+    const mandatory = { chromeMediaSource: "desktop", chromeMediaSourceId: sourceId, maxFrameRate: fps };
+    if (width && height) {
+      mandatory.maxWidth = width;
+      mandatory.maxHeight = height;
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory } });
   }
 
   // Counts frames actually delivered by the capture, once per second

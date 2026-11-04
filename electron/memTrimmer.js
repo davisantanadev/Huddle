@@ -4,16 +4,20 @@
 // lowers the "Memory" column of Task Manager. Pages still in use come straight
 // back (soft faults from RAM, not disk).
 //
-// Uses electron/memtrim/MemTrim.cs, compiled on first use into the data folder
-// with the C# compiler that ships with Windows. Falls back to PowerShell (much
-// heavier: ~0.5 s of CPU per call) if compiling is not possible.
+// Uses electron/memtrim/MemTrim.cs. The installed app ships it already compiled
+// (helpers\ next to the .exe, built by scripts/build-exe.js): compiling an .exe
+// on the user's PC and running it is exactly what antivirus programs block, and
+// with it they also blocked the screen share. Only a development checkout
+// compiles it on first use (or falls back to PowerShell).
 
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
+const { app } = require("electron");
 
 const SOURCE_PATH = path.join(__dirname, "memtrim", "MemTrim.cs");
+const SHIPPED_PATH = path.join(path.dirname(process.execPath), "helpers", "MemTrim.exe");
 const CSC_CANDIDATES = [
   path.join(process.env.WINDIR || "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"),
   path.join(process.env.WINDIR || "C:\\Windows", "Microsoft.NET", "Framework", "v4.0.30319", "csc.exe")
@@ -36,6 +40,16 @@ function prepareHelper(dataDir) {
   if (process.platform !== "win32") return Promise.resolve(null);
   if (helperPath) return Promise.resolve(helperPath);
   if (compiling) return compiling;
+  if (app.isPackaged) {
+    // Copies compiled here by older versions (what antivirus programs flagged)
+    try {
+      for (const f of fs.readdirSync(dataDir)) {
+        if (/^eco-memtrim(-[0-9a-f]+)?\.(exe|cs)$/.test(f)) fs.unlinkSync(path.join(dataDir, f));
+      }
+    } catch (_) {}
+    helperPath = fs.existsSync(SHIPPED_PATH) ? SHIPPED_PATH : null;
+    return Promise.resolve(helperPath);
+  }
   compiling = new Promise((resolve) => {
     const source = readSource();
     const csc = CSC_CANDIDATES.find((p) => fs.existsSync(p));
@@ -91,7 +105,8 @@ function trimProcesses(pids, { light = false } = {}) {
     execFile(helperPath, pids.map(String), { timeout: 3000, windowsHide: true }, () => {});
     return true;
   }
-  if (light) return false;
+  // The installed app never runs PowerShell's Add-Type (it compiles code too)
+  if (light || app.isPackaged) return false;
   trimWithPowerShell(pids);
   return true;
 }

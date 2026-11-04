@@ -1620,9 +1620,9 @@ async function runVerification() {
 
   recordTest(
     "Domain 10: DM Calls & Notification Sounds",
-    "Ring with SomLigandoPraAlguemDiscord until answered, play discord-join/discord-leave-noise, show and decline incoming call, notify on messages from others",
+    "Caller hears the lo-fi loop until answered, play discord-join/discord-leave-noise, show and decline incoming call, notify on messages from others",
     dmCallCheck.ringing &&
-      dmCallCheck.ringFile === "../assets/audio/ligando.mp3" &&
+      dmCallCheck.ringFile === "../assets/audio/chamando-lofi.wav" &&
       dmCallCheck.panelSaysCalling &&
       dmCallCheck.connected &&
       dmCallCheck.ringStoppedOnAnswer &&

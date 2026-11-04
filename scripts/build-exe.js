@@ -62,6 +62,46 @@ async function build() {
     path.join(rootDir, "installer", "LegacyLauncher.cs")
   ]);
 
+  // The small native helpers (PC sound for screen shares, memory trimming) go
+  // in already compiled: compiling them on the user's PC made antivirus
+  // programs block the app (and its screen share). They carry proper file
+  // details so they are not anonymous executables.
+  const helpersDir = path.join(packagedDir, "helpers");
+  fs.mkdirSync(helpersDir, { recursive: true });
+  const version = require(path.join(rootDir, "package.json")).version;
+  const helpers = [
+    { name: "SystemAudio", source: path.join(rootDir, "electron", "systemaudio", "SystemAudio.cs"), title: `${appName} - som do PC na transmissão` },
+    { name: "MemTrim", source: path.join(rootDir, "electron", "memtrim", "MemTrim.cs"), title: `${appName} - liberação de memória` }
+  ];
+  for (const helper of helpers) {
+    const infoPath = path.join(os.tmpdir(), `huddle-${helper.name}-info.cs`);
+    const csString = (s) => JSON.stringify(String(s));
+    fs.writeFileSync(
+      infoPath,
+      [
+        "using System.Reflection;",
+        `[assembly: AssemblyTitle(${csString(helper.title)})]`,
+        `[assembly: AssemblyDescription(${csString(helper.title)})]`,
+        `[assembly: AssemblyCompany(${csString(appName)})]`,
+        `[assembly: AssemblyProduct(${csString(appName)})]`,
+        `[assembly: AssemblyCopyright(${csString(appName)})]`,
+        `[assembly: AssemblyVersion(${csString(version + ".0")})]`,
+        `[assembly: AssemblyFileVersion(${csString(version + ".0")})]`
+      ].join("\r\n")
+    );
+    execFileSync(csc, [
+      "/nologo",
+      "/optimize+",
+      "/target:exe",
+      `/win32icon:${iconPath}`,
+      `/out:${path.join(helpersDir, `${helper.name}.exe`)}`,
+      helper.source,
+      infoPath
+    ]);
+    fs.unlinkSync(infoPath);
+  }
+  console.log("Compiled helpers into:", helpersDir);
+
   if (process.env.NO_SHORTCUT === "1") return;
 
   // Desktop shortcut (.lnk) to the packaged app, named after app.config.json →

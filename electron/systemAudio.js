@@ -3,14 +3,19 @@
 // The PC's sound for a screen share, without the app's own audio: Chromium's
 // loopback also records the call being played here, so everyone would hear their
 // own voice back. electron/systemaudio/SystemAudio.cs captures everything except
-// this process tree. It is compiled on first use (same approach as memTrimmer.js).
+// this process tree. The installed app ships it already compiled (helpers\ next
+// to the .exe, see scripts/build-exe.js): antivirus programs block an app that
+// compiles and runs a new .exe, and that blocked screen sharing for some people.
+// Only a development checkout compiles it on first use.
 
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
+const { app } = require("electron");
 
 const SOURCE_PATH = path.join(__dirname, "systemaudio", "SystemAudio.cs");
+const SHIPPED_PATH = path.join(path.dirname(process.execPath), "helpers", "SystemAudio.exe");
 const CSC_CANDIDATES = [
   path.join(process.env.WINDIR || "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"),
   path.join(process.env.WINDIR || "C:\\Windows", "Microsoft.NET", "Framework", "v4.0.30319", "csc.exe")
@@ -26,6 +31,19 @@ let current = null;
 function prepareSystemAudio(dataDir) {
   if (process.platform !== "win32") return Promise.resolve(null);
   if (compiling) return compiling;
+  if (app.isPackaged) {
+    // Copies compiled here by older versions are what antivirus programs
+    // flagged: gone, the shipped one is used instead
+    try {
+      for (const f of fs.readdirSync(dataDir)) {
+        if (/^eco-systemaudio(-[0-9a-f]+)?\.(exe|cs)$/.test(f)) fs.unlinkSync(path.join(dataDir, f));
+      }
+    } catch (_) {}
+    // Missing (removed by an antivirus, say): the share still works, with
+    // Chromium's own loopback for the sound
+    compiling = Promise.resolve(fs.existsSync(SHIPPED_PATH) ? SHIPPED_PATH : null);
+    return compiling;
+  }
   compiling = new Promise((resolve) => {
     let source;
     try {

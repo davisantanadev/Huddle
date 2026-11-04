@@ -202,6 +202,42 @@ document.addEventListener("mousedown", (downEvent) => {
   document.addEventListener("mouseup", onUp);
 });
 
+// DM call panel: collapsed or not, and its height (drag the line under it)
+const DM_CALL_HEIGHT = { min: 190, fallback: 250, key: "eco_dm_call_height", collapsedKey: "eco_dm_call_collapsed" };
+uiState.dmCallHeight = readStoredWidth(DM_CALL_HEIGHT.key, DM_CALL_HEIGHT.fallback, DM_CALL_HEIGHT.min, 2000);
+try {
+  uiState.dmCallCollapsed = localStorage.getItem(DM_CALL_HEIGHT.collapsedKey) === "1";
+} catch {
+  uiState.dmCallCollapsed = false;
+}
+
+document.addEventListener("mousedown", (downEvent) => {
+  const handle = downEvent.target.closest?.("[data-dm-call-resizer]");
+  if (!handle || downEvent.button !== 0) return;
+  const panel = handle.closest(".dm-call-panel");
+  if (!panel) return;
+  downEvent.preventDefault();
+  const startY = downEvent.clientY;
+  const startHeight = panel.getBoundingClientRect().height;
+  // Never more than ~70% of the conversation area, so the chat stays usable
+  const max = Math.max(DM_CALL_HEIGHT.min, Math.round((panel.parentElement?.getBoundingClientRect().height || 700) * 0.7));
+  document.body.classList.add("is-resizing", "is-resizing-row");
+  const onMove = (moveEvent) => {
+    uiState.dmCallHeight = Math.round(Math.min(max, Math.max(DM_CALL_HEIGHT.min, startHeight + moveEvent.clientY - startY)));
+    panel.style.height = `${uiState.dmCallHeight}px`;
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("is-resizing", "is-resizing-row");
+    try {
+      localStorage.setItem(DM_CALL_HEIGHT.key, String(uiState.dmCallHeight));
+    } catch {}
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
 // Floating stream window: drag by the header, resize from the corner
 document.addEventListener("mousedown", (downEvent) => {
   const drag = downEvent.target.closest?.("[data-stream-drag]");
@@ -695,18 +731,21 @@ function renderEmailGateScreen(state) {
 }
 
 function renderGuildsRail(state) {
-  const totalDmUnreads = state.dms.reduce((acc, d) => acc + (d.unreadCount || 0), 0);
+  const totalDmUnreads = state.dms.reduce((acc, d) => acc + (store.isDmMuted(d.id) ? 0 : d.unreadCount || 0), 0);
   const pendingCount = state.friends.filter((f) => f.relation === "incoming").length;
   const homeBadge = totalDmUnreads + pendingCount;
 
-  const guildsHtml = state.guilds
+  const guildsHtml = store
+    .sortedGuilds()
     .map((g) => {
       const isActive = state.navigation.view === "guild" && state.navigation.activeGuildId === g.id;
       const hasVoice = state.voice.connectedGuildId === g.id;
+      const muted = store.isGuildMuted(g.id);
       const classes = [
         "guild-item-wrap",
         isActive ? "active" : "",
-        g.unread && !isActive ? "unread" : ""
+        g.unread && !isActive && !muted ? "unread" : "",
+        muted ? "muted" : ""
       ]
         .filter(Boolean)
         .join(" ");
@@ -749,7 +788,7 @@ function renderGuildsRail(state) {
       </div>
 
       ${state.dms
-        .filter((dm) => dm.unreadCount > 0 && state.users[dm.userId])
+        .filter((dm) => dm.unreadCount > 0 && state.users[dm.userId] && !store.isDmMuted(dm.id))
         .map((dm) => {
           const u = state.users[dm.userId];
           return `
@@ -794,7 +833,7 @@ function renderVoiceAndAccountPanel(state) {
     const ch = g?.channels.find((item) => item.id === voice.connectedChannelId);
     const dmPeer = voice.dmCall ? state.users[voice.dmCall.peerId] : null;
     const isRinging = voice.dmCall?.status === "ringing";
-    const statusLabel = isRinging ? "Chamando..." : `Voz Conectada (${voice.pingMs} ms)`;
+    const statusLabel = isRinging ? "Chamando..." : voice.dmCall?.status === "waiting" ? "Aguardando resposta..." : `Voz Conectada (${voice.pingMs} ms)`;
     const locationLabel = voice.dmCall
       ? `Chamada com ${escapeHtml(dmPeer?.displayName || "contato")}`
       : `${escapeHtml(ch?.name || "Voz")} / ${escapeHtml(g?.name || "Servidor")}`;
@@ -893,20 +932,25 @@ function renderSecondarySidebar(state) {
         ? `<div style="padding:18px 12px;font-size:12px;color:var(--text-muted);text-align:center;" data-testid="empty-dms-state">
             Nenhuma conversa direta ainda.<br/>Adicione um amigo pelo <strong>@username</strong> para conversar.
           </div>`
-        : state.dms
+        : store
+            .sortedDms()
             .map((dm) => {
               const u = state.users[dm.userId];
               if (!u) return "";
               const isActive =
                 state.navigation.view === "home" && sec === "dm" && state.navigation.activeDmId === dm.id;
+              const chat = store.getChatPrefs();
+              const pinned = chat.pinnedDms.includes(dm.id);
+              const favorite = !pinned && chat.favoriteDms.includes(dm.id);
+              const muted = store.isDmMuted(dm.id);
               return `
-                <div class="dm-item ${isActive ? "active" : ""}" data-action="open-dm" data-dm-id="${dm.id}">
+                <div class="dm-item ${isActive ? "active" : ""} ${muted ? "muted" : ""}" data-action="open-dm" data-dm-id="${dm.id}">
                   ${renderAvatar(u, "", true)}
                   <div class="dm-item-info">
-                    <div class="dm-item-name">${escapeHtml(u.displayName)}</div>
+                    <div class="dm-item-name">${escapeHtml(u.displayName)}${pinned ? `<span class="dm-item-mark" title="Fixada">${Icons.pin}</span>` : favorite ? `<span class="dm-item-mark star" title="Favorita">${Icons.star}</span>` : ""}</div>
                     <div class="dm-item-sub">@${escapeHtml(u.username)}</div>
                   </div>
-                  ${dm.unreadCount > 0 ? `<span class="guild-badge" style="position:static;border:none;">${dm.unreadCount}</span>` : ""}
+                  ${dm.unreadCount > 0 && !muted ? `<span class="guild-badge" style="position:static;border:none;">${dm.unreadCount}</span>` : ""}
                   <button type="button" class="dm-close-btn" data-action="close-dm" data-dm-id="${escapeHtml(dm.id)}" title="Fechar conversa" aria-label="Fechar conversa com ${escapeHtml(u.displayName)}" data-testid="close-dm-btn">${Icons.close}</button>
                 </div>
               `;
@@ -946,10 +990,19 @@ function renderSecondarySidebar(state) {
 
   const canManageChannels = store.can("MANAGE_CHANNELS", guild);
   const canInvite = store.can("CREATE_INSTANT_INVITE", guild);
+  // Right-click on the server: "Ocultar canais silenciados" and "Mostrar todos
+  // os canais" (off = only channels with something new, plus the open one and voice)
+  const chatPrefs = store.guildPrefs(guild.id);
+  const channelVisible = (c) => {
+    if (c.id === state.navigation.activeChannelId || c.id === state.voice.connectedChannelId) return true;
+    if (chatPrefs.hideMutedChannels && store.isChannelMuted(c.id)) return false;
+    if (!chatPrefs.showAllChannels && c.type !== "voice" && !c.unread) return false;
+    return true;
+  };
   const categoriesHtml = (guild.categories || [])
     .map((cat) => {
       const isCollapsed = Boolean(guild.collapsedCategories?.[cat.id]);
-      const catChannels = (guild.channels || []).filter((c) => c.categoryId === cat.id);
+      const catChannels = (guild.channels || []).filter((c) => c.categoryId === cat.id && channelVisible(c));
 
       const channelsList = isCollapsed
         ? ""
@@ -982,7 +1035,7 @@ function renderSecondarySidebar(state) {
                             <div class="voice-user-row" data-action="open-user-popout" data-user-id="${u.id}">
                               <div class="voice-user-left">
                                 ${renderAvatar(u, "", false, "width:22px;height:22px;min-width:22px;font-size:10px;", { speaking: true })}
-                                <span>${escapeHtml(u.displayName)}</span>
+                                <span>${escapeHtml(store.memberNickname(guild, u.id) || u.displayName)}</span>
                               </div>
                               <div style="display:flex;align-items:center;gap:4px;">
                                 ${isSharing ? `<span class="screenshare-live-badge" style="font-size:9px;padding:1px 4px;">LIVE</span>` : ""}
@@ -998,9 +1051,10 @@ function renderSecondarySidebar(state) {
               return `
                 <div>
                   <div
-                    class="channel-item ${isActive ? "active" : ""} ${isVoiceConnected && !isActive ? "connected" : ""} ${ch.unread && !isActive ? "unread" : ""}"
+                    class="channel-item ${isActive ? "active" : ""} ${isVoiceConnected && !isActive ? "connected" : ""} ${ch.unread && !isActive && !store.isChannelMuted(ch.id) ? "unread" : ""} ${store.isChannelMuted(ch.id) ? "muted" : ""}"
                     data-action="select-channel"
                     data-channel-id="${ch.id}"
+                    ${ch.type !== "voice" ? `data-channel-context="${ch.id}"` : ""}
                   >
                     <div class="channel-item-left">
                       <span style="color:var(--channels-default);display:inline-flex;">${icon}</span>
@@ -1382,28 +1436,37 @@ function renderDiscoveryStage(state) {
       <header class="stage-header">
         <div class="stage-header-left">
           ${Icons.compass}
-          <span class="stage-title">Explorar Servidores Reais</span>
+          <span class="stage-title">Explorar Servidores</span>
         </div>
       </header>
       <div style="flex:1;overflow-y:auto;padding:24px;">
         <div style="background:linear-gradient(135deg,#5865f2 0%,#1e1f22 100%);border-radius:12px;padding:28px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
           <div>
-            <h1 style="font-size:24px;color:#fff;margin-bottom:6px;">Servidores Cadastrados no Sistema</h1>
-            <p style="font-size:13px;color:rgba(255,255,255,0.85);">Entre em servidores reais existentes ou utilize um código de convite exclusivo.</p>
+            <h1 style="font-size:24px;color:#fff;margin-bottom:6px;">Servidores públicos</h1>
+            <p style="font-size:13px;color:rgba(255,255,255,0.85);">Todos os servidores que os donos deixaram públicos. Para deixar o seu aqui, ative "Servidor público" nas configurações dele.</p>
           </div>
           <button class="btn btn-success" data-action="open-modal" data-modal="create-server">
             Entrar com Código de Convite / Criar Servidor
           </button>
         </div>
+        ${
+          items.length
+            ? ""
+            : `<div class="empty-state-box" style="padding:36px 20px;" data-testid="discovery-empty">
+                <div style="font-size:14px;font-weight:600;color:var(--header-primary);">${search ? "Nenhum servidor público encontrado para essa busca." : "Ainda não há servidores públicos."}</div>
+                <div style="font-size:12px;">Quem cria um servidor pode deixá-lo público nas configurações dele.</div>
+              </div>`
+        }
         <div class="discovery-grid">
           ${items
             .map((d) => {
               const alreadyJoined = state.guilds.some((g) => g.id === d.id);
               return `
                 <div class="discovery-card">
-                  <div style="height:76px;background:${d.bannerColor};position:relative;">
-                    <div style="position:absolute;bottom:-18px;left:16px;width:44px;height:44px;border-radius:12px;background:${d.iconColor};border:4px solid var(--bg-channels);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;">
-                      ${escapeHtml(d.shortName)}
+                  <div style="height:76px;background:${escapeHtml(d.bannerColor)};position:relative;">
+                    ${d.bannerUrl ? animatedImageHtml(d.bannerUrl, { cls: "discovery-banner-img", alt: "" }) : ""}
+                    <div style="position:absolute;bottom:-18px;left:16px;width:44px;height:44px;border-radius:12px;background:${escapeHtml(d.iconColor)};border:4px solid var(--bg-channels);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;overflow:hidden;">
+                      ${d.iconUrl ? animatedImageHtml(d.iconUrl, { cls: "discovery-icon-img", alt: d.name }) : escapeHtml(d.shortName)}
                     </div>
                   </div>
                   <div style="padding:26px 16px 16px 16px;flex:1;display:flex;flex-direction:column;gap:8px;">
@@ -2026,6 +2089,97 @@ function renderCallStage(state, ch) {
   `;
 }
 
+// The call above a DM conversation (like Discord): both people side by side,
+// the one being called pulsing with a soft white aura while it rings, and the
+// controls under them. Also shows when the other person is waiting in the call
+// for me (with "Entrar na chamada").
+function renderDmCallPanel(state, channel) {
+  const v = state.voice;
+  const dm = state.dms.find((d) => d.id === channel.id);
+  const peer = dm && state.users[dm.userId];
+  const me = store.getCurrentUser();
+  if (!peer || !me) return "";
+  const inCall = v.connectedChannelId === channel.id && Boolean(v.dmCall);
+  const peerWaiting = !inCall && store.roomUserIds(channel.id).includes(peer.id);
+  if (!inCall && !peerWaiting) return "";
+
+  const status = inCall ? v.dmCall.status : "incoming";
+  const peerHere = inCall ? status === "connected" : true;
+  const meHere = inCall;
+  const person = (u, here, { calling = false } = {}) => `
+    <div class="dm-call-person ${here ? "" : "absent"} ${calling ? "calling" : ""} ${state.voice.speakingUsers?.[u.id] && here ? "speaking" : ""}" data-user-id="${escapeHtml(u.id)}" title="${escapeHtml(u.displayName)}">
+      <div class="dm-call-aura"></div>
+      ${renderAvatar(u, "", false, "width:80px;height:80px;min-width:80px;font-size:28px;")}
+    </div>`;
+
+  const statusText =
+    status === "ringing"
+      ? `Chamando ${escapeHtml(peer.displayName)}...`
+      : status === "waiting"
+        ? `${escapeHtml(peer.displayName)} não atendeu. Esperando na chamada — desliga sozinha em <span id="dm-call-countdown">3:00</span>`
+        : status === "incoming"
+          ? state.incomingCall?.channelId === channel.id
+            ? `${escapeHtml(peer.displayName)} está te chamando`
+            : `${escapeHtml(peer.displayName)} está esperando você na chamada`
+          : "";
+
+  const controls = inCall
+    ? `
+      <div class="call-controls dm-call-controls">
+        <div class="call-controls-group">
+          <button class="call-ctrl ${v.muted ? "danger" : ""}" data-action="toggle-mute" title="${v.muted ? "Ativar microfone" : "Silenciar microfone"}" data-testid="dm-call-mute-btn">${v.muted ? Icons.micOff : Icons.mic}</button>
+          <button class="call-ctrl dm-call-arrow" data-action="toggle-audio-menu" data-kind="input" title="Opções de entrada (microfone)">${Icons.chevronDownSmall}</button>
+          <button class="call-ctrl ${v.videoEnabled ? "active" : ""}" data-action="toggle-video" title="Câmera">${Icons.video}</button>
+        </div>
+        <div class="call-controls-group">
+          <button class="call-ctrl ${v.screenShareEnabled ? "active" : ""}" data-action="toggle-screenshare" title="${v.screenShareEnabled ? "Parar de compartilhar a tela" : "Compartilhar a tela"}">${Icons.screenShare}</button>
+          <button class="call-ctrl ${v.deafened ? "danger" : ""}" data-action="toggle-deafen" title="${v.deafened ? "Ativar áudio" : "Desativar áudio"}">${v.deafened ? Icons.deafenOff : Icons.headphones}</button>
+        </div>
+        <button class="call-ctrl leave" data-action="leave-voice" title="${status === "connected" ? "Desligar" : "Cancelar chamada"}" data-testid="dm-call-hangup-btn">${Icons.phoneOff}</button>
+      </div>`
+    : `
+      <div class="call-controls dm-call-controls">
+        <button class="btn btn-success dm-call-join" data-action="start-dm-call" data-channel-id="${escapeHtml(channel.id)}" data-testid="dm-call-join-btn">${Icons.phone}<span>Entrar na chamada</span></button>
+      </div>`;
+
+  const collapsed = uiState.dmCallCollapsed;
+  const toggle = `<button type="button" class="dm-call-collapse" data-action="toggle-dm-call-panel" title="${collapsed ? "Abrir a chamada" : "Recolher a chamada"}" aria-label="${collapsed ? "Abrir a chamada" : "Recolher a chamada"}" aria-expanded="${collapsed ? "false" : "true"}" data-testid="dm-call-collapse-btn">${Icons.chevronDown}</button>`;
+
+  // Collapsed: one slim bar with the people, the status and hang up / join
+  if (collapsed) {
+    return `
+      <div class="dm-call-panel collapsed" data-testid="dm-call-panel" data-status="${status}">
+        <div class="dm-call-mini-people">
+          ${person(me, meHere)}
+          ${person(peer, peerHere, { calling: status === "ringing" || status === "waiting" })}
+        </div>
+        <div class="dm-call-status" data-testid="dm-call-status">${statusText || `Em chamada com ${escapeHtml(peer.displayName)}`}</div>
+        <div style="flex:1;"></div>
+        ${
+          inCall
+            ? `<button class="call-ctrl ${v.muted ? "danger" : ""}" data-action="toggle-mute" title="${v.muted ? "Ativar microfone" : "Silenciar microfone"}">${v.muted ? Icons.micOff : Icons.mic}</button>
+               <button class="call-ctrl leave small" data-action="leave-voice" title="${status === "connected" ? "Desligar" : "Cancelar chamada"}" data-testid="dm-call-hangup-btn">${Icons.phoneOff}</button>`
+            : `<button class="btn btn-success btn-sm dm-call-join" data-action="start-dm-call" data-channel-id="${escapeHtml(channel.id)}" data-testid="dm-call-join-btn">${Icons.phone}<span>Entrar</span></button>`
+        }
+        ${toggle}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="dm-call-panel" data-testid="dm-call-panel" data-status="${status}" style="height:${uiState.dmCallHeight}px;">
+      ${toggle}
+      <div class="dm-call-people">
+        ${person(me, meHere)}
+        ${person(peer, peerHere, { calling: status === "ringing" || status === "waiting" })}
+      </div>
+      ${statusText ? `<div class="dm-call-status" data-testid="dm-call-status">${statusText}</div>` : ""}
+      ${controls}
+      <div class="dm-call-resizer" data-dm-call-resizer title="Arraste para mudar a altura" role="separator" aria-orientation="horizontal" data-testid="dm-call-resizer"></div>
+    </div>
+  `;
+}
+
 function renderChatStage(state) {
   const channel = store.getActiveChannel();
   if (!channel) {
@@ -2083,13 +2237,20 @@ function renderChatStage(state) {
         </div>`
       : visibleMessages
           .map((m, idx) => {
-            const author = state.users[m.authorId] || {
+            let author = state.users[m.authorId] || {
               id: m.authorId,
               displayName: "Usuário",
               username: "user",
               avatarColor: "#5865f2",
               avatarUrl: ""
             };
+            // Someone I ignore (right-click > Ignorar): collapsed until I ask to see it
+            if (store.isIgnored(m.authorId) && !uiState.revealedMessages?.[m.id]) {
+              return `<div class="message-ignored" data-testid="ignored-message">Mensagem de alguém que você ignorou · <button type="button" data-action="reveal-ignored-message" data-message-id="${escapeHtml(m.id)}">Mostrar</button></div>`;
+            }
+            // With a server nickname ("Editar perfil por servidor"), it replaces the name here
+            const nickname = chatGuild ? store.memberNickname(chatGuild, m.authorId) : "";
+            if (nickname) author = { ...author, displayName: nickname };
             const prev = idx > 0 ? visibleMessages[idx - 1] : null;
             const divider = dateDivider(m, prev);
             const isGrouped = !isCompact && prev && !divider && prev.authorId === m.authorId && !m.replyToId;
@@ -2292,7 +2453,7 @@ function renderChatStage(state) {
             ${renderAvatar(u, "", true)}
             <div style="min-width:0;flex:1;">
               <div class="member-name" style="color:var(--header-primary);${nameColorStyle(guild, u.id)}">
-                ${escapeHtml(u.displayName)}
+                ${escapeHtml(store.memberNickname(guild, u.id) || u.displayName)}
               </div>
               <div class="member-activity">${activitySummaryHtml(u.id) || `@${escapeHtml(u.username)}`}</div>
             </div>
@@ -2309,7 +2470,7 @@ function renderChatStage(state) {
                 <div class="member-item offline" data-action="open-user-popout" data-user-id="${u.id}">
                   ${renderAvatar(u)}
                   <div style="min-width:0;flex:1;">
-                    <div class="member-name" style="${nameColorStyle(guild, u.id)}">${escapeHtml(u.displayName)}</div>
+                    <div class="member-name" style="${nameColorStyle(guild, u.id)}">${escapeHtml(store.memberNickname(guild, u.id) || u.displayName)}</div>
                   </div>
                 </div>
               `
@@ -2396,6 +2557,7 @@ function renderChatStage(state) {
         </div>
       </header>
 
+      ${isDm ? renderDmCallPanel(state, channel) : ""}
       ${renderScreenShareBannerAndStage(state)}
 
       <div class="stage-content-split">
@@ -2824,6 +2986,11 @@ function renderActiveModal(state) {
                 </div>
                 <button type="submit" class="btn btn-primary" style="height:40px;">Criar Servidor</button>
               </div>
+              <label class="checkbox-row" for="create-server-public">
+                <input type="checkbox" class="checkbox-input" id="create-server-public" name="isPublic" />
+                <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+                <span class="checkbox-text"><span class="setting-title">Servidor público</span><span class="setting-desc">Aparece em Explorar servidores e qualquer pessoa pode entrar. Dá para mudar depois nas configurações do servidor.</span></span>
+              </label>
             </form>
 
             <form id="join-invite-form" style="background:var(--bg-channels);padding:16px;border-radius:8px;display:flex;flex-direction:column;gap:12px;" data-testid="join-invite-form">
@@ -2847,6 +3014,67 @@ function renderActiveModal(state) {
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-action="close-modal">Fechar</button>
           </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Right-click on a server > Config. de privacidade
+  if (modal === "guild-privacy") {
+    const guild = state.guilds.find((g) => g.id === uiState.guildPrivacyId);
+    if (!guild) return "";
+    const me = (guild.members || []).find((m) => m.userId === state.auth.currentUserId);
+    return `
+      <div class="modal-backdrop" data-action="close-modal-backdrop">
+        <div class="modal-card" data-testid="guild-privacy-modal">
+          <div class="modal-header">
+            <h2>Privacidade em ${escapeHtml(guild.name)}</h2>
+            <button class="icon-btn" data-action="close-modal">${Icons.close}</button>
+          </div>
+          <form id="guild-privacy-form" data-guild-id="${escapeHtml(guild.id)}">
+            <div class="modal-body">
+              <label class="checkbox-row" for="guild-allow-dms">
+                <input type="checkbox" class="checkbox-input" id="guild-allow-dms" name="allowDms" ${me?.allowDms !== false ? "checked" : ""} />
+                <span class="checkbox-box" aria-hidden="true">${Icons.check}</span>
+                <span class="checkbox-text"><span class="setting-title">Permitir mensagens diretas de membros do servidor</span><span class="setting-desc">Quem não é seu amigo e só compartilha este servidor com você não consegue iniciar uma conversa. Amigos e conversas já abertas continuam iguais.</span></span>
+              </label>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+              <button type="submit" class="btn btn-primary">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  // Right-click on a server > Editar perfil por servidor (nickname there)
+  if (modal === "guild-nickname") {
+    const guild = state.guilds.find((g) => g.id === uiState.guildNicknameId);
+    if (!guild) return "";
+    const me = store.getCurrentUser();
+    const nickname = store.memberNickname(guild, me.id);
+    return `
+      <div class="modal-backdrop" data-action="close-modal-backdrop">
+        <div class="modal-card" data-testid="guild-nickname-modal">
+          <div class="modal-header">
+            <h2>Seu perfil em ${escapeHtml(guild.name)}</h2>
+            <button class="icon-btn" data-action="close-modal">${Icons.close}</button>
+          </div>
+          <form id="guild-nickname-form" data-guild-id="${escapeHtml(guild.id)}">
+            <div class="modal-body">
+              <div class="form-group">
+                <label class="form-label">Apelido no servidor</label>
+                <input class="form-input" name="nickname" type="text" maxlength="32" value="${escapeHtml(nickname)}" placeholder="${escapeHtml(me.displayName)}" />
+                <div class="setting-desc" style="margin-top:6px;">Aparece no lugar do seu nome só neste servidor (no chat, na lista de membros e nas chamadas). Deixe vazio para usar ${escapeHtml(me.displayName)}.</div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button>
+              <button type="submit" class="btn btn-primary">Salvar</button>
+            </div>
+          </form>
         </div>
       </div>
     `;
@@ -3865,6 +4093,25 @@ function renderServerOverview(guild, me) {
         }
         <div style="font-size:11px;color:var(--text-muted);">Aparece no topo da lista de canais. Recomendado: 960×540 (16:9).</div>
       </div>
+
+      <div class="setting-row" data-testid="guild-visibility-row">
+        <div>
+          <div class="setting-title">Servidor público</div>
+          <div class="setting-desc">${guild.isPublic ? "Aparece em Explorar servidores e qualquer pessoa pode entrar sem convite." : "Privado: só entra quem recebe um convite. Ative para ele aparecer em Explorar servidores."}</div>
+        </div>
+        ${editable ? renderToggle({ on: Boolean(guild.isPublic), action: "toggle-guild-public", label: "Servidor público" }) : `<span class="setting-desc">${guild.isPublic ? "Público" : "Privado"}</span>`}
+      </div>
+      ${
+        editable && guild.isPublic
+          ? `<div style="display:flex;flex-direction:column;gap:8px;">
+               <label class="form-label" for="guild-description-input">Descrição em Explorar servidores</label>
+               <div style="display:flex;gap:8px;">
+                 <input type="text" id="guild-description-input" class="form-input" style="flex:1;" maxlength="300" value="${escapeHtml(guild.description || "")}" placeholder="Sobre o que é o servidor?" />
+                 <button type="button" class="btn btn-primary" style="height:36px;" data-action="save-guild-description">Salvar</button>
+               </div>
+             </div>`
+          : ""
+      }
 
       <div class="invite-cta-card">
         <div>
@@ -5312,9 +5559,10 @@ function renderAudioDeviceMenu(state) {
   `;
 }
 
-// Items: { label, sublabel?, danger?, onClick } | { type: "separator" } |
+// Items: { label, sublabel?, icon?, danger?, onClick } | { type: "separator" } |
 // { type: "checkbox", label, checked, danger?, onToggle(checked) } (menu stays open) |
-// { type: "slider", label, value 0-100, onInput(value) } | { type: "submenu", label, items }
+// { type: "radio", label, checked, onClick } (menu stays open) |
+// { type: "slider", label, value 0-100, onInput(value) } | { type: "submenu", label, sublabel?, items }
 function renderContextMenuItems(items, prefix = "") {
   return items
     .map((it, i) => {
@@ -5330,14 +5578,23 @@ function renderContextMenuItems(items, prefix = "") {
       if (it.type === "submenu") {
         return `
           <div class="context-menu-item has-submenu" tabindex="0">
-            <span>${escapeHtml(it.label)}</span>${Icons.chevronRight}
-            <div class="context-submenu">${it.items.length ? renderContextMenuItems(it.items, idx) : `<div class="context-menu-empty">Nada aqui</div>`}</div>
+            <span class="context-menu-text">
+              <span>${escapeHtml(it.label)}</span>
+              ${it.sublabel ? `<span class="context-menu-sublabel">${escapeHtml(it.sublabel)}</span>` : ""}
+            </span>${Icons.chevronRight}
+            <div class="context-submenu ${it.wide ? "wide" : ""}">${it.items.length ? renderContextMenuItems(it.items, idx) : `<div class="context-menu-empty">Nada aqui</div>`}</div>
           </div>`;
       }
       const check =
-        it.type === "checkbox" ? `<span class="context-menu-check ${it.checked ? "on" : ""}">${it.checked ? Icons.check : ""}</span>` : "";
+        it.type === "checkbox"
+          ? `<span class="context-menu-check ${it.checked ? "on" : ""}">${it.checked ? Icons.check : ""}</span>`
+          : it.type === "radio"
+            ? `<span class="context-menu-radio ${it.checked ? "on" : ""}"></span>`
+            : "";
+      const role = it.type === "checkbox" ? "menuitemcheckbox" : it.type === "radio" ? "menuitemradio" : "";
       return `
-        <button class="context-menu-item ${it.danger ? "danger" : ""}" data-context-idx="${idx}" ${it.type === "checkbox" ? `role="menuitemcheckbox" aria-checked="${it.checked ? "true" : "false"}"` : ""}>
+        <button class="context-menu-item ${it.danger ? "danger" : ""}" data-context-idx="${idx}" ${role ? `role="${role}" aria-checked="${it.checked ? "true" : "false"}"` : ""}>
+          ${it.icon ? `<span class="context-menu-icon">${it.icon}</span>` : ""}
           <span class="context-menu-text">
             <span>${escapeHtml(it.label)}</span>
             ${it.sublabel ? `<span class="context-menu-sublabel">${escapeHtml(it.sublabel)}</span>` : ""}
@@ -6286,8 +6543,33 @@ function bindFormEvents() {
       e.preventDefault();
       const fd = new FormData(createServerForm);
       uiState.activeModal = null;
-      await store.createGuild({ name: fd.get("name"), iconColor: fd.get("iconColor") });
-      showToast("Servidor criado e persistido no SQLite!");
+      const isPublic = fd.get("isPublic") === "on";
+      await store.createGuild({ name: fd.get("name"), iconColor: fd.get("iconColor"), isPublic });
+      showToast(isPublic ? "Servidor público criado! Ele já aparece em Explorar servidores." : "Servidor criado!");
+    });
+  }
+
+  const guildPrivacyForm = document.getElementById("guild-privacy-form");
+  if (guildPrivacyForm) {
+    guildPrivacyForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const allowDms = new FormData(guildPrivacyForm).get("allowDms") === "on";
+      const res = await store.updateMyGuildMember(guildPrivacyForm.getAttribute("data-guild-id"), { allowDms });
+      if (res.ok) uiState.activeModal = null;
+      showToast(res.ok ? "Privacidade salva!" : res.error || "Não foi possível salvar.");
+      renderApp();
+    });
+  }
+
+  const guildNicknameForm = document.getElementById("guild-nickname-form");
+  if (guildNicknameForm) {
+    guildNicknameForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const nickname = String(new FormData(guildNicknameForm).get("nickname") || "");
+      const res = await store.updateMyGuildMember(guildNicknameForm.getAttribute("data-guild-id"), { nickname });
+      if (res.ok) uiState.activeModal = null;
+      showToast(res.ok ? (res.nickname ? `Apelido salvo: ${res.nickname}` : "Apelido removido.") : res.error || "Não foi possível salvar.");
+      renderApp();
     });
   }
 
@@ -6518,6 +6800,23 @@ function bindFormEvents() {
     if (r.bottom > window.innerHeight - 8) ctxMenu.style.top = `${Math.max(8, window.innerHeight - r.height - 8)}px`;
     if (r.right > window.innerWidth - 8) ctxMenu.style.left = `${Math.max(8, window.innerWidth - r.width - 8)}px`;
     if (r.right + 220 > window.innerWidth) ctxMenu.classList.add("submenus-left");
+    // A submenu that would run past the bottom of the window opens upwards
+    // (measured while hidden: shown off-screen for a moment)
+    ctxMenu.querySelectorAll(".context-menu-item.has-submenu > .context-submenu").forEach((sub) => {
+      const row = sub.parentElement.getBoundingClientRect();
+      sub.style.visibility = "hidden";
+      sub.style.display = "block";
+      const height = sub.getBoundingClientRect().height;
+      sub.style.display = "";
+      sub.style.visibility = "";
+      if (row.top - 6 + height > window.innerHeight - 8) {
+        // CSS bottom B puts the submenu's bottom edge at row.bottom - B
+        let b = Math.max(-6, row.bottom - (window.innerHeight - 8));
+        if (row.bottom - b - height < 8) b = row.bottom - height - 8; // keep its top on screen
+        sub.style.top = "auto";
+        sub.style.bottom = `${b}px`;
+      }
+    });
   }
 
   // Profile view: border flag/colour and call tile colour
@@ -6943,6 +7242,14 @@ const DESTRUCTIVE_ACTIONS = {
       confirmLabel: "Remover Amigo"
     };
   },
+  "leave-guild": (btn) => {
+    const guild = store.getState().guilds.find((g) => g.id === btn.getAttribute("data-guild-id"));
+    return {
+      title: `Sair de ${escapeHtml(guild?.name || "servidor")}`,
+      message: `Tem certeza que deseja sair de <strong>${escapeHtml(guild?.name || "este servidor")}</strong>? Você só poderá voltar com um novo convite${guild?.isPublic ? " ou pelo Explorar servidores" : ""}.`,
+      confirmLabel: "Sair do servidor"
+    };
+  },
   "block-friend": (btn) => {
     const user = store.getState().users[btn.getAttribute("data-user-id")];
     return {
@@ -7101,6 +7408,16 @@ async function handleGlobalClick(e) {
       if (item?.type === "checkbox") {
         item.checked = !item.checked;
         if (typeof item.onToggle === "function") await item.onToggle(item.checked);
+        renderApp();
+        return;
+      }
+      // A choice among siblings: the menu stays open showing the new one
+      if (item?.type === "radio") {
+        const path = ctxIdxBtn.getAttribute("data-context-idx").split(".");
+        path.pop();
+        const siblings = path.length ? findContextItem(path.join("."))?.items || [] : uiState.contextMenu.items;
+        for (const s of siblings) if (s.type === "radio") s.checked = s === item;
+        if (typeof item.onClick === "function") await item.onClick();
         renderApp();
         return;
       }
@@ -7574,6 +7891,12 @@ async function handleGlobalClick(e) {
       await store.removeOrBlockFriend(btn.getAttribute("data-user-id"), "remove");
       showToast("Amigo removido.");
       break;
+    case "leave-guild": {
+      e.stopPropagation();
+      const res = await store.leaveGuild(btn.getAttribute("data-guild-id"));
+      showToast(res.ok ? "Você saiu do servidor." : res.error || "Não foi possível sair do servidor.");
+      break;
+    }
     case "block-friend":
       e.stopPropagation();
       await store.removeOrBlockFriend(btn.getAttribute("data-user-id"), "block");
@@ -7690,6 +8013,22 @@ async function handleGlobalClick(e) {
       if (!guild || !input) break;
       const res = await store.updateGuild(guild.id, { name: input.value });
       showToast(res.ok ? "Nome do servidor atualizado!" : res.error || "Não foi possível renomear o servidor.");
+      break;
+    }
+    case "toggle-guild-public": {
+      const guild = store.getActiveGuild();
+      if (!guild) break;
+      const res = await store.updateGuild(guild.id, { isPublic: !guild.isPublic });
+      showToast(res.ok ? (!guild.isPublic ? "Servidor público: ele já aparece em Explorar servidores." : "Servidor privado: só entra quem tiver convite.") : res.error || "Não foi possível mudar.");
+      renderApp();
+      break;
+    }
+    case "save-guild-description": {
+      const guild = store.getActiveGuild();
+      const input = document.getElementById("guild-description-input");
+      if (!guild || !input) break;
+      const res = await store.updateGuild(guild.id, { description: input.value });
+      showToast(res.ok ? "Descrição salva!" : res.error || "Não foi possível salvar.");
       break;
     }
     case "remove-guild-icon":
@@ -7899,6 +8238,17 @@ async function handleGlobalClick(e) {
       e.stopPropagation();
       await store.deleteChannel(state.navigation.activeGuildId, btn.getAttribute("data-channel-id"));
       showToast("Canal excluído.");
+      break;
+    case "toggle-dm-call-panel":
+      uiState.dmCallCollapsed = !uiState.dmCallCollapsed;
+      try {
+        localStorage.setItem(DM_CALL_HEIGHT.collapsedKey, uiState.dmCallCollapsed ? "1" : "0");
+      } catch {}
+      renderApp();
+      break;
+    case "reveal-ignored-message":
+      uiState.revealedMessages = { ...(uiState.revealedMessages || {}), [btn.getAttribute("data-message-id")]: true };
+      renderApp();
       break;
     case "toggle-member-list":
       state.navigation.showMemberList = !state.navigation.showMemberList;
@@ -8459,7 +8809,291 @@ function buildCallUserMenu(userId) {
   return items;
 }
 
+// Runs a button action that needs confirmation (same dialog as the real buttons)
+function confirmViaDialog(action, attrs = {}) {
+  const fake = document.createElement("button");
+  fake.setAttribute("data-action", action);
+  for (const [k, v] of Object.entries(attrs)) fake.setAttribute(k, v);
+  openConfirmDialog(action, fake);
+}
+
+const MUTE_DURATIONS = [
+  { label: "Por 15 minutos", ms: 15 * 60 * 1000 },
+  { label: "Por 1 hora", ms: 60 * 60 * 1000 },
+  { label: "Por 3 horas", ms: 3 * 60 * 60 * 1000 },
+  { label: "Por 8 horas", ms: 8 * 60 * 60 * 1000 },
+  { label: "Por 24 horas", ms: 24 * 60 * 60 * 1000 },
+  { label: "Até eu ligá-las de novo", ms: -1 }
+];
+
+// "Silenciado até 14:30" / "Silenciado" for the sublabel of a muted item
+function mutedSublabel(until) {
+  if (until === -1) return "Silenciado";
+  const d = new Date(until);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const time = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  return `Silenciado até ${sameDay ? time : `${d.toLocaleDateString("pt-BR")} ${time}`}`;
+}
+
+// Servers where I can create an invite (for "Convidar para o servidor")
+function invitableGuilds() {
+  return store.sortedGuilds().filter((g) => store.can("CREATE_INSTANT_INVITE", g));
+}
+
+// Creates an invite to `guild` and sends its link in the DM
+async function sendGuildInviteInDm(guild, dmId) {
+  const res = await store.createServerInvite(guild.id, { expiresInSeconds: 7 * 86400 });
+  const url = res?.invite?.url;
+  if (!url) return showToast(res?.error || "Não foi possível criar o convite.");
+  await store.sendMessage(dmId, url);
+  showToast(`Convite para ${guild.name} enviado!`);
+}
+
+// Right-click on a conversation in the DM list
+function buildDmMenu(dmId) {
+  const state = store.getState();
+  const dm = state.dms.find((d) => d.id === dmId);
+  const user = dm && state.users[dm.userId];
+  if (!user) return [];
+  const prefs = store.getChatPrefs();
+  const pinned = prefs.pinnedDms.includes(dm.id);
+  const favorite = prefs.favoriteDms.includes(dm.id);
+  const relation = state.friends.find((f) => f.userId === user.id)?.relation;
+  const ignored = store.isIgnored(user.id);
+  const mutedUntil = prefs.mutedDms[dm.id];
+  const muted = store.isDmMuted(dm.id);
+
+  const items = [
+    { label: "Marcar como lida", onClick: () => store.markChannelsRead([dm.id]) },
+    { type: "separator" },
+    { label: pinned ? "Desafixar" : "Fixar", icon: Icons.pin, onClick: () => store.toggleListPref("pinnedDms", dm.id, !pinned) },
+    {
+      label: favorite ? "Remover dos favoritos" : "Adicionar aos favoritos",
+      icon: Icons.star,
+      onClick: () => store.toggleListPref("favoriteDms", dm.id, !favorite)
+    },
+    { type: "separator" },
+    { label: "Perfil", onClick: () => openProfileView(user.id) },
+    {
+      label: state.voice.connectedChannelId === dm.id ? "Já está na chamada" : "Iniciar chamada",
+      onClick: async () => {
+        if (state.voice.connectedChannelId === dm.id) return;
+        store.selectHome("dm", dm.id);
+        await store.startDmCall(dm.id);
+      }
+    },
+    {
+      label: "Adicionar nota",
+      sublabel: "Visível apenas para você",
+      onClick: () => {
+        uiState.userPopout = { userId: user.id };
+        renderApp();
+        document.querySelector("[data-user-note-id]")?.focus();
+      }
+    },
+    { label: "Fechar mensagem direta", onClick: () => store.closeDm(dm.id) },
+    { type: "separator" },
+    {
+      type: "submenu",
+      label: "Convidar para o servidor",
+      items: invitableGuilds().map((g) => ({ label: g.name, onClick: () => sendGuildInviteInDm(g, dm.id) }))
+    }
+  ];
+  if (relation === "friend") items.push({ label: "Desfazer amizade", onClick: () => confirmViaDialog("remove-friend", { "data-user-id": user.id }) });
+  items.push({
+    label: ignored ? "Deixar de ignorar" : "Ignorar",
+    sublabel: ignored ? "" : "Sem notificações e mensagens recolhidas",
+    onClick: () => {
+      store.toggleListPref("ignored", user.id, !ignored);
+      showToast(ignored ? `Você não está mais ignorando ${user.displayName}.` : `Você está ignorando ${user.displayName}.`);
+    }
+  });
+  items.push(
+    relation === "blocked"
+      ? { label: "Desbloquear", onClick: () => store.removeOrBlockFriend(user.id, "unblock").then(() => showToast("Usuário desbloqueado.")) }
+      : { label: "Bloquear", danger: true, onClick: () => confirmViaDialog("block-friend", { "data-user-id": user.id }) }
+  );
+  items.push({ type: "separator" });
+  items.push(
+    muted
+      ? { label: `Reativar som de @${user.username}`, sublabel: mutedSublabel(mutedUntil), onClick: () => store.muteDm(dm.id, 0) }
+      : {
+          type: "submenu",
+          label: `Silenciar @${user.username}`,
+          items: MUTE_DURATIONS.map((d) => ({ label: d.label, onClick: () => store.muteDm(dm.id, d.ms) }))
+        }
+  );
+  return items;
+}
+
+// Right-click on a server icon
+function buildGuildMenu(guildId) {
+  const state = store.getState();
+  const g = state.guilds.find((item) => item.id === guildId);
+  if (!g) return [];
+  const me = state.auth.currentUserId;
+  const prefs = store.guildPrefs(g.id);
+  const muted = store.isGuildMuted(g.id);
+  const set = (key) => (value) => store.setGuildPref(g.id, key, value);
+  const notifyLabels = { all: "Todas as mensagens", mentions: "Apenas @menções", none: "Nada" };
+  const ids = store.sortedGuilds().map((x) => x.id);
+  const pos = ids.indexOf(g.id);
+  const isOwner = g.ownerId === me;
+
+  const items = [
+    { label: "Marcar como lida", onClick: () => store.markGuildRead(g.id) },
+    { type: "separator" }
+  ];
+  if (store.can("CREATE_INSTANT_INVITE", g)) {
+    items.push(
+      {
+        label: "Convidar para o servidor",
+        onClick: async () => {
+          store.selectGuild(g.id);
+          await openInviteModalForGuild(g.id);
+        }
+      },
+      { type: "separator" }
+    );
+  }
+  items.push(
+    muted
+      ? { label: "Reativar som do servidor", sublabel: mutedSublabel(prefs.mutedUntil), onClick: () => store.muteGuild(g.id, 0) }
+      : {
+          type: "submenu",
+          label: "Silenciar servidor",
+          items: MUTE_DURATIONS.map((d) => ({ label: d.label, onClick: () => store.muteGuild(g.id, d.ms) }))
+        },
+    {
+      type: "submenu",
+      label: "Config. de notificação",
+      sublabel: notifyLabels[prefs.notify] || notifyLabels.all,
+      wide: true,
+      items: [
+        ...Object.entries(notifyLabels).map(([value, label]) => ({
+          type: "radio",
+          label,
+          checked: prefs.notify === value,
+          onClick: () => set("notify")(value)
+        })),
+        { type: "separator" },
+        { type: "checkbox", label: "Silenciar @everyone e @here", checked: prefs.suppressEveryone, onToggle: set("suppressEveryone") },
+        { type: "checkbox", label: "Silenciar todas as @menções de cargos", checked: prefs.suppressRoles, onToggle: set("suppressRoles") },
+        { type: "separator" },
+        { type: "checkbox", label: "Notificar na área de trabalho", checked: prefs.desktop, onToggle: set("desktop") }
+      ]
+    },
+    { type: "checkbox", label: "Ocultar canais silenciados", checked: prefs.hideMutedChannels, onToggle: set("hideMutedChannels") },
+    { type: "checkbox", label: "Mostrar todos os canais", checked: prefs.showAllChannels, onToggle: set("showAllChannels") },
+    { type: "separator" },
+    {
+      label: "Config. de privacidade",
+      onClick: () => {
+        store.selectGuild(g.id);
+        uiState.activeModal = "guild-privacy";
+        uiState.guildPrivacyId = g.id;
+      }
+    },
+    {
+      label: "Editar perfil por servidor",
+      onClick: () => {
+        store.selectGuild(g.id);
+        uiState.activeModal = "guild-nickname";
+        uiState.guildNicknameId = g.id;
+      }
+    }
+  );
+  if (store.can("MANAGE_SERVER", g)) {
+    items.push({
+      label: "Configurações do servidor",
+      onClick: () => {
+        store.selectGuild(g.id);
+        uiState.settingsOverlay = { type: "server", tab: "overview" };
+      }
+    });
+  }
+  if (store.can("MANAGE_CHANNELS", g)) {
+    items.push({
+      label: "Criar canal",
+      onClick: () => {
+        store.selectGuild(g.id);
+        uiState.activeModal = "create-channel";
+      }
+    });
+  }
+  items.push(
+    { type: "separator" },
+    {
+      type: "submenu",
+      label: "Mover para...",
+      items: [
+        pos > 0 && { label: "Topo da lista", onClick: () => store.moveGuild(g.id, "top") },
+        pos > 0 && { label: "Subir uma posição", onClick: () => store.moveGuild(g.id, "up") },
+        pos < ids.length - 1 && { label: "Descer uma posição", onClick: () => store.moveGuild(g.id, "down") },
+        pos < ids.length - 1 && { label: "Final da lista", onClick: () => store.moveGuild(g.id, "bottom") }
+      ].filter(Boolean)
+    },
+    {
+      label: "Copiar ID do servidor",
+      onClick: () => {
+        NativeBridge.copyText(g.id);
+        showToast("ID do servidor copiado!");
+      }
+    }
+  );
+  if (!isOwner) {
+    items.push({ type: "separator" }, { label: "Sair do servidor", danger: true, onClick: () => confirmViaDialog("leave-guild", { "data-guild-id": g.id }) });
+  }
+  return items;
+}
+
+// Right-click on a text channel: mute it (used by "Ocultar canais silenciados")
+function buildChannelMenu(channelId) {
+  const guild = store.getState().guilds.find((g) => (g.channels || []).some((c) => c.id === channelId));
+  const channel = guild?.channels.find((c) => c.id === channelId);
+  if (!channel) return [];
+  const until = store.getChatPrefs().mutedChannels[channelId];
+  const items = [{ label: "Marcar como lida", onClick: () => store.markChannelsRead([channelId]) }, { type: "separator" }];
+  items.push(
+    store.isChannelMuted(channelId)
+      ? { label: "Reativar som do canal", sublabel: mutedSublabel(until), onClick: () => store.muteChannel(channelId, 0) }
+      : {
+          type: "submenu",
+          label: "Silenciar canal",
+          items: MUTE_DURATIONS.map((d) => ({ label: d.label, onClick: () => store.muteChannel(channelId, d.ms) }))
+        },
+    { type: "separator" },
+    {
+      label: "Copiar ID do canal",
+      onClick: () => {
+        NativeBridge.copyText(channelId);
+        showToast("ID do canal copiado!");
+      }
+    }
+  );
+  return items;
+}
+
+function openMenuAt(e, items) {
+  if (!items.length) return;
+  e.preventDefault();
+  closeAllFloatingMenus("contextMenu");
+  // Opens up/left when it would go off-screen (submenus open to the left near the right edge)
+  const height = items.reduce((h, it) => h + (it.type === "separator" ? 9 : it.sublabel ? 46 : 34), 12);
+  uiState.contextMenu = {
+    x: Math.max(8, Math.min(e.clientX, window.innerWidth - 240)),
+    y: Math.max(8, Math.min(e.clientY, window.innerHeight - height - 8)),
+    items,
+    wide: true
+  };
+  renderApp();
+}
+
 document.addEventListener("contextmenu", (e) => {
+  const dmTarget = e.target.closest(".dm-item[data-dm-id], .rail-dm[data-dm-id]");
+  if (dmTarget) return openMenuAt(e, buildDmMenu(dmTarget.getAttribute("data-dm-id")));
+  const channelTarget = e.target.closest("[data-channel-context]");
+  if (channelTarget) return openMenuAt(e, buildChannelMenu(channelTarget.getAttribute("data-channel-context")));
   const callTarget = e.target.closest(".call-tile[data-user-id], .voice-user-row[data-user-id]");
   if (callTarget && store.getState().voice.connectedChannelId) {
     const items = buildCallUserMenu(callTarget.getAttribute("data-user-id"));
@@ -8478,60 +9112,7 @@ document.addEventListener("contextmenu", (e) => {
     return;
   }
   const guildWrap = e.target.closest("[data-guild-context]");
-  if (guildWrap) {
-    e.preventDefault();
-    const gId = guildWrap.getAttribute("data-guild-context");
-    const g = store.getState().guilds.find((item) => item.id === gId);
-    if (!g) return;
-    closeAllFloatingMenus("contextMenu");
-    uiState.contextMenu = {
-      x: Math.min(e.clientX, window.innerWidth - 220),
-      y: Math.min(e.clientY, window.innerHeight - 200),
-      items: [
-        {
-          label: "Marcar como Lido",
-          onClick: () => {
-            g.unread = false;
-            g.mentions = 0;
-            g.channels.forEach((c) => {
-              c.unread = false;
-              c.mentions = 0;
-            });
-            store.notify();
-          }
-        },
-        {
-          label: "Convidar Pessoas",
-          onClick: async () => {
-            store.selectGuild(g.id);
-            await openInviteModalForGuild(g.id);
-          }
-        },
-        {
-          label: "Criar Canal",
-          onClick: () => {
-            store.selectGuild(g.id);
-            uiState.activeModal = "create-channel";
-          }
-        },
-        {
-          label: "Configurações do Servidor",
-          onClick: () => {
-            store.selectGuild(g.id);
-            uiState.settingsOverlay = { type: "server", tab: "overview" };
-          }
-        },
-        {
-          label: "Copiar ID do Servidor",
-          onClick: () => {
-            NativeBridge.copyText(g.id);
-            showToast("ID do Servidor copiado!");
-          }
-        }
-      ]
-    };
-    renderApp();
-  }
+  if (guildWrap) openMenuAt(e, buildGuildMenu(guildWrap.getAttribute("data-guild-context")));
 });
 
 // Global Keyboard Shortcuts (Ctrl+K Quick Switcher, Esc to close floating menus/modals/overlays)
@@ -8799,7 +9380,18 @@ store.onSpeakingChange = (userId, speaking) => {
   document
     .querySelectorAll(`.voice-user-row[data-user-id="${id}"] .avatar-wrap, .account-bar .avatar-wrap[data-user-id="${id}"]`)
     .forEach((el) => el.classList.toggle("speaking", speaking));
+  // The DM call panel (above the conversation)
+  document.querySelectorAll(`.dm-call-person[data-user-id="${id}"]`).forEach((el) => el.classList.toggle("speaking", speaking && !(userId === store.getState().auth.currentUserId && voice.muted)));
 };
+
+// "Ninguém atendeu": the countdown until the waiting call hangs up by itself
+setInterval(() => {
+  const el = document.getElementById("dm-call-countdown");
+  const until = store.getState().voice.dmCall?.waitingUntil;
+  if (!el || !until) return;
+  const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+  el.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+}, 1000);
 
 // Coming back to the window counts the channel on screen as read
 window.addEventListener("focus", () => {
