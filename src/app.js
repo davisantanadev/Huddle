@@ -5247,12 +5247,39 @@ function formatClock(ms) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
+// The game's art in a square: the whole (portrait) cover over a blurred copy
+// of itself, so nothing is cut off. Without a cover (or if it fails to load)
+// the window's own icon, then the initials.
 function gameIconHtml(game, size = 40) {
   const style = `width:${size}px;height:${size}px;--game-color:${escapeHtml(game.color || "#5865f2")};`;
+  const fallback = game.iconDataUrl
+    ? `<img class="activity-app-icon-fallback" src="${escapeHtml(game.iconDataUrl)}" alt="" />`
+    : `<span class="activity-app-icon-fallback initials">${escapeHtml(getInitials(game.name))}</span>`;
+  if (game.coverUrl) {
+    const src = escapeHtml(game.coverUrl);
+    return `
+      <span class="activity-app-icon cover-box" style="${style}" data-cover-box>
+        ${fallback}
+        <img class="cover-bg" src="${src}" alt="" referrerpolicy="no-referrer" data-cover-img />
+        <img class="cover-fg" src="${src}" alt="" referrerpolicy="no-referrer" data-cover-img />
+      </span>`;
+  }
   if (game.iconDataUrl) return `<img class="activity-app-icon" style="${style}" src="${escapeHtml(game.iconDataUrl)}" alt="" />`;
-  if (game.coverUrl) return `<img class="activity-app-icon cover" style="${style}" src="${escapeHtml(game.coverUrl)}" alt="" referrerpolicy="no-referrer" />`;
   return `<span class="activity-app-icon initials" style="${style}">${escapeHtml(getInitials(game.name))}</span>`;
 }
+
+// A cover that does not exist (or did not load): drop it, the fallback under it shows
+document.addEventListener(
+  "error",
+  (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.hasAttribute("data-cover-img")) return;
+    const box = img.closest("[data-cover-box]");
+    if (box) box.querySelectorAll("[data-cover-img]").forEach((el) => el.remove());
+    else img.remove();
+  },
+  true
+);
 
 // One line for friend lists and the member list ("Jogando X" / "Ouvindo ...")
 function activitySummaryHtml(userId) {
@@ -5349,7 +5376,8 @@ function renderActivityList(activities) {
         <div class="profile-activity-card ${a.playingNow ? "playing" : ""}" title="${escapeHtml(a.name)}">
           <div class="profile-activity-cover" style="--game-color:${escapeHtml(a.color || "#5865f2")};">
             <span class="profile-activity-initials">${escapeHtml(getInitials(a.name))}</span>
-            ${a.coverUrl ? `<img src="${escapeHtml(a.coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : a.iconDataUrl ? `<img class="contain" src="${escapeHtml(a.iconDataUrl)}" alt="" />` : ""}
+            ${a.iconDataUrl ? `<img class="contain" src="${escapeHtml(a.iconDataUrl)}" alt="" />` : ""}
+            ${a.coverUrl ? `<img src="${escapeHtml(a.coverUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-cover-img />` : ""}
             ${a.playingNow ? `<span class="profile-activity-live">Jogando</span>` : ""}
           </div>
           <div class="profile-activity-name">${escapeHtml(a.name)}</div>
@@ -8289,8 +8317,15 @@ async function handleGlobalClick(e) {
       const targetUserId = btn.getAttribute("data-user-id");
       const isSame = uiState.userPopout && uiState.userPopout.userId === targetUserId;
       closeAllFloatingMenus("userPopout");
+      // Next to the member list it opens beside the list; everywhere else
+      // (friends tabs, chat, call...) right where the mouse clicked
       const r = btn.getBoundingClientRect();
-      uiState.userPopout = isSame ? null : { userId: targetUserId, anchor: { left: r.left, right: r.right, top: r.top, bottom: r.bottom } };
+      const fromMemberList = Boolean(btn.closest(".members-sidebar"));
+      const anchor =
+        !fromMemberList && e.clientX
+          ? { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY }
+          : { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      uiState.userPopout = isSame ? null : { userId: targetUserId, anchor };
       renderApp();
       break;
     }
@@ -8692,7 +8727,8 @@ function buildCallUserMenu(userId) {
         label: "Adicionar nota",
         sublabel: "Visível apenas para você",
         onClick: () => {
-          uiState.userPopout = { userId };
+          const p = uiState.lastMenuPoint;
+          uiState.userPopout = { userId, anchor: p ? { left: p.x, right: p.x, top: p.y, bottom: p.y } : undefined };
           renderApp();
           document.querySelector("[data-user-note-id]")?.focus();
         }
@@ -8849,57 +8885,102 @@ async function sendGuildInviteInDm(guild, dmId) {
   showToast(`Convite para ${guild.name} enviado!`);
 }
 
+// Opens (or creates) the DM with someone and returns its id
+async function dmIdFor(userId) {
+  const existing = store.getState().dms.find((d) => d.userId === userId);
+  if (existing) return existing.id;
+  const res = await store.openOrCreateDm(userId);
+  return res?.id || store.getState().dms.find((d) => d.userId === userId)?.id || null;
+}
+
 // Right-click on a conversation in the DM list
 function buildDmMenu(dmId) {
+  const dm = store.getState().dms.find((d) => d.id === dmId);
+  return dm ? buildUserMenu(dm.userId) : [];
+}
+
+// Right-click on a person: DM list, friends tabs (Todos, Disponível...) and the
+// server's member list. Items about the conversation only show once it exists.
+function buildUserMenu(userId) {
   const state = store.getState();
-  const dm = state.dms.find((d) => d.id === dmId);
-  const user = dm && state.users[dm.userId];
-  if (!user) return [];
+  const user = state.users[userId];
+  if (!user || userId === state.auth.currentUserId) return [];
+  const dm = state.dms.find((d) => d.userId === userId) || null;
   const prefs = store.getChatPrefs();
-  const pinned = prefs.pinnedDms.includes(dm.id);
-  const favorite = prefs.favoriteDms.includes(dm.id);
+  const pinned = dm && prefs.pinnedDms.includes(dm.id);
+  const favorite = dm && prefs.favoriteDms.includes(dm.id);
   const relation = state.friends.find((f) => f.userId === user.id)?.relation;
   const ignored = store.isIgnored(user.id);
-  const mutedUntil = prefs.mutedDms[dm.id];
-  const muted = store.isDmMuted(dm.id);
+  const mutedUntil = dm ? prefs.mutedDms[dm.id] : 0;
+  const muted = dm ? store.isDmMuted(dm.id) : false;
+  const inCallWithThem = Boolean(dm) && state.voice.connectedChannelId === dm.id;
 
-  const items = [
-    { label: "Marcar como lida", onClick: () => store.markChannelsRead([dm.id]) },
-    { type: "separator" },
-    { label: pinned ? "Desafixar" : "Fixar", icon: Icons.pin, onClick: () => store.toggleListPref("pinnedDms", dm.id, !pinned) },
-    {
-      label: favorite ? "Remover dos favoritos" : "Adicionar aos favoritos",
-      icon: Icons.star,
-      onClick: () => store.toggleListPref("favoriteDms", dm.id, !favorite)
-    },
-    { type: "separator" },
+  const items = [];
+  if (dm) {
+    items.push(
+      { label: "Marcar como lida", onClick: () => store.markChannelsRead([dm.id]) },
+      { type: "separator" },
+      { label: pinned ? "Desafixar" : "Fixar", icon: Icons.pin, onClick: () => store.toggleListPref("pinnedDms", dm.id, !pinned) },
+      {
+        label: favorite ? "Remover dos favoritos" : "Adicionar aos favoritos",
+        icon: Icons.star,
+        onClick: () => store.toggleListPref("favoriteDms", dm.id, !favorite)
+      },
+      { type: "separator" }
+    );
+  }
+  items.push(
     { label: "Perfil", onClick: () => openProfileView(user.id) },
     {
-      label: state.voice.connectedChannelId === dm.id ? "Já está na chamada" : "Iniciar chamada",
+      label: "Mensagem",
       onClick: async () => {
-        if (state.voice.connectedChannelId === dm.id) return;
-        store.selectHome("dm", dm.id);
-        await store.startDmCall(dm.id);
+        const id = await dmIdFor(user.id);
+        if (id) store.selectHome("dm", id);
+      }
+    },
+    {
+      label: inCallWithThem ? "Já está na chamada" : "Iniciar chamada",
+      onClick: async () => {
+        if (inCallWithThem) return;
+        const id = await dmIdFor(user.id);
+        if (!id) return;
+        store.selectHome("dm", id);
+        await store.startDmCall(id);
       }
     },
     {
       label: "Adicionar nota",
       sublabel: "Visível apenas para você",
       onClick: () => {
-        uiState.userPopout = { userId: user.id };
+        const p = uiState.lastMenuPoint;
+        uiState.userPopout = { userId: user.id, anchor: p ? { left: p.x, right: p.x, top: p.y, bottom: p.y } : undefined };
         renderApp();
         document.querySelector("[data-user-note-id]")?.focus();
       }
-    },
-    { label: "Fechar mensagem direta", onClick: () => store.closeDm(dm.id) },
+    }
+  );
+  if (dm) items.push({ label: "Fechar mensagem direta", onClick: () => store.closeDm(dm.id) });
+  items.push(
     { type: "separator" },
     {
       type: "submenu",
       label: "Convidar para o servidor",
-      items: invitableGuilds().map((g) => ({ label: g.name, onClick: () => sendGuildInviteInDm(g, dm.id) }))
+      items: invitableGuilds().map((g) => ({
+        label: g.name,
+        onClick: async () => {
+          const id = await dmIdFor(user.id);
+          if (id) await sendGuildInviteInDm(g, id);
+        }
+      }))
     }
-  ];
+  );
   if (relation === "friend") items.push({ label: "Desfazer amizade", onClick: () => confirmViaDialog("remove-friend", { "data-user-id": user.id }) });
+  else if (!relation) {
+    items.push({
+      label: "Adicionar amigo",
+      onClick: async () => showToast((await store.sendFriendRequestToUser(user.id)).ok ? "Pedido de amizade enviado!" : "Não foi possível enviar o pedido.")
+    });
+  }
   items.push({
     label: ignored ? "Deixar de ignorar" : "Ignorar",
     sublabel: ignored ? "" : "Sem notificações e mensagens recolhidas",
@@ -8913,16 +8994,18 @@ function buildDmMenu(dmId) {
       ? { label: "Desbloquear", onClick: () => store.removeOrBlockFriend(user.id, "unblock").then(() => showToast("Usuário desbloqueado.")) }
       : { label: "Bloquear", danger: true, onClick: () => confirmViaDialog("block-friend", { "data-user-id": user.id }) }
   );
-  items.push({ type: "separator" });
-  items.push(
-    muted
-      ? { label: `Reativar som de @${user.username}`, sublabel: mutedSublabel(mutedUntil), onClick: () => store.muteDm(dm.id, 0) }
-      : {
-          type: "submenu",
-          label: `Silenciar @${user.username}`,
-          items: MUTE_DURATIONS.map((d) => ({ label: d.label, onClick: () => store.muteDm(dm.id, d.ms) }))
-        }
-  );
+  if (dm) {
+    items.push({ type: "separator" });
+    items.push(
+      muted
+        ? { label: `Reativar som de @${user.username}`, sublabel: mutedSublabel(mutedUntil), onClick: () => store.muteDm(dm.id, 0) }
+        : {
+            type: "submenu",
+            label: `Silenciar @${user.username}`,
+            items: MUTE_DURATIONS.map((d) => ({ label: d.label, onClick: () => store.muteDm(dm.id, d.ms) }))
+          }
+    );
+  }
   return items;
 }
 
@@ -9080,6 +9163,8 @@ function openMenuAt(e, items) {
   closeAllFloatingMenus("contextMenu");
   // Opens up/left when it would go off-screen (submenus open to the left near the right edge)
   const height = items.reduce((h, it) => h + (it.type === "separator" ? 9 : it.sublabel ? 46 : 34), 12);
+  // Where the menu was opened: "Adicionar nota" opens the profile card there
+  uiState.lastMenuPoint = { x: e.clientX, y: e.clientY };
   uiState.contextMenu = {
     x: Math.max(8, Math.min(e.clientX, window.innerWidth - 240)),
     y: Math.max(8, Math.min(e.clientY, window.innerHeight - height - 8)),
@@ -9090,8 +9175,12 @@ function openMenuAt(e, items) {
 }
 
 document.addEventListener("contextmenu", (e) => {
+  uiState.lastMenuPoint = { x: e.clientX, y: e.clientY };
   const dmTarget = e.target.closest(".dm-item[data-dm-id], .rail-dm[data-dm-id]");
   if (dmTarget) return openMenuAt(e, buildDmMenu(dmTarget.getAttribute("data-dm-id")));
+  // A person in the friends tabs or in the server's member list
+  const personTarget = e.target.closest(".friend-row[data-user-id], .member-item[data-user-id]");
+  if (personTarget) return openMenuAt(e, buildUserMenu(personTarget.getAttribute("data-user-id")));
   const channelTarget = e.target.closest("[data-channel-context]");
   if (channelTarget) return openMenuAt(e, buildChannelMenu(channelTarget.getAttribute("data-channel-context")));
   const callTarget = e.target.closest(".call-tile[data-user-id], .voice-user-row[data-user-id]");

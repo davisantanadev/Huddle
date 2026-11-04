@@ -7383,3 +7383,42 @@ body.is-resizing-row * {
   height: 36px;
   border-radius: 8px;
 }
+
+/* Game art in a square slot: the whole portrait cover, a blurred copy behind */
+.activity-app-icon.cover-box {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  background: var(--game-color, #5865f2);
+}
+
+.activity-app-icon.cover-box > img,
+.activity-app-icon.cover-box > .activity-app-icon-fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.activity-app-icon.cover-box .cover-bg {
+  object-fit: cover;
+  filter: blur(6px) brightness(0.75);
+  transform: scale(1.3);
+}
+
+.activity-app-icon.cover-box .cover-fg {
+  object-fit: contain;
+}
+
+.activity-app-icon-fallback {
+  object-fit: contain;
+}
+
+.activity-app-icon-fallback.initials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+}

@@ -36,7 +36,12 @@ async function listWindows() {
 function iconDataUrl(icon) {
   try {
     if (!icon || icon.isEmpty()) return "";
-    return icon.resize({ width: 32, height: 32, quality: "best" }).toDataURL();
+    // As sharp as the server accepts (data URLs up to 24 000 characters)
+    for (const size of [64, 48, 32]) {
+      const url = icon.resize({ width: size, height: size, quality: "best" }).toDataURL();
+      if (url.length <= 24000) return url;
+    }
+    return "";
   } catch (_) {
     return "";
   }

@@ -42,7 +42,7 @@ const APP_DISPLAY_NAME = loadAppConfig().appName || "Huddle";
 const OLD_DISPLAY_NAME = "Invadominio zak' zak";
 app.setName(APP_DISPLAY_NAME);
 // (kept from the old name: taskbar pins and notification settings stay valid)
-if (process.platform === "win32") app.setAppUserModelId("com.invadominio.zakzak");
+if (process.platform === "win32") app.setAppUserModelId("com.invadominio.zakzak"); // same as APP_USER_MODEL_ID
 
 // Shortcuts made under the old name (Desktop, Start menu) become "Huddle"
 // shortcuts pointing at this executable
@@ -64,6 +64,39 @@ function renameOldShortcuts() {
       fs.rmSync(oldLink, { force: true });
     } catch (err) {
       console.error("Failed to rename the old shortcut:", err);
+    }
+  }
+}
+
+// Windows shows a notification under the name and icon of the Start menu
+// shortcut that carries the app's ID. The installers made shortcuts without
+// it, so notifications came from "electron.app.Electron": the shortcuts are
+// created/fixed here on every start (cheap when already right).
+const APP_USER_MODEL_ID = "com.invadominio.zakzak";
+function ensureNotificationShortcut() {
+  if (process.platform !== "win32" || !app.isPackaged) return;
+  const options = {
+    target: process.execPath,
+    cwd: path.dirname(process.execPath),
+    icon: process.execPath,
+    iconIndex: 0,
+    description: APP_DISPLAY_NAME,
+    appUserModelId: APP_USER_MODEL_ID
+  };
+  const startMenuLink = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", `${APP_DISPLAY_NAME}.lnk`);
+  const desktopLink = path.join(app.getPath("desktop"), `${APP_DISPLAY_NAME}.lnk`);
+  for (const link of [startMenuLink, desktopLink]) {
+    let current = null;
+    try {
+      current = fs.existsSync(link) ? shell.readShortcutLink(link) : null;
+    } catch (_) {}
+    // The Desktop one only when it already exists (the user may have deleted it)
+    if (!current && link === desktopLink) continue;
+    if (current && current.appUserModelId === APP_USER_MODEL_ID && path.resolve(current.target || "") === path.resolve(process.execPath)) continue;
+    try {
+      shell.writeShortcutLink(link, current ? "replace" : "create", options);
+    } catch (err) {
+      console.error("Failed to set up the notification shortcut:", err);
     }
   }
 }
@@ -1277,6 +1310,7 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers(backendServer);
   renameOldShortcuts();
+  ensureNotificationShortcut();
   setupSystemTray();
   applyMuteHotkey(getMuteHotkey());
   // Compiles the tiny memory helper the first time (a second or two, in the background)

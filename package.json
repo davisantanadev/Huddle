@@ -1,7 +1,7 @@
 {
   "name": "discord-desktop-replica",
   "productName": "Huddle",
-  "version": "1.2.13",
+  "version": "1.2.14",
   "description": "Discord Client for Desktop - Functional Reconstruction (REA Verified)",
   "main": "electron/main.js",
   "private": true,
