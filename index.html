@@ -3,238 +3,1040 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Huddle: a call da turma</title>
-  <meta name="description" content="Huddle é o app de chat, voz e compartilhamento de tela da turma. Baixe o instalador para Windows." />
+  <title>Huddle: A call da turma</title>
+  <meta name="description" content="App de chat, voz limpa e compartilhamento de tela para Windows feito para a sua turma jogar junta, sem anúncios nem servidores de terceiros." />
   <link rel="icon" href="img/favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --night: #1b2140;
-      --deep: #141832;
-      --panel: #252c52;
-      --line: #343c6b;
-      --text: #eef0f7;
-      --muted: #a9aecb;
-      --coral: #ff7a45;
-      --coral-press: #f0632b;
-      --bia: #e8743b;
-      --leo: #2fa37a;
-      --nina: #c2459a;
-      --you: #5865f2;
-      --radius-lg: 22px;
-      --radius-sm: 10px;
+      /* Palette: Gamer twilight ground + vivid coral accent + squad voice tones */
+      --bg: #0c0f1d;
+      --bg-surface: #151b30;
+      --bg-elevated: #1e2544;
+      --bg-subtle: #273056;
+      --text-main: #ffffff;
+      --text-muted: #ccd4f2;
+      --accent: #ff6a38;
+      --accent-hover: #ff7f52;
+      --accent-active: #e65524;
+      --accent-ink: #0c0f1d;
+      --voice-green: #22c55e;
+      --focus-ring: #ff7f52;
+      
+      /* Squad tones */
+      --squad-bia: #ea580c;
+      --squad-leo: #10b981;
+      --squad-nina: #ec4899;
+      --squad-vc: #6366f1;
+
+      /* Radii */
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --radius-full: 9999px;
+
+      /* Strict 5-step typography scale */
+      --fs-display: clamp(40px, 6vw, 64px);
+      --fs-title: clamp(26px, 3.8vw, 36px);
+      --fs-card: 20px;
+      --fs-body: 16px;
+      --fs-small: 14px;
     }
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+
+    /* Reset & Base */
+    *, *::before, *::after { box-sizing: border-box; }
+    html {
+      scroll-behavior: smooth;
+      background-color: var(--bg);
+      color: var(--text-main);
+    }
     body {
       margin: 0;
-      background: var(--night);
-      color: var(--text);
-      font: 400 17px/1.6 "Figtree", system-ui, sans-serif;
+      font: 400 var(--fs-body)/1.6 "Figtree", system-ui, -apple-system, sans-serif;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+      background-color: var(--bg);
+      color: var(--text-main);
     }
     img { max-width: 100%; height: auto; display: block; }
-    a { color: inherit; }
-    :focus-visible { outline: 3px solid var(--coral); outline-offset: 3px; border-radius: 6px; }
-    .wrap { width: min(1160px, 100% - 32px); margin-inline: auto; }
-
-    /* Top bar */
-    .top { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
-    .brand { display: flex; align-items: center; gap: 10px; font: 800 22px/1 "Bricolage Grotesque", sans-serif; text-decoration: none; }
-    .brand img { width: 30px; height: 30px; }
-    .top nav { display: flex; gap: 22px; font-weight: 500; color: var(--muted); }
-    .top nav a { text-decoration: none; }
-    .top nav a:hover { color: var(--text); }
-
-    /* Hero: the huddle itself is the picture */
-    .hero { display: grid; grid-template-columns: 1fr 1.15fr; gap: 56px; align-items: center; padding: 48px 0 88px; }
-    .circle { position: relative; width: 260px; height: 120px; margin-bottom: 26px; }
-    .head {
-      position: absolute; top: 20px; width: 78px; height: 78px; border-radius: 50%;
-      display: grid; place-items: center; font: 700 24px/1 "Bricolage Grotesque", sans-serif; color: #fff;
-      border: 5px solid var(--night);
-      animation: gather 900ms cubic-bezier(.2,.9,.25,1.15) both;
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; cursor: pointer; border: none; background: none; }
+    
+    /* Keyboard Focus Indicator */
+    :focus-visible {
+      outline: 3px solid var(--focus-ring);
+      outline-offset: 3px;
+      border-radius: 4px;
     }
-    .head:nth-child(1) { left: 0; background: var(--bia); --from: -60px; animation-delay: 60ms; }
-    .head:nth-child(2) { left: 60px; background: var(--leo); --from: -24px; animation-delay: 140ms; }
-    .head:nth-child(3) { left: 120px; background: var(--nina); --from: 24px; animation-delay: 220ms; }
-    .head:nth-child(4) { left: 180px; background: var(--you); --from: 60px; animation-delay: 300ms; }
-    .head.talking { box-shadow: 0 0 0 4px var(--night), 0 0 0 7px #3ba55d; }
-    @keyframes gather { from { opacity: 0; transform: translateX(var(--from)) scale(.7); } }
+
+    /* Motion System */
+    @keyframes enter-up {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes live-pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.15); opacity: 0.8; }
+    }
+    .animate-in {
+      animation: enter-up 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+    .delay-1 { animation-delay: 0.04s; }
+    .delay-2 { animation-delay: 0.08s; }
+    .delay-3 { animation-delay: 0.12s; }
+    .delay-4 { animation-delay: 0.16s; }
+    .delay-5 { animation-delay: 0.20s; }
+    .delay-6 { animation-delay: 0.24s; }
+    .delay-7 { animation-delay: 0.28s; }
+    .delay-8 { animation-delay: 0.32s; }
+    .delay-9 { animation-delay: 0.36s; }
+    .delay-10 { animation-delay: 0.40s; }
+    .delay-11 { animation-delay: 0.44s; }
+    .delay-12 { animation-delay: 0.48s; }
+
+    /* Layout Container */
+    .container {
+      width: min(1140px, 100% - 40px);
+      margin-inline: auto;
+    }
+
+    /* Header Nav */
+    .site-header {
+      padding: 20px 0;
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .nav-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      font: 800 20px/1 "Bricolage Grotesque", sans-serif;
+      color: var(--text-main);
+    }
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      font-weight: 500;
+      color: var(--text-muted);
+      font-size: var(--fs-body);
+    }
+    .nav-links a {
+      transition: color 0.15s ease;
+      padding: 6px 2px;
+    }
+    .nav-links a:hover {
+      color: var(--text-main);
+    }
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-surface);
+      color: var(--text-main);
+      padding: 10px 18px;
+      border-radius: var(--radius-full);
+      font-weight: 600;
+      font-size: var(--fs-small);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    .nav-cta:hover {
+      background: var(--bg-elevated);
+      transform: translateY(-1px);
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 40px 0 80px;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.05fr 1.15fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .hero-content {
+      max-width: 540px;
+    }
+
+    /* Hero Typography */
     h1 {
-      font: 800 clamp(48px, 7.4vw, 92px)/.95 "Bricolage Grotesque", sans-serif;
-      letter-spacing: -0.035em; margin: 0 0 22px;
+      font: 800 var(--fs-display)/1.02 "Bricolage Grotesque", sans-serif;
+      letter-spacing: -0.03em;
+      margin: 0 0 16px;
+      color: var(--text-main);
     }
-    .lead { font-size: 20px; color: var(--muted); max-width: 30ch; margin: 0 0 34px; }
-    .get { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; }
-    .btn {
-      display: inline-flex; align-items: center; gap: 12px; padding: 17px 28px; border-radius: 999px;
-      background: var(--coral); color: #1b1230; font: 700 18px/1 "Figtree", sans-serif; text-decoration: none;
-      transition: background-color .15s, transform .15s;
+    .lead {
+      font-size: var(--fs-body);
+      line-height: 1.6;
+      color: var(--text-muted);
+      margin: 0 0 24px;
+      max-width: 48ch;
     }
-    .btn:hover { background: var(--coral-press); }
-    .btn:active { transform: scale(.98); }
-    .btn svg { width: 22px; height: 22px; }
-    .meta { color: var(--muted); font-size: 15px; line-height: 1.45; }
-    .shot {
-      border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--line);
-      box-shadow: 0 30px 80px -30px rgba(5, 8, 30, .8);
-    }
-    .hero .shot { transform: rotate(1.2deg); }
 
-    /* What it does */
-    section { padding: 88px 0; }
-    .band { background: var(--deep); }
-    h2 { font: 700 clamp(32px, 4.4vw, 50px)/1.05 "Bricolage Grotesque", sans-serif; letter-spacing: -0.02em; margin: 0 0 18px; }
-    .intro { color: var(--muted); max-width: 56ch; margin: 0 0 48px; }
-    .features { display: grid; grid-template-columns: 1.2fr 1fr; gap: 56px; align-items: start; }
-    .list { margin: 0; padding: 0; list-style: none; }
-    .list li { display: grid; grid-template-columns: 14px 1fr; gap: 16px; padding: 18px 0; border-top: 1px solid var(--line); }
-    .list li:last-child { border-bottom: 1px solid var(--line); }
-    .dot { width: 14px; height: 14px; border-radius: 50%; margin-top: 6px; }
-    .list strong { display: block; font-weight: 600; font-size: 18px; }
-    .list span { color: var(--muted); }
-
-    /* Install steps: a real sequence */
-    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin: 0 0 56px; padding: 0; list-style: none; counter-reset: step; }
-    .steps li { counter-increment: step; }
-    .steps li::before {
-      content: counter(step); display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%;
-      background: var(--panel); border: 1px solid var(--line); font: 700 19px/1 "Bricolage Grotesque", sans-serif; margin-bottom: 16px;
+    /* Live Squad Call Pill placed below lead */
+    .squad-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-surface);
+      padding: 8px 16px 8px 10px;
+      border-radius: var(--radius-full);
+      margin-bottom: 28px;
     }
-    .steps h3 { font: 700 21px/1.25 "Bricolage Grotesque", sans-serif; margin: 0 0 8px; }
-    .steps p { color: var(--muted); margin: 0; }
-    .install { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
-    .note { background: var(--panel); border-radius: var(--radius-sm); padding: 22px 24px; }
-    .note h3 { font: 700 19px/1.3 "Bricolage Grotesque", sans-serif; margin: 0 0 8px; }
-    .note p { margin: 0 0 10px; color: var(--muted); }
-    .note p:last-child { margin: 0; }
-    .note b { color: var(--text); font-weight: 600; }
-    details { margin-top: 18px; color: var(--muted); }
-    summary { cursor: pointer; color: var(--text); font-weight: 500; }
-    code { display: block; margin-top: 10px; padding: 12px 14px; background: var(--deep); border-radius: 8px; color: var(--text); font-size: 14px; overflow-x: auto; white-space: nowrap; }
-    .installer-shot { border-radius: var(--radius-sm); box-shadow: 0 24px 60px -24px rgba(5, 8, 30, .9); }
-
-    footer { padding: 40px 0 56px; color: var(--muted); font-size: 15px; display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; }
-
-    @media (max-width: 900px) {
-      .hero, .features, .install { grid-template-columns: 1fr; gap: 40px; }
-      .hero { padding-top: 24px; }
-      .hero .shot { transform: none; }
-      .steps { grid-template-columns: 1fr; gap: 28px; }
-      section { padding: 64px 0; }
+    .avatar-stack {
+      display: flex;
+      align-items: center;
     }
-    @media (max-width: 560px) {
-      .top nav { display: none; }
-      .circle { transform: scale(.8); transform-origin: left center; margin-bottom: 14px; }
-      .lead { font-size: 18px; }
-      .btn { width: 100%; justify-content: center; }
+    .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-full);
+      display: grid;
+      place-items: center;
+      font: 700 var(--fs-small)/1 "Bricolage Grotesque", sans-serif;
+      color: #ffffff;
+      margin-left: -6px;
+      position: relative;
     }
+    .avatar:first-child { margin-left: 0; }
+    .avatar.bia { background: var(--squad-bia); z-index: 1; }
+    .avatar.leo { background: var(--squad-leo); z-index: 2; }
+    .avatar.nina { background: var(--squad-nina); z-index: 3; }
+    .avatar.vc { background: var(--squad-vc); z-index: 4; }
+    .avatar.speaking {
+      outline: 2px solid var(--voice-green);
+      outline-offset: 1px;
+    }
+    .status-text {
+      font-size: var(--fs-small);
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--voice-green);
+      display: inline-block;
+      animation: live-pulse 2s infinite ease-in-out;
+    }
+
+    /* Primary CTA */
+    .cta-cluster {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      align-items: flex-start;
+    }
+    .btn-download {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font: 700 var(--fs-body)/1 "Figtree", sans-serif;
+      padding: 18px 32px;
+      border-radius: var(--radius-full);
+      transition: background 0.15s ease, transform 0.15s ease;
+      min-height: 56px;
+    }
+    .btn-download:hover {
+      background: var(--accent-hover);
+      transform: translateY(-2px);
+    }
+    .btn-download:active {
+      background: var(--accent-active);
+      transform: translateY(0);
+    }
+    .btn-download svg {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    .download-meta {
+      font-size: var(--fs-small);
+      color: var(--text-muted);
+      margin: 0;
+      line-height: 1.5;
+    }
+    .download-meta strong {
+      color: var(--text-main);
+    }
+
+    /* Hero Media Frame */
+    .hero-media {
+      background: var(--bg-surface);
+      border-radius: var(--radius-lg);
+      padding: 12px;
+    }
+    .app-screen {
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .app-screen img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    /* Section Structure */
+    .section {
+      padding: 88px 0;
+    }
+    .section-alt {
+      background: var(--bg-surface);
+    }
+    .section-header {
+      margin-bottom: 48px;
+      max-width: 680px;
+    }
+    h2 {
+      font: 700 var(--fs-title)/1.15 "Bricolage Grotesque", sans-serif;
+      letter-spacing: -0.02em;
+      margin: 0 0 14px;
+      color: var(--text-main);
+    }
+    .section-desc {
+      font-size: var(--fs-body);
+      color: var(--text-muted);
+      margin: 0;
+      line-height: 1.55;
+    }
+
+    /* Features Split Showcase */
+    .features-showcase {
+      display: grid;
+      grid-template-columns: 1fr 1.1fr;
+      gap: 40px;
+      align-items: start;
+    }
+    .features-list {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    .feature-item {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .feature-item h3 {
+      font: 700 var(--fs-card)/1.25 "Bricolage Grotesque", sans-serif;
+      margin: 0;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .feature-tag {
+      font: 600 var(--fs-small)/1 "Figtree", sans-serif;
+      padding: 4px 10px;
+      border-radius: var(--radius-full);
+      background: var(--bg-subtle);
+      color: var(--text-muted);
+    }
+    .feature-item p {
+      margin: 0;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    /* Interactive Live Voice Bar [data-ui] */
+    .interactive-side {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .live-demo-card {
+      background: var(--bg-elevated);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 300px;
+      min-height: 200px;
+    }
+    .live-demo-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .live-demo-title {
+      font: 700 var(--fs-body)/1 "Bricolage Grotesque", sans-serif;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .live-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--voice-green);
+    }
+    .live-demo-vol-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: var(--bg-surface);
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
+    }
+    .user-tag {
+      font-weight: 600;
+      color: var(--text-main);
+      font-size: var(--fs-small);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .user-mini-avatar {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: var(--fs-small);
+      font-weight: 700;
+      color: #fff;
+    }
+    .vol-slider-wrap {
+      flex: 1;
+      max-width: 160px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .vol-bar {
+      height: 6px;
+      flex: 1;
+      background: var(--bg-subtle);
+      border-radius: 3px;
+      overflow: hidden;
+      position: relative;
+    }
+    .vol-fill {
+      height: 100%;
+      width: 85%;
+      background: var(--voice-green);
+      border-radius: 3px;
+    }
+    .vol-val {
+      font-size: var(--fs-small);
+      font-weight: 600;
+      color: var(--text-muted);
+      width: 32px;
+      text-align: right;
+    }
+    .mute-key-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-subtle);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      font-size: var(--fs-small);
+      font-weight: 600;
+    }
+    .key-cap {
+      background: var(--bg-surface);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    /* Chat Picture Card outside data-ui */
+    .chat-media-card {
+      background: var(--bg);
+      border-radius: var(--radius-lg);
+      padding: 12px;
+    }
+
+    /* Installation Steps */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-bottom: 48px;
+    }
+    .step-card {
+      background: var(--bg-surface);
+      border-radius: var(--radius-lg);
+      padding: 28px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .step-number {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-full);
+      background: var(--bg-elevated);
+      color: var(--text-main);
+      display: grid;
+      place-items: center;
+      font: 700 var(--fs-body)/1 "Bricolage Grotesque", sans-serif;
+    }
+    .step-card h3 {
+      font: 700 var(--fs-card)/1.25 "Bricolage Grotesque", sans-serif;
+      margin: 0;
+      color: var(--text-main);
+    }
+    .step-card p {
+      margin: 0;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+    .step-card strong {
+      color: var(--text-main);
+    }
+
+    /* Install Details Split */
+    .install-details {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 36px;
+      align-items: center;
+    }
+    .installer-box {
+      background: var(--bg-surface);
+      border-radius: var(--radius-lg);
+      padding: 12px;
+    }
+    .installer-box img {
+      border-radius: var(--radius-md);
+      width: 100%;
+    }
+
+    /* SmartScreen Notice */
+    .smartscreen-alert {
+      background: var(--bg-surface);
+      border-radius: var(--radius-lg);
+      padding: 26px 28px;
+      margin-bottom: 24px;
+    }
+    .smartscreen-alert h3 {
+      font: 700 var(--fs-card)/1.3 "Bricolage Grotesque", sans-serif;
+      margin: 0 0 10px;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .smartscreen-alert p {
+      margin: 0 0 10px;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+    .smartscreen-alert p:last-child {
+      margin-bottom: 0;
+    }
+    .smartscreen-alert strong {
+      color: var(--text-main);
+    }
+
+    /* Accordion / Secondary Options */
+    .secondary-options {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .option-card {
+      background: var(--bg-surface);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+    .option-card summary {
+      padding: 18px 22px;
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--text-main);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+      font-size: var(--fs-body);
+    }
+    .option-card summary::-webkit-details-marker { display: none; }
+    .option-card summary::after {
+      content: "+";
+      font-size: var(--fs-card);
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .option-card[open] summary::after {
+      content: "−";
+    }
+    .option-content {
+      padding: 0 22px 20px;
+      color: var(--text-muted);
+      line-height: 1.55;
+      font-size: var(--fs-body);
+    }
+    .option-content p {
+      margin: 0 0 12px;
+    }
+    .option-content p:last-child {
+      margin: 0;
+    }
+
+    /* PowerShell CLI Block */
+    .cmd-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--bg);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      margin-top: 10px;
+    }
+    .cmd-code {
+      font-family: inherit;
+      font-size: var(--fs-small);
+      color: var(--text-main);
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .btn-copy {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-subtle);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: var(--fs-small);
+      font-weight: 600;
+      transition: background 0.15s ease;
+      flex-shrink: 0;
+    }
+    .btn-copy:hover {
+      background: var(--bg-elevated);
+    }
+
+    /* Final CTA Banner */
+    .final-cta {
+      background: var(--bg-surface);
+      border-radius: var(--radius-lg);
+      padding: 64px 40px;
+      text-align: center;
+      margin-top: 48px;
+    }
+    .final-cta h2 {
+      margin-bottom: 14px;
+    }
+    .final-cta p {
+      max-width: 520px;
+      margin: 0 auto 32px;
+      color: var(--text-muted);
+      font-size: var(--fs-body);
+    }
+    .final-cta .btn-download {
+      margin-inline: auto;
+    }
+
+    /* Footer */
+    .site-footer {
+      padding: 48px 0 64px;
+      color: var(--text-muted);
+      font-size: var(--fs-small);
+    }
+    .footer-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .footer-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      color: var(--text-main);
+      font-size: var(--fs-body);
+    }
+
+    /* Responsive */
+    @media (max-width: 960px) {
+      .hero-grid, .features-showcase, .install-details {
+        grid-template-columns: 1fr;
+        gap: 40px;
+      }
+      .steps-grid {
+        grid-template-columns: 1fr;
+        gap: 18px;
+      }
+      .hero {
+        padding: 32px 0 64px;
+      }
+      .section {
+        padding: 64px 0;
+      }
+    }
+    @media (max-width: 580px) {
+      .nav-links { display: none; }
+      .container { width: min(100% - 32px, 1140px); }
+      .btn-download { width: 100%; }
+      .squad-status { width: 100%; justify-content: flex-start; }
+      .final-cta { padding: 44px 20px; }
+      .cmd-box { flex-direction: column; align-items: stretch; }
+      .btn-copy { justify-content: center; }
+    }
+
+    /* Reduced Motion */
     @media (prefers-reduced-motion: reduce) {
-      .head { animation: none; }
       html { scroll-behavior: auto; }
+      .animate-in { animation: none; }
+      .live-dot { animation: none; }
+      .btn-download, .nav-cta { transition: none; transform: none; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <header class="top">
-      <a class="brand" href="#"><img src="img/favicon.ico" alt="" width="30" height="30" />Huddle</a>
-      <nav aria-label="Seções">
+
+  <!-- Top Navigation -->
+  <header class="site-header animate-in delay-1">
+    <div class="container nav-row">
+      <a class="brand" href="#" aria-label="Huddle Início">
+        <img class="brand-icon" src="img/favicon.ico" alt="" width="32" height="32" />
+        Huddle
+      </a>
+      <nav class="nav-links" aria-label="Navegação principal">
         <a href="#recursos">O que tem</a>
         <a href="#instalar">Como instalar</a>
+        <a href="#powershell">PowerShell</a>
       </nav>
-    </header>
+      <a class="nav-cta" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download data-testid="download-nav">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+        <span>Baixar .exe</span>
+      </a>
+    </div>
+  </header>
 
-    <main>
-      <div class="hero">
-        <div>
-          <div class="circle" aria-hidden="true">
-            <span class="head">BI</span><span class="head talking">LÉ</span><span class="head">NI</span><span class="head">VC</span>
+  <main>
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-content">
+          <h1 class="animate-in delay-2">A call da turma.</h1>
+          <p class="lead animate-in delay-3">
+            Chat, voz limpa e transmissão de tela para jogar com os amigos no servidor de vocês. Sem anúncio, sem lentidão e sem servidores de terceiros.
+          </p>
+
+          <!-- Active Squad Pill placed directly below lead -->
+          <div class="squad-status animate-in delay-4" aria-label="Quatro amigos em chamada ativa">
+            <div class="avatar-stack" aria-hidden="true">
+              <span class="avatar bia" title="Bia">BI</span>
+              <span class="avatar leo speaking" title="Léo falando">LÉ</span>
+              <span class="avatar nina" title="Nina">NI</span>
+              <span class="avatar vc" title="Você">VC</span>
+            </div>
+            <span class="status-text">
+              <span class="live-dot" aria-hidden="true"></span>
+              Léo falando na call da turma
+            </span>
           </div>
-          <h1>A call da turma, no seu PC.</h1>
-          <p class="lead">Chat, voz e tela compartilhada num app só seu e dos seus amigos. Sem anúncio, sem servidor de estranho.</p>
-          <div class="get">
-            <a class="btn" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download data-testid="download">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
-              Baixar para Windows
+
+          <div class="cta-cluster animate-in delay-5">
+            <a class="btn-download" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download data-testid="download">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+              <span>Baixar para Windows</span>
             </a>
-            <p class="meta" id="version-line">Windows 10 e 11, 64 bits<br />O instalador baixa cerca de 120 MB</p>
+            <p class="download-meta" id="version-line">
+              <strong>Windows 10 e 11, 64 bits</strong> · Instalador baixa cerca de 120 MB
+            </p>
           </div>
         </div>
-        <img class="shot" src="img/call.png" width="1440" height="860" alt="Uma call no Huddle com quatro pessoas e o chat da call aberto ao lado" />
-      </div>
-    </main>
-  </div>
 
-  <section class="band" id="recursos">
-    <div class="wrap">
-      <h2>Tudo que a turma usa numa noite de jogo</h2>
-      <p class="intro">Servidores com canais de texto e de voz, do jeito que vocês já conhecem, rodando no servidor da própria turma.</p>
-      <div class="features">
-        <ul class="list">
-          <li><i class="dot" style="background:var(--leo)"></i><div><strong>Voz limpa</strong><span>Supressão de ruído, controle de volume da call e de cada pessoa, e atalho de uma tecla para mutar.</span></div></li>
-          <li><i class="dot" style="background:var(--bia)"></i><div><strong>Várias telas ao mesmo tempo</strong><span>Mais de uma pessoa pode transmitir com som, e o som do seu microfone não volta pela transmissão dos outros.</span></div></li>
-          <li><i class="dot" style="background:var(--nina)"></i><div><strong>Chat completo, na call também</strong><span>Responder, reagir, editar, apagar, mencionar com @ e enviar vídeo e áudio que tocam ali mesmo.</span></div></li>
-          <li><i class="dot" style="background:var(--you)"></i><div><strong>Perfis do seu jeito</strong><span>GIF no avatar e no banner, cargos com cor no servidor e status de quem está online.</span></div></li>
-          <li><i class="dot" style="background:var(--coral)"></i><div><strong>Atualiza sozinho</strong><span>Quando sai versão nova, o app avisa e se atualiza com um clique, sem perder contas nem configurações.</span></div></li>
-        </ul>
-        <img class="shot" src="img/chat.png" width="1440" height="860" alt="O canal de texto de um servidor no Huddle, com mensagens e reações" loading="lazy" />
-      </div>
-    </div>
-  </section>
-
-  <section id="instalar">
-    <div class="wrap">
-      <h2>Como instalar</h2>
-      <p class="intro">Não precisa abrir PowerShell nem digitar comando.</p>
-      <ol class="steps">
-        <li><h3>Baixe o instalador</h3><p>Clique em <b>Baixar para Windows</b> e abra o <b>Instalar-Huddle.exe</b> quando o download terminar.</p></li>
-        <li><h3>Escolha a pasta</h3><p>Use <b>Procurar...</b> para escolher onde o Huddle vai ficar, ou deixe a pasta sugerida. Marque os atalhos que quiser.</p></li>
-        <li><h3>Clique em Instalar</h3><p>O instalador baixa o app, confere se o arquivo chegou inteiro e abre o Huddle quando terminar.</p></li>
-      </ol>
-      <div class="install">
-        <img class="installer-shot" src="img/instalador.png" alt="Janela do instalador do Huddle, com a pasta de instalação e as opções de atalho" loading="lazy" />
-        <div>
-          <div class="note">
-            <h3>Se o Windows mostrar "O Windows protegeu o computador"</h3>
-            <p>Isso aparece porque o instalador é novo e não tem assinatura paga da Microsoft, não porque ele tem vírus.</p>
-            <p>Clique em <b>Mais informações</b> e depois em <b>Executar assim mesmo</b>.</p>
+        <div class="hero-media animate-in delay-6">
+          <div class="app-screen">
+            <img src="img/call.png" width="1440" height="860" alt="Interface de chamada no Huddle com quatro pessoas e painel lateral de chat ativo" />
           </div>
-          <details>
-            <summary>Já tem o app instalado?</summary>
-            <p>Abra o instalador e clique em <b>Atualizar</b>: ele encontra a pasta onde o app está e troca só os arquivos do programa. Para remover, use <b>Configurações &gt; Aplicativos &gt; Aplicativos instalados &gt; Huddle</b>.</p>
-          </details>
-          <details>
-            <summary>Prefere instalar por comando?</summary>
-            <p>No PowerShell, rode:</p>
-            <code>irm https://129-159-51-96.sslip.io/download/install.ps1 | iex</code>
-          </details>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <div class="wrap">
-    <footer>
-      <span>Huddle, o app da turma.</span>
-      <span id="version-footer"></span>
-    </footer>
-  </div>
+    <!-- Features Section -->
+    <section class="section section-alt" id="recursos">
+      <div class="container">
+        <div class="section-header animate-in delay-7">
+          <h2>Tudo pronto para a gameplay da noite</h2>
+          <p class="section-desc">
+            Canais de texto, voz rápida e transmissão fluida com a autonomia de rodar no próprio servidor da turma.
+          </p>
+        </div>
+
+        <div class="features-showcase">
+          <div class="features-list">
+            <div class="feature-item animate-in delay-8">
+              <h3>Voz limpa e sem eco <span class="feature-tag">Áudio</span></h3>
+              <p>Supressão de ruído nativa, controle de volume individual para cada amigo na call e atalho de uma tecla para mutar na hora.</p>
+            </div>
+
+            <div class="feature-item animate-in delay-9">
+              <h3>Telas simultâneas com som <span class="feature-tag">Transmissão</span></h3>
+              <p>Várias pessoas podem transmitir suas partidas ao mesmo tempo com som do jogo, sem o microfone voltar como eco na transmissão dos outros.</p>
+            </div>
+
+            <div class="feature-item animate-in delay-10">
+              <h3>Chat completo dentro da call <span class="feature-tag">Mensagens</span></h3>
+              <p>Responder, reagir com emojis, editar, apagar, mencionar com @ e reproduzir arquivos de áudio e vídeo diretamente na conversa.</p>
+            </div>
+
+            <div class="feature-item animate-in delay-11">
+              <h3>Perfis com a cara de cada um <span class="feature-tag">Personalização</span></h3>
+              <p>Avatares e banners em GIF liberados, cargos com cores personalizadas no servidor e indicador de quem está online.</p>
+            </div>
+
+            <div class="feature-item animate-in delay-12">
+              <h3>Atualização automática <span class="feature-tag">Praticidade</span></h3>
+              <p>Quando sai uma versão nova, o app avisa e atualiza com um único clique, preservando todas as suas contas e preferências.</p>
+            </div>
+          </div>
+
+          <div class="interactive-side">
+            <!-- Real Interactive Live Interface Preview [data-ui] -->
+            <div class="live-demo-card" data-ui>
+              <div class="live-demo-header">
+                <span class="live-demo-title">
+                  <span class="live-indicator" aria-hidden="true"></span>
+                  Controles rápidos da chamada
+                </span>
+                <span class="mute-key-badge">Mudo: <span class="key-cap">F8</span></span>
+              </div>
+
+              <div class="live-demo-vol-row">
+                <span class="user-tag">
+                  <span class="user-mini-avatar" style="background:var(--squad-bia);">BI</span>
+                  Bia
+                </span>
+                <div class="vol-slider-wrap" aria-label="Volume de Bia: 85%">
+                  <div class="vol-bar"><div class="vol-fill" style="width:85%;"></div></div>
+                  <span class="vol-val">85%</span>
+                </div>
+              </div>
+
+              <div class="live-demo-vol-row">
+                <span class="user-tag">
+                  <span class="user-mini-avatar" style="background:var(--squad-leo);">LÉ</span>
+                  Léo
+                </span>
+                <div class="vol-slider-wrap" aria-label="Volume de Léo: 100%">
+                  <div class="vol-bar"><div class="vol-fill" style="width:100%; background:var(--accent);"></div></div>
+                  <span class="vol-val">100%</span>
+                </div>
+              </div>
+
+              <div class="live-demo-vol-row">
+                <span class="user-tag">
+                  <span class="user-mini-avatar" style="background:var(--squad-nina);">NI</span>
+                  Nina
+                </span>
+                <div class="vol-slider-wrap" aria-label="Volume de Nina: 60%">
+                  <div class="vol-bar"><div class="vol-fill" style="width:60%;"></div></div>
+                  <span class="vol-val">60%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chat real screenshot outside data-ui -->
+            <div class="chat-media-card">
+              <div class="app-screen">
+                <img src="img/chat.png" width="1440" height="860" alt="Canal de texto no Huddle com histórico de mensagens, reações e prévia de mídia" loading="lazy" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Installation Section -->
+    <section class="section" id="instalar">
+      <div class="container">
+        <div class="section-header">
+          <h2>Instalação simples no seu Windows</h2>
+          <p class="section-desc">
+            Três passos rápidos para entrar na sala. Sem configurações complicadas nem permissões desnecessárias.
+          </p>
+        </div>
+
+        <div class="steps-grid">
+          <div class="step-card">
+            <span class="step-number" aria-hidden="true">1</span>
+            <h3>Baixe o arquivo</h3>
+            <p>Clique em <strong>Baixar para Windows</strong> para receber o <strong>Instalar-Huddle.exe</strong> oficial.</p>
+          </div>
+          <div class="step-card">
+            <span class="step-number" aria-hidden="true">2</span>
+            <h3>Escolha a pasta</h3>
+            <p>Abra o instalador, escolha onde salvar pelo botão <strong>Procurar...</strong> (ou mantenha a pasta sugerida) e marque seus atalhos.</p>
+          </div>
+          <div class="step-card">
+            <span class="step-number" aria-hidden="true">3</span>
+            <h3>Clique em Instalar</h3>
+            <p>O instalador baixa o app, valida os arquivos com segurança e abre o Huddle pronto para o login.</p>
+          </div>
+        </div>
+
+        <div class="install-details">
+          <div class="installer-box">
+            <img src="img/instalador.png" alt="Janela do instalador do Huddle mostrando o caminho da pasta e as opções de atalho" loading="lazy" />
+          </div>
+
+          <div>
+            <div class="smartscreen-alert">
+              <h3>
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                Se aparecer "O Windows protegeu o computador"
+              </h3>
+              <p>
+                Esse aviso do Windows SmartScreen é normal em versões novas de programas independentes que ainda não compraram certificados corporativos pagos da Microsoft. O arquivo é 100% seguro.
+              </p>
+              <p>
+                Para continuar: clique em <strong>Mais informações</strong> e depois em <strong>Executar assim mesmo</strong>.
+              </p>
+            </div>
+
+            <div class="secondary-options">
+              <details class="option-card">
+                <summary>Já tem o Huddle instalado no computador?</summary>
+                <div class="option-content">
+                  <p>Basta abrir o instalador e clicar em <strong>Atualizar</strong>: ele reconhece a pasta anterior e atualiza apenas os arquivos necessários, mantendo todas as suas conversas e credenciais intactas.</p>
+                  <p>Para desinstalar no futuro: acesse <strong>Configurações &gt; Aplicativos &gt; Aplicativos instalados &gt; Huddle</strong>.</p>
+                </div>
+              </details>
+
+              <details class="option-card" id="powershell">
+                <summary>Prefere instalar direto pelo PowerShell?</summary>
+                <div class="option-content">
+                  <p>Copie e cole o comando abaixo no terminal do PowerShell:</p>
+                  <div class="cmd-box">
+                    <code class="cmd-code" id="ps-cmd">irm https://129-159-51-96.sslip.io/download/install.ps1 | iex</code>
+                    <button class="btn-copy" type="button" id="copy-btn" aria-label="Copiar comando PowerShell">
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      <span id="copy-label">Copiar</span>
+                    </button>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom CTA -->
+        <div class="final-cta">
+          <h2>Pronto para reunir os amigos?</h2>
+          <p>Baixe o Huddle para Windows e entre na call agora mesmo.</p>
+          <a class="btn-download" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+            <span>Baixar para Windows</span>
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container footer-row">
+      <div class="footer-brand">
+        <img src="img/favicon.ico" alt="" width="20" height="20" />
+        <span>Huddle · A call da turma</span>
+      </div>
+      <div id="version-footer">
+        Compatível com Windows 10 e 11 (64 bits)
+      </div>
+    </div>
+  </footer>
 
   <script>
-    // The newest version comes from the same file the app checks for updates
+    // 1. Dynamic version check from server with offline fallback
     fetch("https://129-159-51-96.sslip.io/download/version.json", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((v) => {
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(v) {
         if (!v || !v.version) return;
-        document.getElementById("version-line").innerHTML =
-          "Versão " + v.version.replace(/[^0-9.]/g, "") + " para Windows 10 e 11, 64 bits<br />O instalador baixa cerca de 120 MB";
-        document.getElementById("version-footer").textContent = "Versão atual: " + v.version.replace(/[^0-9.]/g, "");
+        var cleanVer = v.version.replace(/[^0-9.]/g, "");
+        var metaEl = document.getElementById("version-line");
+        if (metaEl) {
+          metaEl.innerHTML = "<strong>Versão " + cleanVer + " para Windows 10 e 11, 64 bits</strong> · Instalador baixa cerca de 120 MB";
+        }
+        var footEl = document.getElementById("version-footer");
+        if (footEl) {
+          footEl.textContent = "Versão " + cleanVer + " oficial · Windows 10 e 11 (64 bits)";
+        }
       })
-      .catch(() => {});
+      .catch(function() {
+        // Fallback default message is already in HTML markup
+      });
+
+    // 2. PowerShell copy button with instant visual feedback
+    var copyBtn = document.getElementById("copy-btn");
+    var copyLabel = document.getElementById("copy-label");
+    var psCmd = document.getElementById("ps-cmd");
+
+    if (copyBtn && copyLabel && psCmd) {
+      copyBtn.addEventListener("click", function() {
+        var text = psCmd.textContent.trim();
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
+        } else {
+          fallbackCopy();
+        }
+
+        function showCopied() {
+          copyLabel.textContent = "Copiado!";
+          copyBtn.style.background = "var(--voice-green)";
+          copyBtn.style.color = "#ffffff";
+          setTimeout(function() {
+            copyLabel.textContent = "Copiar";
+            copyBtn.style.background = "";
+            copyBtn.style.color = "";
+          }, 2200);
+        }
+
+        function fallbackCopy() {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand("copy");
+            showCopied();
+          } catch(e) {}
+          document.body.removeChild(ta);
+        }
+      });
+    }
   </script>
 </body>
 </html>
