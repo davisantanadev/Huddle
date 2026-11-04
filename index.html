@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Huddle: a call da turma</title>
+  <meta name="description" content="Huddle é o app de chat, voz e compartilhamento de tela da turma. Baixe o instalador para Windows." />
+  <link rel="icon" href="img/favicon.ico" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --night: #1b2140;
+      --deep: #141832;
+      --panel: #252c52;
+      --line: #343c6b;
+      --text: #eef0f7;
+      --muted: #a9aecb;
+      --coral: #ff7a45;
+      --coral-press: #f0632b;
+      --bia: #e8743b;
+      --leo: #2fa37a;
+      --nina: #c2459a;
+      --you: #5865f2;
+      --radius-lg: 22px;
+      --radius-sm: 10px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--night);
+      color: var(--text);
+      font: 400 17px/1.6 "Figtree", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    img { max-width: 100%; height: auto; display: block; }
+    a { color: inherit; }
+    :focus-visible { outline: 3px solid var(--coral); outline-offset: 3px; border-radius: 6px; }
+    .wrap { width: min(1160px, 100% - 32px); margin-inline: auto; }
+
+    /* Top bar */
+    .top { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+    .brand { display: flex; align-items: center; gap: 10px; font: 800 22px/1 "Bricolage Grotesque", sans-serif; text-decoration: none; }
+    .brand img { width: 30px; height: 30px; }
+    .top nav { display: flex; gap: 22px; font-weight: 500; color: var(--muted); }
+    .top nav a { text-decoration: none; }
+    .top nav a:hover { color: var(--text); }
+
+    /* Hero: the huddle itself is the picture */
+    .hero { display: grid; grid-template-columns: 1fr 1.15fr; gap: 56px; align-items: center; padding: 48px 0 88px; }
+    .circle { position: relative; width: 260px; height: 120px; margin-bottom: 26px; }
+    .head {
+      position: absolute; top: 20px; width: 78px; height: 78px; border-radius: 50%;
+      display: grid; place-items: center; font: 700 24px/1 "Bricolage Grotesque", sans-serif; color: #fff;
+      border: 5px solid var(--night);
+      animation: gather 900ms cubic-bezier(.2,.9,.25,1.15) both;
+    }
+    .head:nth-child(1) { left: 0; background: var(--bia); --from: -60px; animation-delay: 60ms; }
+    .head:nth-child(2) { left: 60px; background: var(--leo); --from: -24px; animation-delay: 140ms; }
+    .head:nth-child(3) { left: 120px; background: var(--nina); --from: 24px; animation-delay: 220ms; }
+    .head:nth-child(4) { left: 180px; background: var(--you); --from: 60px; animation-delay: 300ms; }
+    .head.talking { box-shadow: 0 0 0 4px var(--night), 0 0 0 7px #3ba55d; }
+    @keyframes gather { from { opacity: 0; transform: translateX(var(--from)) scale(.7); } }
+    h1 {
+      font: 800 clamp(48px, 7.4vw, 92px)/.95 "Bricolage Grotesque", sans-serif;
+      letter-spacing: -0.035em; margin: 0 0 22px;
+    }
+    .lead { font-size: 20px; color: var(--muted); max-width: 30ch; margin: 0 0 34px; }
+    .get { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 12px; padding: 17px 28px; border-radius: 999px;
+      background: var(--coral); color: #1b1230; font: 700 18px/1 "Figtree", sans-serif; text-decoration: none;
+      transition: background-color .15s, transform .15s;
+    }
+    .btn:hover { background: var(--coral-press); }
+    .btn:active { transform: scale(.98); }
+    .btn svg { width: 22px; height: 22px; }
+    .meta { color: var(--muted); font-size: 15px; line-height: 1.45; }
+    .shot {
+      border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--line);
+      box-shadow: 0 30px 80px -30px rgba(5, 8, 30, .8);
+    }
+    .hero .shot { transform: rotate(1.2deg); }
+
+    /* What it does */
+    section { padding: 88px 0; }
+    .band { background: var(--deep); }
+    h2 { font: 700 clamp(32px, 4.4vw, 50px)/1.05 "Bricolage Grotesque", sans-serif; letter-spacing: -0.02em; margin: 0 0 18px; }
+    .intro { color: var(--muted); max-width: 56ch; margin: 0 0 48px; }
+    .features { display: grid; grid-template-columns: 1.2fr 1fr; gap: 56px; align-items: start; }
+    .list { margin: 0; padding: 0; list-style: none; }
+    .list li { display: grid; grid-template-columns: 14px 1fr; gap: 16px; padding: 18px 0; border-top: 1px solid var(--line); }
+    .list li:last-child { border-bottom: 1px solid var(--line); }
+    .dot { width: 14px; height: 14px; border-radius: 50%; margin-top: 6px; }
+    .list strong { display: block; font-weight: 600; font-size: 18px; }
+    .list span { color: var(--muted); }
+
+    /* Install steps: a real sequence */
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin: 0 0 56px; padding: 0; list-style: none; counter-reset: step; }
+    .steps li { counter-increment: step; }
+    .steps li::before {
+      content: counter(step); display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%;
+      background: var(--panel); border: 1px solid var(--line); font: 700 19px/1 "Bricolage Grotesque", sans-serif; margin-bottom: 16px;
+    }
+    .steps h3 { font: 700 21px/1.25 "Bricolage Grotesque", sans-serif; margin: 0 0 8px; }
+    .steps p { color: var(--muted); margin: 0; }
+    .install { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+    .note { background: var(--panel); border-radius: var(--radius-sm); padding: 22px 24px; }
+    .note h3 { font: 700 19px/1.3 "Bricolage Grotesque", sans-serif; margin: 0 0 8px; }
+    .note p { margin: 0 0 10px; color: var(--muted); }
+    .note p:last-child { margin: 0; }
+    .note b { color: var(--text); font-weight: 600; }
+    details { margin-top: 18px; color: var(--muted); }
+    summary { cursor: pointer; color: var(--text); font-weight: 500; }
+    code { display: block; margin-top: 10px; padding: 12px 14px; background: var(--deep); border-radius: 8px; color: var(--text); font-size: 14px; overflow-x: auto; white-space: nowrap; }
+    .installer-shot { border-radius: var(--radius-sm); box-shadow: 0 24px 60px -24px rgba(5, 8, 30, .9); }
+
+    footer { padding: 40px 0 56px; color: var(--muted); font-size: 15px; display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; }
+
+    @media (max-width: 900px) {
+      .hero, .features, .install { grid-template-columns: 1fr; gap: 40px; }
+      .hero { padding-top: 24px; }
+      .hero .shot { transform: none; }
+      .steps { grid-template-columns: 1fr; gap: 28px; }
+      section { padding: 64px 0; }
+    }
+    @media (max-width: 560px) {
+      .top nav { display: none; }
+      .circle { transform: scale(.8); transform-origin: left center; margin-bottom: 14px; }
+      .lead { font-size: 18px; }
+      .btn { width: 100%; justify-content: center; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .head { animation: none; }
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a class="brand" href="#"><img src="img/favicon.ico" alt="" width="30" height="30" />Huddle</a>
+      <nav aria-label="Seções">
+        <a href="#recursos">O que tem</a>
+        <a href="#instalar">Como instalar</a>
+      </nav>
+    </header>
+
+    <main>
+      <div class="hero">
+        <div>
+          <div class="circle" aria-hidden="true">
+            <span class="head">BI</span><span class="head talking">LÉ</span><span class="head">NI</span><span class="head">VC</span>
+          </div>
+          <h1>A call da turma, no seu PC.</h1>
+          <p class="lead">Chat, voz e tela compartilhada num app só seu e dos seus amigos. Sem anúncio, sem servidor de estranho.</p>
+          <div class="get">
+            <a class="btn" href="Instalar-Huddle.exe" download data-testid="download">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+              Baixar para Windows
+            </a>
+            <p class="meta" id="version-line">Windows 10 e 11, 64 bits<br />O instalador baixa cerca de 120 MB</p>
+          </div>
+        </div>
+        <img class="shot" src="img/call.png" width="1440" height="860" alt="Uma call no Huddle com quatro pessoas e o chat da call aberto ao lado" />
+      </div>
+    </main>
+  </div>
+
+  <section class="band" id="recursos">
+    <div class="wrap">
+      <h2>Tudo que a turma usa numa noite de jogo</h2>
+      <p class="intro">Servidores com canais de texto e de voz, do jeito que vocês já conhecem, rodando no servidor da própria turma.</p>
+      <div class="features">
+        <ul class="list">
+          <li><i class="dot" style="background:var(--leo)"></i><div><strong>Voz limpa</strong><span>Supressão de ruído, controle de volume da call e de cada pessoa, e atalho de uma tecla para mutar.</span></div></li>
+          <li><i class="dot" style="background:var(--bia)"></i><div><strong>Várias telas ao mesmo tempo</strong><span>Mais de uma pessoa pode transmitir com som, e o som do seu microfone não volta pela transmissão dos outros.</span></div></li>
+          <li><i class="dot" style="background:var(--nina)"></i><div><strong>Chat completo, na call também</strong><span>Responder, reagir, editar, apagar, mencionar com @ e enviar vídeo e áudio que tocam ali mesmo.</span></div></li>
+          <li><i class="dot" style="background:var(--you)"></i><div><strong>Perfis do seu jeito</strong><span>GIF no avatar e no banner, cargos com cor no servidor e status de quem está online.</span></div></li>
+          <li><i class="dot" style="background:var(--coral)"></i><div><strong>Atualiza sozinho</strong><span>Quando sai versão nova, o app avisa e se atualiza com um clique, sem perder contas nem configurações.</span></div></li>
+        </ul>
+        <img class="shot" src="img/chat.png" width="1440" height="860" alt="O canal de texto de um servidor no Huddle, com mensagens e reações" loading="lazy" />
+      </div>
+    </div>
+  </section>
+
+  <section id="instalar">
+    <div class="wrap">
+      <h2>Como instalar</h2>
+      <p class="intro">Não precisa abrir PowerShell nem digitar comando.</p>
+      <ol class="steps">
+        <li><h3>Baixe o instalador</h3><p>Clique em <b>Baixar para Windows</b> e abra o <b>Instalar-Huddle.exe</b> quando o download terminar.</p></li>
+        <li><h3>Escolha a pasta</h3><p>Use <b>Procurar...</b> para escolher onde o Huddle vai ficar, ou deixe a pasta sugerida. Marque os atalhos que quiser.</p></li>
+        <li><h3>Clique em Instalar</h3><p>O instalador baixa o app, confere se o arquivo chegou inteiro e abre o Huddle quando terminar.</p></li>
+      </ol>
+      <div class="install">
+        <img class="installer-shot" src="img/instalador.png" alt="Janela do instalador do Huddle, com a pasta de instalação e as opções de atalho" loading="lazy" />
+        <div>
+          <div class="note">
+            <h3>Se o Windows mostrar "O Windows protegeu o computador"</h3>
+            <p>Isso aparece porque o instalador é novo e não tem assinatura paga da Microsoft, não porque ele tem vírus.</p>
+            <p>Clique em <b>Mais informações</b> e depois em <b>Executar assim mesmo</b>.</p>
+          </div>
+          <details>
+            <summary>Já tem o app instalado?</summary>
+            <p>Abra o instalador e clique em <b>Atualizar</b>: ele encontra a pasta onde o app está e troca só os arquivos do programa. Para remover, use <b>Configurações &gt; Aplicativos &gt; Aplicativos instalados &gt; Huddle</b>.</p>
+          </details>
+          <details>
+            <summary>Prefere instalar por comando?</summary>
+            <p>No PowerShell, rode:</p>
+            <code>irm https://129-159-51-96.sslip.io/download/install.ps1 | iex</code>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <footer>
+      <span>Huddle, o app da turma.</span>
+      <span id="version-footer"></span>
+    </footer>
+  </div>
+
+  <script>
+    // The newest version comes from the same file the app checks for updates
+    fetch("version.json", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((v) => {
+        if (!v || !v.version) return;
+        document.getElementById("version-line").innerHTML =
+          "Versão " + v.version.replace(/[^0-9.]/g, "") + " para Windows 10 e 11, 64 bits<br />O instalador baixa cerca de 120 MB";
+        document.getElementById("version-footer").textContent = "Versão atual: " + v.version.replace(/[^0-9.]/g, "");
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>
