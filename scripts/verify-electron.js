@@ -2077,8 +2077,8 @@ async function runVerification() {
   // Signaling stays private: a third party cannot send setup messages into the call
   const outsiderBlocked = await mainWin.webContents.executeJavaScript(`(async () => {
     const backend = window.DiscordNative.backend;
-    await backend.rpc("register", { email: "intruso@exemplo.com", username: "intruso", displayName: "Intruso", password: "senha12345" });
-    const login = await backend.rpc("login", { emailOrUsername: "intruso", password: "senha12345" });
+    await backend.rpc("register", { email: "intruso@exemplo.com", username: "intruso", displayName: "Intruso", password: "chaveIntrusa42" });
+    const login = await backend.rpc("login", { emailOrUsername: "intruso", password: "chaveIntrusa42" });
     const res = await backend.rpc("RTC_SIGNAL", { channelId: "c_voice_lounge", targetUserId: "u_davis", signalType: "offer", signalData: {} }, login.sessionToken);
     return res.ok === false;
   })()`);
@@ -2141,8 +2141,8 @@ async function runVerification() {
     };
 
     // A brand-new account starts with no servers at all
-    await backend.rpc("register", { email: "banido@exemplo.com", username: "banido", displayName: "Banido", password: "senha12345" });
-    const login = await backend.rpc("login", { emailOrUsername: "banido", password: "senha12345" });
+    await backend.rpc("register", { email: "banido@exemplo.com", username: "banido", displayName: "Banido", password: "chaveIntrusa42" });
+    const login = await backend.rpc("login", { emailOrUsername: "banido", password: "chaveIntrusa42" });
     const firstSnap = await backend.rpc("getStateSnapshot", {}, login.sessionToken);
     const newAccountEmpty = firstSnap.snapshot.guilds.length === 0;
 
@@ -2570,6 +2570,10 @@ async function runVerification() {
 }
 
 app.whenReady().then(() => {
+  // The tests trade messages between accounts: without this, every one of them
+  // popped a real Windows notification titled "electron.app.Electron"
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission !== "notifications");
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(permission !== "notifications"));
   runVerification().catch((err) => {
     console.error(err);
     process.exit(1);

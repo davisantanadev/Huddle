@@ -21,6 +21,7 @@ execFileSync(
     `/win32manifest:${path.join(root, "installer", "app.manifest")}`,
     "/r:System.Windows.Forms.dll",
     "/r:System.Drawing.dll",
+    "/r:System.Core.dll",
     "/r:System.IO.Compression.dll",
     "/r:System.IO.Compression.FileSystem.dll",
     `/out:${out}`,

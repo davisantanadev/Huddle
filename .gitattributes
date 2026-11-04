@@ -1,0 +1,2 @@
+# Scripts que rodam no servidor Linux: sempre com quebra de linha Unix
+*.sh text eol=lf

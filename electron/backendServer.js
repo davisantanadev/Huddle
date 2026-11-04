@@ -36,6 +36,45 @@ const ACTIVITY_STALE_MS = 3 * 60 * 1000;
 const PRESENCE_GRACE_MS = 10 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
+// Real-time events: the app trades its session for a one-use ticket that lives
+// this long, so the session token never goes in a URL (proxy logs, history).
+// ALLOW_LEGACY_EVENT_TOKEN=0 stops accepting ?token= from app versions <= 1.2.14.
+const EVENT_TICKET_TTL_MS = 60 * 1000;
+
+// Chat attachments ("file_*" and "attachment_*" uploads) are only served with a
+// signed, expiring link handed to the people who can see the message. Avatars,
+// banners and sounds stay public (they appear on invite pages).
+// ALLOW_UNSIGNED_UPLOADS=1 serves old unsigned links again, if ever needed.
+const PRIVATE_UPLOAD_PREFIXES = ["file_", "attachment_"];
+
+// Requests per user over a window (requests over the limit get 429). Generous
+// for people, tight enough to stop a script from flooding everyone.
+const RATE_LIMITS = {
+  all: { max: 900, windowMs: 60 * 1000 },
+  sendMessage: { max: 20, windowMs: 10 * 1000 },
+  SEND_MESSAGE: { max: 20, windowMs: 10 * 1000 },
+  uploadMedia: { max: 30, windowMs: 60 * 1000 },
+  UPLOAD_MEDIA: { max: 30, windowMs: 60 * 1000 },
+  createGuild: { max: 5, windowMs: 10 * 60 * 1000 },
+  createChannel: { max: 40, windowMs: 10 * 60 * 1000 },
+  CREATE_CHANNEL: { max: 40, windowMs: 10 * 60 * 1000 },
+  createServerInvite: { max: 40, windowMs: 10 * 60 * 1000 },
+  sendFriendRequest: { max: 40, windowMs: 10 * 60 * 1000 },
+  addFriend: { max: 40, windowMs: 10 * 60 * 1000 },
+  requestEmailVerification: { max: 10, windowMs: 10 * 60 * 1000 },
+  REQUEST_EMAIL_VERIFICATION: { max: 10, windowMs: 10 * 60 * 1000 }
+};
+// Request body cap; only uploads may be bigger (up to the 16 MB read limit)
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const LARGE_BODY_ACTIONS = new Set(["uploadMedia", "UPLOAD_MEDIA"]);
+
+// The most common passwords (refused for new accounts and password changes)
+const COMMON_PASSWORDS = new Set([
+  "12345678", "123456789", "1234567890", "password", "password1", "qwerty123", "abc12345", "senha123",
+  "senha1234", "senha12345", "11111111", "00000000", "a1b2c3d4", "iloveyou1", "admin123", "brasil123",
+  "flamengo123", "corinthians1", "palmeiras1", "q1w2e3r4", "1q2w3e4r", "qwertyuiop", "mudar123", "teste123"
+]);
+
 // Actions anyone may call without a session
 const PUBLIC_ACTIONS = new Set([
   "AUTH_LOGIN",
@@ -186,9 +225,10 @@ function maskEmail(email) {
 
 function validateNewPassword(password) {
   const pw = String(password || "");
-  if (pw.length < 8) return "A nova senha deve ter pelo menos 8 caracteres.";
-  if (pw.length > 128) return "A nova senha deve ter no máximo 128 caracteres.";
-  if (!/[a-zA-Z]/.test(pw) || !/\d/.test(pw)) return "Use letras e números na nova senha.";
+  if (pw.length < 8) return "A senha deve ter pelo menos 8 caracteres.";
+  if (pw.length > 128) return "A senha deve ter no máximo 128 caracteres.";
+  if (!/[a-zA-Z]/.test(pw) || !/\d/.test(pw)) return "Use letras e números na senha.";
+  if (COMMON_PASSWORDS.has(pw.toLowerCase())) return "Essa senha é muito comum e fácil de adivinhar. Escolha outra.";
   return null;
 }
 
@@ -316,8 +356,13 @@ class DiscordBackendServer {
     this.dataDir = dataDir;
     this.uploadsDir = path.join(dataDir, "uploads");
     fs.mkdirSync(this.uploadsDir, { recursive: true });
+    this.eventTickets = new Map(); // ticket -> { userId, expiresAt }
+    this.rateCounters = new Map(); // "userId|bucket" -> { start, count }
+    this.allowLegacyEventToken = process.env.ALLOW_LEGACY_EVENT_TOKEN !== "0";
+    this.allowUnsignedUploads = process.env.ALLOW_UNSIGNED_UPLOADS === "1";
 
     this.config = options.config || loadAppConfig();
+    this.uploadSigningKey = this.loadUploadSigningKey();
     this.dbPath = path.join(dataDir, "discord_platform_v2.sqlite");
     this.db = new DatabaseSync(this.dbPath);
     this.sseClients = new Set();
@@ -774,6 +819,104 @@ class DiscordBackendServer {
       );
 
     return { guildId, generalChannelId: chGeneralId };
+  }
+
+  // Secret for signing attachment links: from the config, or a random key kept
+  // in the data folder (created once, readable only by this user)
+  loadUploadSigningKey() {
+    const fromConfig = this.config && this.config.uploadSigningSecret;
+    if (fromConfig) return Buffer.from(String(fromConfig));
+    const keyFile = path.join(this.dataDir, "upload-signing.key");
+    try {
+      const existing = fs.readFileSync(keyFile, "utf8").trim();
+      if (existing.length >= 32) return Buffer.from(existing, "hex");
+    } catch (_) {}
+    const key = crypto.randomBytes(32);
+    try {
+      fs.writeFileSync(keyFile, key.toString("hex"), { mode: 0o600 });
+    } catch (_) {}
+    return key;
+  }
+
+  isPrivateUpload(name) {
+    return PRIVATE_UPLOAD_PREFIXES.some((p) => String(name).startsWith(p));
+  }
+
+  uploadSignature(name, exp) {
+    return crypto.createHmac("sha256", this.uploadSigningKey).update(`${name}:${exp}`).digest("hex").slice(0, 40);
+  }
+
+  // "/uploads/file_x.png" -> "/uploads/file_x.png?exp=...&sig=..." for private
+  // files. The expiry is the end of the next UTC day: the same link all day
+  // (so the app does not redraw it) and valid for 24-48 h.
+  signUploadPath(relative) {
+    const p = String(relative || "");
+    if (!p.startsWith("/uploads/")) return p;
+    const clean = p.split("?")[0];
+    const name = path.basename(clean);
+    if (!this.isPrivateUpload(name)) return clean;
+    const day = 24 * 60 * 60;
+    const exp = (Math.floor(Date.now() / 1000 / day) + 2) * day;
+    return `${clean}?exp=${exp}&sig=${this.uploadSignature(name, exp)}`;
+  }
+
+  verifyUploadAccess(name, searchParams) {
+    if (!this.isPrivateUpload(name) || this.allowUnsignedUploads) return true;
+    const exp = Number(searchParams.get("exp"));
+    const sig = String(searchParams.get("sig") || "");
+    if (!Number.isFinite(exp) || exp * 1000 < Date.now() || !/^[0-9a-f]{40}$/.test(sig)) return false;
+    const expected = this.uploadSignature(name, exp);
+    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  }
+
+  // Attachment URL as the client sent it back ("/uploads/x", or the absolute,
+  // signed link it was given) -> the plain relative path that is stored
+  normalizeStoredUploadUrl(u) {
+    const s = String(u || "");
+    const i = s.indexOf("/uploads/");
+    if (i === -1) return s;
+    return s.slice(i).split("?")[0];
+  }
+
+  // One-use ticket for the real-time event stream
+  createEventTicket(userId, sessionToken) {
+    const now = Date.now();
+    for (const [t, v] of this.eventTickets) if (v.expiresAt <= now) this.eventTickets.delete(t);
+    const ticket = crypto.randomBytes(24).toString("base64url");
+    this.eventTickets.set(ticket, { userId, sessionHash: hashSessionToken(sessionToken), expiresAt: now + EVENT_TICKET_TTL_MS });
+    return ticket;
+  }
+
+  consumeEventTicket(ticket) {
+    const entry = ticket ? this.eventTickets.get(ticket) : null;
+    if (!entry) return null;
+    this.eventTickets.delete(ticket);
+    if (entry.expiresAt <= Date.now()) return null;
+    // The session that asked for it must still be valid (signed out meanwhile = no)
+    const row = this.db
+      .prepare(`SELECT user_id FROM sessions WHERE token_hash = ? AND revoked = 0 AND expires_at > ?`)
+      .get(entry.sessionHash, Date.now());
+    return row && row.user_id === entry.userId ? entry.userId : null;
+  }
+
+  // True when this request goes over the user's limit for the action
+  isRateLimited(userId, action) {
+    const now = Date.now();
+    if (this.rateCounters.size > 20000) {
+      for (const [k, v] of this.rateCounters) if (now - v.start > 10 * 60 * 1000) this.rateCounters.delete(k);
+    }
+    const over = (bucket, rule) => {
+      const key = `${userId}|${bucket}`;
+      let c = this.rateCounters.get(key);
+      if (!c || now - c.start >= rule.windowMs) {
+        c = { start: now, count: 0 };
+        this.rateCounters.set(key, c);
+      }
+      c.count += 1;
+      return c.count > rule.max;
+    };
+    const specific = RATE_LIMITS[action];
+    return over("all", RATE_LIMITS.all) || Boolean(specific && over(action, specific));
   }
 
   // Stored upload paths are relative ("/uploads/..."); clients need the absolute URL
@@ -1308,7 +1451,8 @@ class DiscordBackendServer {
     return rows.map((m) => {
       let attachment = m.attachment_json ? JSON.parse(m.attachment_json) : null;
       if (attachment && attachment.url && attachment.url.startsWith("/uploads/")) {
-        attachment = { ...attachment, url: `${base}${attachment.url}`, dataUrl: `${base}${attachment.url}` };
+        const signed = `${base}${this.signUploadPath(attachment.url)}`;
+        attachment = { ...attachment, url: signed, dataUrl: signed };
       }
       return {
         id: m.id,
@@ -1663,6 +1807,15 @@ class DiscordBackendServer {
       return { ok: true };
     }
 
+    if (this.isRateLimited(userId, action)) {
+      return { ok: false, status: 429, code: "RATE_LIMITED", error: "Você está fazendo isso rápido demais. Espere alguns segundos e tente de novo." };
+    }
+
+    // The real-time event stream is opened with this ticket instead of the session token
+    if (action === "getEventTicket") {
+      return { ok: true, ticket: this.createEventTicket(userId, token), expiresInMs: EVENT_TICKET_TTL_MS };
+    }
+
     if (this.isEmailGateActive(userId) && !UNVERIFIED_ALLOWED_ACTIONS.has(action)) {
       return {
         ok: false,
@@ -1738,9 +1891,9 @@ class DiscordBackendServer {
         if (!uCheck.valid) {
           return { ok: false, error: uCheck.reason };
         }
-        if (password.length < 6) {
-          return { ok: false, error: "A senha deve ter pelo menos 6 caracteres." };
-        }
+        // New accounts follow the same rules as a password change (old accounts are not forced)
+        const passwordProblem = validateNewPassword(password);
+        if (passwordProblem) return { ok: false, error: passwordProblem };
 
         const existingEmail = this.db.prepare(`SELECT id FROM users WHERE LOWER(email) = ?`).get(email);
         if (existingEmail) {
@@ -1905,7 +2058,7 @@ class DiscordBackendServer {
         fs.writeFileSync(fullPath, buffer);
 
         const relativeUrl = `/uploads/${storedFileName}`;
-        const absoluteUrl = `${this.getPublicBaseUrl()}${relativeUrl}`;
+        const absoluteUrl = `${this.getPublicBaseUrl()}${this.signUploadPath(relativeUrl)}`;
         return {
           ok: true,
           relativeUrl,
@@ -2549,7 +2702,7 @@ class DiscordBackendServer {
               isImage: Boolean(attachment.isImage),
               mimeType: attachment.mimeType || "",
               spoiler: Boolean(attachment.spoiler),
-              url: attachment.relativeUrl || attachment.url || attachment.dataUrl
+              url: this.normalizeStoredUploadUrl(attachment.relativeUrl || attachment.url || attachment.dataUrl)
             })
           : null;
 
@@ -4097,9 +4250,14 @@ class DiscordBackendServer {
     if (this.server) return Promise.resolve(this.port);
     return new Promise((resolve, reject) => {
       const srv = http.createServer((req, res) => {
+        // The API authenticates with a header token (no cookies), so a site
+        // calling it gains nothing it could not do on its own: "*" is safe here
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("Referrer-Policy", "no-referrer");
+        res.setHeader("X-Frame-Options", "DENY");
 
         if (req.method === "OPTIONS") {
           res.writeHead(204);
@@ -4110,8 +4268,15 @@ class DiscordBackendServer {
         const parsedUrl = new URL(req.url, `http://127.0.0.1`);
 
         if (req.method === "GET" && parsedUrl.pathname === "/api/events") {
-          // EventSource cannot send headers, so the session token comes in the query string
-          const streamUserId = this.getSessionUserId(parsedUrl.searchParams.get("token"));
+          // EventSource cannot send headers: the app sends a one-use ticket
+          // (getEventTicket). Versions up to 1.2.14 still send the session
+          // token itself, accepted while ALLOW_LEGACY_EVENT_TOKEN is not "0".
+          const ticket = parsedUrl.searchParams.get("ticket");
+          const streamUserId = ticket
+            ? this.consumeEventTicket(ticket)
+            : this.allowLegacyEventToken
+              ? this.getSessionUserId(parsedUrl.searchParams.get("token"))
+              : null;
           if (!streamUserId) {
             res.writeHead(401, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, code: "UNAUTHENTICATED", error: "Sessão inválida." }));
@@ -4141,6 +4306,12 @@ class DiscordBackendServer {
         if (req.method === "GET" && parsedUrl.pathname.startsWith("/uploads/")) {
           const safeName = path.basename(parsedUrl.pathname);
           const filePath = path.join(this.uploadsDir, safeName);
+          // Chat attachments need their signed, unexpired link
+          if (!this.verifyUploadAccess(safeName, parsedUrl.searchParams)) {
+            res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end("Link expirado ou inválido.");
+            return;
+          }
           if (!fs.existsSync(filePath)) {
             res.writeHead(404);
             res.end("Not Found");
@@ -4168,7 +4339,8 @@ class DiscordBackendServer {
           // Anything that is not known media is served as a download, never rendered
           const headers = {
             "Content-Type": mimeMap[ext] || "application/octet-stream",
-            "Cache-Control": "public, max-age=31536000",
+            // Attachments are not stored by shared caches (they are per-person links)
+            "Cache-Control": this.isPrivateUpload(safeName) ? "private, max-age=86400" : "public, max-age=31536000",
             "X-Content-Type-Options": "nosniff"
           };
           if (!mimeMap[ext]) headers["Content-Disposition"] = "attachment";
@@ -4216,7 +4388,11 @@ class DiscordBackendServer {
         const invitePrefix = `${this.config.invitePath}/`;
         if (req.method === "GET" && (parsedUrl.pathname.startsWith(invitePrefix) || parsedUrl.pathname.startsWith("/invite/"))) {
           this.handleAction("INSPECT_INVITE", { tokenOrUrl: parsedUrl.pathname }).then((result) => {
-            res.writeHead(result.ok ? 200 : result.status || 404, { "Content-Type": "text/html; charset=utf-8" });
+            res.writeHead(result.ok ? 200 : result.status || 404, {
+              "Content-Type": "text/html; charset=utf-8",
+              // A static page: no scripts at all, images from the server or GIPHY
+              "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https: data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            });
             res.end(this.renderInviteLandingPage(result));
           });
           return;
@@ -4232,6 +4408,12 @@ class DiscordBackendServer {
           req.on("end", async () => {
             try {
               const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+              // Only uploads may send big bodies
+              if (totalBytes > MAX_BODY_BYTES && !LARGE_BODY_ACTIONS.has(body.action)) {
+                res.writeHead(413, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: false, code: "TOO_LARGE", error: "Pedido grande demais." }));
+                return;
+              }
               const authHeader = String(req.headers.authorization || "");
               const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
               const result = await this.handleClientRequest(body.action, body.params || body.payload || {}, token, { ip: this.clientIp(req) });

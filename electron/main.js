@@ -26,6 +26,37 @@ const { registerScreenCaptureHandlers } = require("./screenCapture");
 const { loadAppConfig } = require("./appConfig");
 const { startGameDetector } = require("./gameDetector");
 const { prepareHelper, trimProcesses, capProcesses, isLightTrimAvailable } = require("./memTrimmer");
+const { readSignedManifest } = require("./updateSignature");
+const { pathToFileURL } = require("url");
+
+// Every IPC channel answers only the app's own pages (file:// inside the app
+// folder, top frame). Anything else (a page the window was tricked into
+// loading, an embedded frame) is ignored. Wrapped here, before any handler is
+// registered, so no channel can be forgotten.
+const APP_PAGES_URL = pathToFileURL(path.join(__dirname, "..")).href.toLowerCase() + "/";
+function isTrustedIpcSender(event) {
+  const frame = event && event.senderFrame;
+  if (!frame || frame.parent) return false;
+  return String(frame.url || "").toLowerCase().startsWith(APP_PAGES_URL);
+}
+{
+  const { ipcMain } = require("electron");
+  const on = ipcMain.on.bind(ipcMain);
+  const handle = ipcMain.handle.bind(ipcMain);
+  ipcMain.on = (channel, listener) =>
+    on(channel, (event, ...args) => {
+      if (!isTrustedIpcSender(event)) {
+        event.returnValue = undefined;
+        return;
+      }
+      return listener(event, ...args);
+    });
+  ipcMain.handle = (channel, listener) =>
+    handle(channel, (event, ...args) => {
+      if (!isTrustedIpcSender(event)) throw new Error("IPC recusado: origem não confiável");
+      return listener(event, ...args);
+    });
+}
 
 // productName "Discord" made Electron use %APPDATA%\discord, the official
 // Discord client's folder: both apps then shared settings.json, caches and
@@ -99,6 +130,14 @@ function ensureNotificationShortcut() {
       console.error("Failed to set up the notification shortcut:", err);
     }
   }
+  // Also registered by id (Windows 10/11): the notification shows "Huddle"
+  // and its icon even if the shortcuts are deleted or renamed
+  const iconPath = path.join(__dirname, "..", "assets", "app.ico");
+  const key = `HKCU\\Software\\Classes\\AppUserModelId\\${APP_USER_MODEL_ID}`;
+  const regAdd = (name, type, data) =>
+    execFile("reg.exe", ["add", key, "/v", name, "/t", type, "/d", data, "/f"], { windowsHide: true }, () => {});
+  regAdd("DisplayName", "REG_SZ", APP_DISPLAY_NAME);
+  if (fs.existsSync(iconPath)) regAdd("IconUri", "REG_SZ", iconPath);
 }
 
 function migrateFromSharedDiscordFolder() {
@@ -477,6 +516,18 @@ function saveWindowConfig(browserWindow) {
   }
 }
 
+// Web links go to the browser; any other scheme (file:, ms-*, custom
+// protocols that could launch programs) is never handed to Windows
+function openWebLink(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || ""));
+  } catch (_) {
+    return;
+  }
+  if (parsed.protocol === "https:" || parsed.protocol === "http:") shell.openExternal(parsed.href);
+}
+
 function webContentsSend(event, ...options) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!mainWindow.webContents || mainWindow.webContents.isDestroyed()) return;
@@ -616,11 +667,15 @@ function launchMainWindow(showImmediately = false) {
     webPreferences: {
       enableBlinkFeatures: "EnumerateDevices,AudioOutputDevices",
       nodeIntegration: false,
-      sandbox: false,
+      // The page runs in Chromium's sandbox; the preload only needs the
+      // electron bridge (contextBridge/ipcRenderer/webFrame), which works there
+      sandbox: true,
       preload: path.join(__dirname, "mainScreenPreload.js"),
       spellcheck: false,
       contextIsolation: true,
-      devTools: true,
+      webviewTag: false,
+      // Developer tools only in a development checkout (or HUDDLE_DEVTOOLS=1)
+      devTools: !app.isPackaged || process.env.HUDDLE_DEVTOOLS === "1",
       backgroundThrottling: true
     }
   };
@@ -693,7 +748,7 @@ function launchMainWindow(showImmediately = false) {
     if (params.linkURL && /^https?:\/\//i.test(params.linkURL)) {
       if (template.length) template.push({ type: "separator" });
       template.push(
-        { label: "Abrir link no navegador", click: () => shell.openExternal(params.linkURL) },
+        { label: "Abrir link no navegador", click: () => openWebLink(params.linkURL) },
         { label: "Copiar link", click: () => clipboard.writeText(params.linkURL) }
       );
     }
@@ -704,13 +759,11 @@ function launchMainWindow(showImmediately = false) {
   mainWindow.webContents.on("will-navigate", (event, url) => {
     if (url.startsWith("file://")) return;
     event.preventDefault();
-    if (url.startsWith("https://") || url.startsWith("http://")) shell.openExternal(url);
+    openWebLink(url);
   });
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    if (details.url.startsWith("https://") || details.url.startsWith("http://")) {
-      shell.openExternal(details.url);
-    }
+    openWebLink(details.url);
     return { action: "deny" };
   });
 
@@ -768,8 +821,10 @@ function launchSplashWindow() {
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
+      webviewTag: false,
+      devTools: !app.isPackaged,
       preload: path.join(__dirname, "splashPreload.js")
     }
   });
@@ -976,9 +1031,16 @@ function registerIpcHandlers(backend) {
     const zipPath = path.join(dir, "update.zip");
     try {
       fs.mkdirSync(dir, { recursive: true });
-      const sumRes = await net.fetch(`${base}/download/Eco.zip.sha256`, { cache: "no-store" });
-      if (!sumRes.ok) throw new Error("checksum");
-      const expected = String(await sumRes.text()).trim().split(/\s+/)[0].toLowerCase();
+      // The signed manifest says which version, size and SHA-256 to expect;
+      // nothing is downloaded or installed unless its signature checks out
+      // (electron/updateSignature.js)
+      const [manRes, sigRes] = await Promise.all([
+        net.fetch(`${base}/download/manifest.json`, { cache: "no-store" }),
+        net.fetch(`${base}/download/manifest.sig`, { cache: "no-store" })
+      ]);
+      if (!manRes.ok || !sigRes.ok) throw new Error("signature");
+      const manifest = readSignedManifest(Buffer.from(await manRes.arrayBuffer()), await sigRes.text(), BUILD_INFO.version);
+      const expected = manifest.sha256;
 
       const res = await net.fetch(`${base}/download/Eco.zip`, { cache: "no-store" });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -1001,7 +1063,7 @@ function registerIpcHandlers(backend) {
         }
       }
       await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
-      if (hash.digest("hex") !== expected) throw new Error("hash");
+      if (received !== manifest.size || hash.digest("hex") !== expected) throw new Error("hash");
       webContentsSend("UPDATE_PROGRESS", { received: total || received, total: total || received, done: true });
 
       // Swap script: waits for this app to exit, replaces the install folder's
@@ -1013,6 +1075,8 @@ function registerIpcHandlers(backend) {
         "$ErrorActionPreference = 'Stop'",
         `$installDir = ${q(installDir)}`,
         `$zip = ${q(zipPath)}`,
+        // Checked again right before unpacking: the file sat in the temp folder meanwhile
+        `$expectedHash = ${q(expected)}`,
         `$exe = Join-Path $installDir ${q(exeName)}`,
         "Write-Host ''",
         "Write-Host '  Instalando a atualização... o app abre sozinho em seguida.' -ForegroundColor Cyan",
@@ -1020,6 +1084,7 @@ function registerIpcHandlers(backend) {
         `  Wait-Process -Id ${process.pid} -Timeout 30 -ErrorAction SilentlyContinue`,
         "  Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($installDir + '\\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force",
         "  Start-Sleep -Milliseconds 800",
+        "  if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower() -ne $expectedHash) { throw 'O pacote mudou depois de conferido.' }",
         "  $staging = Join-Path $env:TEMP 'eco-update\\staging'",
         "  if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }",
         "  Expand-Archive -Path $zip -DestinationPath $staging -Force",
@@ -1057,7 +1122,11 @@ function registerIpcHandlers(backend) {
         error:
           msg === "hash"
             ? "O arquivo baixado veio corrompido. Tente de novo."
-            : "Não foi possível baixar a atualização. Verifique a internet e tente de novo."
+            : msg === "signature" || msg === "manifest"
+              ? "A atualização não tem uma assinatura válida do Huddle e foi recusada por segurança."
+              : msg === "downgrade"
+                ? "O servidor ofereceu uma versão igual ou mais antiga que a sua; nada foi instalado."
+                : "Não foi possível baixar a atualização. Verifique a internet e tente de novo."
       };
     }
     setTimeout(() => {
@@ -1152,7 +1221,18 @@ function registerIpcHandlers(backend) {
     return getSetting(key, defaultValue);
   });
 
+  // The page may only change these settings, each with its own type (a
+  // compromised page must not be able to rewrite anything else in settings.json)
+  const RENDERER_SETTINGS = {
+    SHOW_GAME_ACTIVITY: (v) => typeof v === "boolean",
+    SPOTIFY_SYNC: (v) => typeof v === "boolean",
+    MINIMIZE_TO_TRAY: (v) => typeof v === "boolean",
+    enableHardwareAcceleration: (v) => typeof v === "boolean",
+    UI_ZOOM: (v) => typeof v === "number" && v >= 0.7 && v <= 1.75
+  };
   ipcMain.handle("DISCORD_SETTINGS_SET", (_e, key, value) => {
+    const valid = Object.prototype.hasOwnProperty.call(RENDERER_SETTINGS, key) && RENDERER_SETTINGS[key](value);
+    if (!valid) return false;
     setSetting(key, value);
     return true;
   });
@@ -1246,9 +1326,18 @@ function registerIpcHandlers(backend) {
     applyCallThumbar();
   });
 
+  // Downloads only over HTTPS (files people send come from the server's /uploads)
   ipcMain.on("DISCORD_DOWNLOAD_URL", (_e, url) => {
-    if (!mainWindow || mainWindow.isDestroyed() || !/^https?:\/\//i.test(String(url || ""))) return;
-    mainWindow.webContents.downloadURL(String(url));
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    let parsed;
+    try {
+      parsed = new URL(String(url || ""));
+    } catch (_) {
+      return;
+    }
+    const localBackend = parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
+    if (parsed.protocol !== "https:" && !localBackend) return;
+    mainWindow.webContents.downloadURL(parsed.href);
   });
 
   ipcMain.handle("DISCORD_FILE_MANAGER_SHOW_SAVE_DIALOG", async (_e, options) => {
@@ -1263,10 +1352,12 @@ function registerIpcHandlers(backend) {
 // eco://convite/<code> links (the "Entrar no servidor" button of the invite
 // page) start the app, or reach the running copy through second-instance.
 const DEEP_LINK_PROTOCOL = "eco";
+// Only eco://convite/<code> (or /invite/) with a plain code is passed on
+const DEEP_LINK_PATTERN = /^eco:\/\/+(?:convite|invite)\/[A-Za-z0-9_-]{4,64}\/?$/i;
 let pendingDeepLink = findDeepLink(process.argv);
 
 function findDeepLink(argv) {
-  return (argv || []).find((arg) => typeof arg === "string" && arg.toLowerCase().startsWith(`${DEEP_LINK_PROTOCOL}://`)) || null;
+  return (argv || []).find((arg) => typeof arg === "string" && arg.length <= 120 && DEEP_LINK_PATTERN.test(arg)) || null;
 }
 
 function deliverDeepLink(url) {
@@ -1298,6 +1389,27 @@ app.whenReady().then(async () => {
     const url = pendingDeepLink;
     pendingDeepLink = null;
     return url;
+  });
+  // Browser permissions (microphone, camera, screen, notifications...) only for
+  // the app's own pages; anything else that ends up loaded gets nothing
+  const isAppPage = (url) => String(url || "").toLowerCase().startsWith(APP_PAGES_URL);
+  // A development checkout (or a test run) never shows Windows notifications:
+  // it is not the installed app, so Windows would title them with a raw id
+  const allowed = (permission, url) => isAppPage(url) && (app.isPackaged || permission !== "notifications");
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
+    callback(allowed(permission, (details && details.requestingUrl) || (wc && wc.getURL())));
+  });
+  session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) => {
+    return allowed(permission, (details && details.requestingUrl) || (wc && wc.getURL()));
+  });
+  // No <webview>, no navigation away from the app's pages, no new windows, in
+  // any web contents (the main window also sends web links to the browser)
+  app.on("web-contents-created", (_e, contents) => {
+    contents.on("will-attach-webview", (event) => event.preventDefault());
+    contents.on("will-navigate", (event, url) => {
+      if (!isAppPage(url)) event.preventDefault();
+    });
+    contents.setWindowOpenHandler(() => ({ action: "deny" }));
   });
   appSettings = loadSettings();
   // app.config.json → serverUrl set: everyone shares that hosted server, so no

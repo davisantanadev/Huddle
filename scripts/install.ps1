@@ -4,7 +4,7 @@
 # Uso, no PowerShell:
 #   irm https://129-159-51-96.sslip.io/download/install.ps1 | iex
 #
-# Baixa Eco.zip do servidor, confere o SHA-256 publicado ao lado, instala em
+# Confere a assinatura oficial do pacote, baixa Eco.zip e confere o SHA-256, instala em
 # %LOCALAPPDATA%\Huddle (sem precisar de administrador), cria o atalho na
 # Área de Trabalho e no Menu Iniciar e abre o app. Contas e configurações
 # ficam em %APPDATA%\Eco e não são tocadas por uma atualização. Instalações
@@ -32,12 +32,28 @@ Write-Host ""
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    Write-Host "  Baixando o $appName (cerca de 120 MB)..."
+    # Assinatura oficial: o manifesto (versão, tamanho e SHA-256 do pacote) é
+    # assinado com uma chave que nunca fica no servidor. Sem assinatura válida,
+    # nada é instalado. Mesma chave de electron/updateSignature.js.
+    $manifestBytes = (Invoke-WebRequest -Uri "$base/manifest.json" -UseBasicParsing).RawContentStream.ToArray()
+    $signature = [Convert]::FromBase64String(((Invoke-WebRequest -Uri "$base/manifest.sig" -UseBasicParsing).Content).Trim())
+    $params = New-Object System.Security.Cryptography.ECParameters
+    $params.Curve = [System.Security.Cryptography.ECCurve+NamedCurves]::nistP256
+    $point = New-Object System.Security.Cryptography.ECPoint
+    $point.X = [Convert]::FromBase64String("ZgzPHqLGm/2QSVqrbkq02bp6vQAoyQIEduVrmiiIFCU=")
+    $point.Y = [Convert]::FromBase64String("08iwH//T+KOm89s2XLmIE1ARjulzsc7q6jblkXtU8HQ=")
+    $params.Q = $point
+    $ecdsa = [System.Security.Cryptography.ECDsa]::Create($params)
+    if ($signature.Length -ne 64 -or -not $ecdsa.VerifyData($manifestBytes, $signature, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) {
+        throw "O pacote do servidor não tem a assinatura oficial do $appName. Nada foi instalado."
+    }
+    $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
+
+    Write-Host "  Baixando o $appName $($manifest.version) (cerca de 120 MB)..."
     Invoke-WebRequest -Uri "$base/Eco.zip" -OutFile $zipPath -UseBasicParsing
-    $expected = ((Invoke-WebRequest -Uri "$base/Eco.zip.sha256" -UseBasicParsing).Content -split "\s+")[0].Trim().ToUpper()
-    $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToUpper()
-    if ($expected -ne $actual) {
-        throw "O arquivo baixado não confere com o do servidor (download corrompido). Tente de novo."
+    $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
+    if ($actual -ne ([string]$manifest.sha256).ToLower() -or (Get-Item $zipPath).Length -ne [long]$manifest.size) {
+        throw "O arquivo baixado não confere com o pacote assinado (download corrompido ou alterado). Tente de novo."
     }
 
     # Atualização: fecha o app (versão nova ou antiga "Eco") antes de substituir os arquivos

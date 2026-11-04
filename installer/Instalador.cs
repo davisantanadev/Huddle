@@ -1,5 +1,5 @@
 // Instalador do Huddle: uma janela onde a pessoa escolhe a pasta, e o instalador
-// baixa o app do servidor, confere o SHA-256, instala, cria os atalhos, registra
+// baixa o app do servidor, confere a assinatura e o SHA-256, instala, cria os atalhos, registra
 // em "Aplicativos instalados" (com desinstalação) e abre o app.
 // Compilado com o C# que vem no Windows: scripts/build-installer.js
 //
@@ -14,6 +14,8 @@ using System.IO.Compression;
 using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -30,6 +32,36 @@ static class Program
     public const string Base = "https://129-159-51-96.sslip.io/download";
     public const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Huddle";
     public const string UninstallerName = "Desinstalar.exe";
+    // Public key that signs every release (ECDSA P-256; the private key never
+    // leaves the developer's PC). Same key as electron/updateSignature.js.
+    const string SigningKeyX = "ZgzPHqLGm/2QSVqrbkq02bp6vQAoyQIEduVrmiiIFCU=";
+    const string SigningKeyY = "08iwH//T+KOm89s2XLmIE1ARjulzsc7q6jblkXtU8HQ=";
+
+    // True only if manifest.json was signed with the release key
+    public static bool VerifyManifest(byte[] manifest, string signatureBase64)
+    {
+        byte[] sig;
+        try { sig = Convert.FromBase64String((signatureBase64 ?? "").Trim()); } catch { return false; }
+        if (sig.Length != 64) return false;
+        ECParameters p = new ECParameters();
+        p.Curve = ECCurve.NamedCurves.nistP256;
+        ECPoint q = new ECPoint();
+        q.X = Convert.FromBase64String(SigningKeyX);
+        q.Y = Convert.FromBase64String(SigningKeyY);
+        p.Q = q;
+        try
+        {
+            using (ECDsa ec = ECDsa.Create(p)) return ec.VerifyData(manifest, sig, HashAlgorithmName.SHA256);
+        }
+        catch { return false; }
+    }
+
+    // Reads one field of the small, fixed-format manifest.json
+    public static string ManifestField(string json, string name)
+    {
+        Match m = Regex.Match(json, "\"" + name + "\"\\s*:\\s*\"?([0-9a-zA-Z.]+)\"?");
+        return m.Success ? m.Groups[1].Value : "";
+    }
 
     [STAThread]
     static int Main(string[] args)
@@ -166,8 +198,21 @@ class InstallJob
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             Progress("Conectando ao servidor...", -1);
-            string expected;
-            using (WebClient wc = new WebClient()) expected = wc.DownloadString(Program.Base + "/Eco.zip.sha256").Trim().Split(' ', '\t', '\n')[0].ToLowerInvariant();
+            // The signed manifest says what to expect; without a valid signature nothing is installed
+            byte[] manifest;
+            string signature;
+            using (WebClient wc = new WebClient())
+            {
+                manifest = wc.DownloadData(Program.Base + "/manifest.json");
+                signature = wc.DownloadString(Program.Base + "/manifest.sig");
+            }
+            if (!Program.VerifyManifest(manifest, signature))
+                throw new Exception("O pacote do servidor não tem a assinatura oficial do Huddle. Nada foi instalado.");
+            string manifestText = Encoding.UTF8.GetString(manifest);
+            string expected = Program.ManifestField(manifestText, "sha256").ToLowerInvariant();
+            long expectedSize;
+            if (expected.Length != 64 || !long.TryParse(Program.ManifestField(manifestText, "size"), out expectedSize))
+                throw new Exception("O pacote do servidor está com dados inválidos. Nada foi instalado.");
 
             Download(Program.Base + "/Eco.zip", zip);
             if (Canceled) throw new OperationCanceledException();
@@ -177,7 +222,7 @@ class InstallJob
             using (FileStream fs = File.OpenRead(zip))
             using (SHA256 sha = SHA256.Create())
                 actual = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "").ToLowerInvariant();
-            if (actual != expected) throw new Exception("O arquivo baixado veio corrompido. Tente de novo.");
+            if (actual != expected || new FileInfo(zip).Length != expectedSize) throw new Exception("O arquivo baixado veio corrompido. Tente de novo.");
 
             Progress("Instalando em " + Dir + " ...", -1);
             if (Directory.Exists(staging)) Directory.Delete(staging, true);

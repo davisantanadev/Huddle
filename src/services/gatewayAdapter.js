@@ -101,16 +101,48 @@ export const NativeBridge = {
     if (!this.sessionToken) {
       return () => {};
     }
-    const es = new EventSource(`${baseUrl}/api/events?token=${encodeURIComponent(this.sessionToken)}`);
-    es.onmessage = (ev) => {
-      try {
-        const parsed = JSON.parse(ev.data);
-        if (parsed && onEvent) onEvent(parsed);
-      } catch (_) {}
+    // Each connection uses a one-use ticket (the session token stays out of
+    // the URL). A ticket can't be reused, so reconnecting is done here, with a
+    // fresh ticket, instead of by EventSource itself.
+    let es = null;
+    let closed = false;
+    let retries = 0;
+    let timer = null;
+    const open = async () => {
+      if (closed) return;
+      const res = await this.rpc("getEventTicket", {}).catch(() => null);
+      if (closed) return;
+      if (res && res.code === "UNAUTHENTICATED") return; // signed out: nothing to listen to
+      // Servers older than 1.2.15 have no tickets: they still take the token
+      const url =
+        res && res.ok && res.ticket
+          ? `${baseUrl}/api/events?ticket=${encodeURIComponent(res.ticket)}`
+          : `${baseUrl}/api/events?token=${encodeURIComponent(this.sessionToken)}`;
+      es = new EventSource(url);
+      es.onopen = () => {
+        retries = 0;
+      };
+      es.onmessage = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.data);
+          if (parsed && onEvent) onEvent(parsed);
+        } catch (_) {}
+      };
+      es.onerror = () => {
+        if (closed) return;
+        try {
+          es.close();
+        } catch (_) {}
+        clearTimeout(timer);
+        timer = setTimeout(open, Math.min(15000, 1000 * 2 ** retries++));
+      };
     };
+    open();
     return () => {
+      closed = true;
+      clearTimeout(timer);
       try {
-        es.close();
+        if (es) es.close();
       } catch (_) {}
     };
   },

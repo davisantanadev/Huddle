@@ -1,6 +1,7 @@
 "use strict";
 
-const packager = require("@electron/packager");
+// @electron/packager 20 is an ES module; Node loads it with require()
+const { packager } = require("@electron/packager");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
