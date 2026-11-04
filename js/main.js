@@ -1,5 +1,7 @@
 (function() {
-  // Translations Dictionary
+  // ==========================================================================
+  // TRANSLATIONS DICTIONARY (PT / EN)
+  // ==========================================================================
   var i18n = {
     pt: {
       docTitle: "Huddle: Chat, voz e tela para Windows",
@@ -34,11 +36,11 @@
       demoMute: "Mudo: <span class=\"key-cap\">F8</span>",
       installH2: "Instalação simples no seu Windows",
       installDesc: "Três passos rápidos para entrar na sala. Sem configurações complicadas nem permissões desnecessárias.",
-      step1Title: "Baixe o arquivo",
+      step1Title: "1. Baixe o arquivo",
       step1Desc: "Clique em <strong>Baixar para Windows</strong> para receber o <strong>Instalar-Huddle.exe</strong> oficial.",
-      step2Title: "Escolha a pasta",
+      step2Title: "2. Escolha a pasta",
       step2Desc: "Abra o instalador, escolha onde salvar pelo botão <strong>Procurar...</strong> (ou mantenha a pasta sugerida) e marque seus atalhos.",
-      step3Title: "Clique em Instalar",
+      step3Title: "3. Clique em Instalar",
       step3Desc: "O instalador baixa o app, valida os arquivos com segurança e abre o Huddle pronto para o login.",
       smartH3: "Se aparecer \"O Windows protegeu o computador\"",
       smartP1: "Esse aviso do Windows SmartScreen é normal em versões novas de programas independentes que ainda não compraram certificados corporativos pagos da Microsoft. O arquivo é 100% seguro.",
@@ -89,11 +91,11 @@
       demoMute: "Mute: <span class=\"key-cap\">F8</span>",
       installH2: "Simple installation on Windows",
       installDesc: "Three quick steps to join your friends. No complex configurations or bloatware.",
-      step1Title: "Download the file",
+      step1Title: "1. Download the file",
       step1Desc: "Click <strong>Download for Windows</strong> to get the official <strong>Instalar-Huddle.exe</strong>.",
-      step2Title: "Choose destination",
+      step2Title: "2. Choose destination",
       step2Desc: "Open the installer, select where to install via <strong>Browse...</strong> (or keep default) and check shortcuts.",
-      step3Title: "Click Install",
+      step3Title: "3. Click Install",
       step3Desc: "The installer fetches the app, verifies files safely, and launches Huddle ready to sign in.",
       smartH3: "If Windows prompts \"Windows protected your PC\"",
       smartP1: "This Windows SmartScreen message is common for new independent software without expensive Microsoft enterprise certificates. The file is 100% safe.",
@@ -170,79 +172,282 @@
         ptBtn.setAttribute("aria-pressed", "false");
       }
     }
-
-    // Update copy button label if not in copied state
-    var copyLabel = document.getElementById("copy-label");
-    if (copyLabel && copyLabel.textContent !== dict.copiedBtn) {
-      copyLabel.textContent = dict.copyBtn;
-    }
   }
 
-  // Initialize
-  applyTheme(currentTheme, false);
-  document.addEventListener("DOMContentLoaded", function() {
-    applyLang(currentLang);
+  // ==========================================================================
+  // GSAP & SCROLLTRIGGER ORCHESTRATION
+  // ==========================================================================
+  function initScrollAnimations() {
+    if (typeof gsap === "undefined" || typeof ScrollTrigger === "undefined") {
+      return;
+    }
 
-    // Theme toggle click
-    var themeBtn = document.getElementById("theme-toggle");
-    if (themeBtn) {
-      themeBtn.addEventListener("click", function() {
-        var nextTheme = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
-        applyTheme(nextTheme, true);
+    var prefersReduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReduced) return;
+
+    gsap.registerPlugin(ScrollTrigger);
+
+    // 1. Hero 3D Parallax Tilt on Scroll
+    var heroScreen = document.querySelector(".hero-screen-card");
+    if (heroScreen) {
+      gsap.to(heroScreen, {
+        scrollTrigger: {
+          trigger: ".hero",
+          start: "top top",
+          end: "bottom top",
+          scrub: 1.2
+        },
+        rotateX: 10,
+        scale: 0.95,
+        y: 40,
+        ease: "none"
+      });
+
+      // Interactive Gyro Tilt on Mouse Move over Hero Screen
+      var wrapper = document.querySelector(".app-screen-wrapper");
+      if (wrapper) {
+        wrapper.addEventListener("mousemove", function(e) {
+          var rect = wrapper.getBoundingClientRect();
+          var x = (e.clientX - rect.left) / rect.width - 0.5;
+          var y = (e.clientY - rect.top) / rect.height - 0.5;
+          gsap.to(heroScreen, {
+            rotateY: x * 8,
+            rotateX: -y * 8,
+            duration: 0.3,
+            ease: "power1.out"
+          });
+        });
+        wrapper.addEventListener("mouseleave", function() {
+          gsap.to(heroScreen, {
+            rotateY: 0,
+            rotateX: 0,
+            duration: 0.6,
+            ease: "power2.out"
+          });
+        });
+      }
+    }
+
+    // 2. Section Headers Reveal
+    var headers = document.querySelectorAll(".gsap-trigger-header");
+    headers.forEach(function(header) {
+      gsap.from(header, {
+        scrollTrigger: {
+          trigger: header,
+          start: "top 85%",
+          toggleActions: "play none none none"
+        },
+        y: 20,
+        opacity: 0,
+        duration: 0.6,
+        ease: "power2.out"
+      });
+    });
+
+    // 3. Feature Cards Batch Entrance
+    ScrollTrigger.batch(".gsap-feature-card", {
+      start: "top 85%",
+      onEnter: function(batch) {
+        gsap.from(batch, {
+          y: 24,
+          opacity: 0,
+          stagger: 0.1,
+          duration: 0.55,
+          ease: "power2.out"
+        });
+      },
+      once: true
+    });
+
+    // 4. Interactive Side Card Entrance
+    var interactiveSide = document.querySelector(".gsap-interactive-card");
+    if (interactiveSide) {
+      gsap.from(interactiveSide, {
+        scrollTrigger: {
+          trigger: interactiveSide,
+          start: "top 85%",
+          toggleActions: "play none none none"
+        },
+        x: 28,
+        opacity: 0,
+        duration: 0.65,
+        ease: "power2.out"
       });
     }
 
-    // Language buttons click
-    var ptBtn = document.getElementById("lang-pt");
-    var enBtn = document.getElementById("lang-en");
-    if (ptBtn) {
-      ptBtn.addEventListener("click", function() { applyLang("pt"); });
-    }
-    if (enBtn) {
-      enBtn.addEventListener("click", function() { applyLang("en"); });
+    // 5. Installation Step Cards Batch Entrance
+    ScrollTrigger.batch(".gsap-step-card", {
+      start: "top 85%",
+      onEnter: function(batch) {
+        gsap.from(batch, {
+          y: 24,
+          opacity: 0,
+          stagger: 0.1,
+          duration: 0.55,
+          ease: "power2.out"
+        });
+      },
+      once: true
+    });
+
+    // 6. Installer Box & Side Cards
+    var installBox = document.querySelector(".gsap-install-box");
+    if (installBox) {
+      gsap.from(installBox, {
+        scrollTrigger: {
+          trigger: installBox,
+          start: "top 85%",
+          toggleActions: "play none none none"
+        },
+        x: -24,
+        opacity: 0,
+        duration: 0.6,
+        ease: "power2.out"
+      });
     }
 
-    // PowerShell copy button
+    var smartscreen = document.querySelector(".gsap-smartscreen");
+    if (smartscreen) {
+      gsap.from(smartscreen, {
+        scrollTrigger: {
+          trigger: smartscreen,
+          start: "top 85%",
+          toggleActions: "play none none none"
+        },
+        x: 24,
+        opacity: 0,
+        duration: 0.6,
+        ease: "power2.out"
+      });
+    }
+
+    // 7. Final CTA Scale & Pulse
+    var finalCta = document.querySelector(".gsap-final-cta");
+    if (finalCta) {
+      gsap.from(finalCta, {
+        scrollTrigger: {
+          trigger: finalCta,
+          start: "top 88%",
+          toggleActions: "play none none none"
+        },
+        scale: 0.96,
+        opacity: 0,
+        duration: 0.7,
+        ease: "power2.out"
+      });
+    }
+  }
+
+  // ==========================================================================
+  // INTERACTIVE VOLUME SLIDER DEMO
+  // ==========================================================================
+  function initLiveVolumeDemo() {
+    var volRows = document.querySelectorAll(".live-demo-vol-row");
+    volRows.forEach(function(row) {
+      var barWrap = row.querySelector(".vol-slider-wrap");
+      var bar = row.querySelector(".vol-bar");
+      var fill = row.querySelector(".vol-fill");
+      var valText = row.querySelector(".vol-val");
+      if (!bar || !fill || !valText) return;
+
+      function updateVol(clientX) {
+        var rect = bar.getBoundingClientRect();
+        var pct = Math.max(0, Math.min(100, Math.round(((clientX - rect.left) / rect.width) * 100)));
+        fill.style.width = pct + "%";
+        valText.textContent = pct + "%";
+        if (barWrap) barWrap.setAttribute("aria-label", "Volume: " + pct + "%");
+      }
+
+      var isDragging = false;
+      bar.style.cursor = "pointer";
+      bar.addEventListener("mousedown", function(e) {
+        isDragging = true;
+        updateVol(e.clientX);
+      });
+      window.addEventListener("mousemove", function(e) {
+        if (isDragging) updateVol(e.clientX);
+      });
+      window.addEventListener("mouseup", function() {
+        isDragging = false;
+      });
+
+      // Touch support
+      bar.addEventListener("touchstart", function(e) {
+        if (e.touches.length > 0) updateVol(e.touches[0].clientX);
+      }, { passive: true });
+      bar.addEventListener("touchmove", function(e) {
+        if (e.touches.length > 0) updateVol(e.touches[0].clientX);
+      }, { passive: true });
+    });
+  }
+
+  // ==========================================================================
+  // COPY POWERSHELL COMMAND
+  // ==========================================================================
+  function initCopyButton() {
     var copyBtn = document.getElementById("copy-btn");
     var copyLabel = document.getElementById("copy-label");
     var psCmd = document.getElementById("ps-cmd");
 
     if (copyBtn && copyLabel && psCmd) {
       copyBtn.addEventListener("click", function() {
-        var text = psCmd.textContent.trim();
-        var dict = i18n[currentLang] || i18n.pt;
+        var text = psCmd.textContent || psCmd.innerText;
+        navigator.clipboard.writeText(text).then(function() {
+          var dict = i18n[currentLang] || i18n.pt;
+          copyLabel.textContent = dict.copiedBtn || "Copiado!";
+          copyBtn.classList.add("copied");
 
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(showCopied, fallbackCopy);
-        } else {
-          fallbackCopy();
-        }
-
-        function showCopied() {
-          copyLabel.textContent = dict.copiedBtn;
-          copyBtn.style.background = "var(--voice-green)";
-          copyBtn.style.color = "#ffffff";
           setTimeout(function() {
-            copyLabel.textContent = dict.copyBtn;
-            copyBtn.style.background = "";
-            copyBtn.style.color = "";
-          }, 2200);
-        }
-
-        function fallbackCopy() {
-          var ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed";
-          ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          try {
-            document.execCommand("copy");
-            showCopied();
-          } catch(e) {}
-          document.body.removeChild(ta);
-        }
+            copyLabel.textContent = dict.copyBtn || "Copiar";
+            copyBtn.classList.remove("copied");
+          }, 2000);
+        }).catch(function() {
+          var range = document.createRange();
+          range.selectNode(psCmd);
+          window.getSelection().removeAllRanges();
+          window.getSelection().addRange(range);
+        });
       });
     }
+  }
+
+  // ==========================================================================
+  // BOOTSTRAP
+  // ==========================================================================
+  document.addEventListener("DOMContentLoaded", function() {
+    // 1. Initial State
+    applyTheme(currentTheme, false);
+    applyLang(currentLang);
+
+    // 2. Language Switcher Click Handlers
+    var ptBtn = document.getElementById("lang-pt");
+    var enBtn = document.getElementById("lang-en");
+    if (ptBtn) {
+      ptBtn.addEventListener("click", function() {
+        applyLang("pt");
+      });
+    }
+    if (enBtn) {
+      enBtn.addEventListener("click", function() {
+        applyLang("en");
+      });
+    }
+
+    // 3. Theme Toggle Click Handler
+    var themeBtn = document.getElementById("theme-toggle");
+    if (themeBtn) {
+      themeBtn.addEventListener("click", function() {
+        var current = document.documentElement.getAttribute("data-theme") || "dark";
+        var next = current === "dark" ? "light" : "dark";
+        applyTheme(next, true);
+      });
+    }
+
+    // 4. Interactive Components
+    initLiveVolumeDemo();
+    initCopyButton();
+
+    // 5. ScrollTrigger & GSAP
+    initScrollAnimations();
   });
 })();

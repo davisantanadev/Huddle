@@ -8,18 +8,30 @@
   <link rel="icon" href="img/favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/style.css" />
+  <!-- GSAP & ScrollTrigger from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <!-- Interactive WebGL Shader Canvas Script -->
+  <script src="js/shader.js" defer></script>
+  <!-- Main Application & ScrollTrigger Orchestrator -->
   <script src="js/main.js" defer></script>
 </head>
 <body>
+
+  <!-- Interactive WebGL Shader Canvas & Grid Backdrop -->
+  <div class="canvas-backdrop" aria-hidden="true">
+    <canvas id="shader-canvas" class="shader-canvas"></canvas>
+    <div class="tech-grid-overlay"></div>
+  </div>
 
   <!-- Top Navigation -->
   <header class="site-header animate-in delay-1">
     <div class="container nav-row">
       <a class="brand" href="#" aria-label="Huddle">
         <img class="brand-icon" src="img/favicon.ico" alt="" width="32" height="32" />
-        Huddle
+        <span class="brand-name">Huddle</span>
       </a>
 
       <nav class="nav-links" aria-label="Navegação principal">
@@ -32,7 +44,7 @@
         <!-- Language Switcher -->
         <div class="lang-switch" role="group" aria-label="Idioma / Language">
           <button type="button" class="lang-btn active" id="lang-pt" aria-pressed="true">PT</button>
-          <span class="lang-divider" aria-hidden="true">|</span>
+          <span class="lang-divider" aria-hidden="true">/</span>
           <button type="button" class="lang-btn" id="lang-en" aria-pressed="false">EN</button>
         </div>
 
@@ -70,7 +82,7 @@
     <section class="hero">
       <div class="container hero-grid">
         <div class="hero-content">
-          <h1 class="animate-in delay-2" data-i18n="heroH1">Voz limpa, chat e gameplay sem lag.</h1>
+          <h1 class="hero-title animate-in delay-2" data-i18n="heroH1">Voz limpa, chat e gameplay sem lag.</h1>
           <p class="lead animate-in delay-3" data-i18n="heroLead">
             Conecte-se com seus amigos em chamadas de alto desempenho, compartilhe sua tela com som e converse sem anúncios nem servidores lentos.
           </p>
@@ -101,8 +113,10 @@
         </div>
 
         <div class="hero-media animate-in delay-6">
-          <div class="app-screen">
-            <img src="img/call.png" width="1440" height="860" alt="Interface de chamada no Huddle com quatro pessoas e painel lateral de chat ativo" />
+          <div class="app-screen-wrapper">
+            <div class="app-screen hero-screen-card spotlight-card">
+              <img src="img/call.png" width="1440" height="860" alt="Interface de chamada no Huddle com quatro pessoas e painel lateral de chat ativo" />
+            </div>
           </div>
         </div>
       </div>
@@ -111,7 +125,7 @@
     <!-- Features Section -->
     <section class="section section-alt" id="recursos">
       <div class="container">
-        <div class="section-header animate-in delay-7">
+        <div class="section-header gsap-trigger-header">
           <h2 data-i18n="featuresH2">Feito sob medida para jogar e conversar</h2>
           <p class="section-desc" data-i18n="featuresDesc">
             Canais de texto rápidos, voz cristalina e transmissão fluida no servidor da sua comunidade.
@@ -120,35 +134,50 @@
 
         <div class="features-showcase">
           <div class="features-list">
-            <div class="feature-item animate-in delay-8">
-              <h3><span data-i18n="f1Title">Voz limpa e sem eco</span> <span class="feature-tag" data-i18n="f1Tag">Áudio</span></h3>
+            <div class="feature-item spotlight-card gsap-feature-card">
+              <div class="card-top-row">
+                <span class="feature-tag" data-i18n="f1Tag">Áudio</span>
+              </div>
+              <h3 data-i18n="f1Title">Voz limpa e sem eco</h3>
               <p data-i18n="f1Desc">Supressão de ruído nativa, controle de volume individual para cada amigo na call e atalho de uma tecla para mutar na hora.</p>
             </div>
 
-            <div class="feature-item animate-in delay-9">
-              <h3><span data-i18n="f2Title">Telas simultâneas com som</span> <span class="feature-tag" data-i18n="f2Tag">Transmissão</span></h3>
+            <div class="feature-item spotlight-card gsap-feature-card">
+              <div class="card-top-row">
+                <span class="feature-tag" data-i18n="f2Tag">Transmissão</span>
+              </div>
+              <h3 data-i18n="f2Title">Telas simultâneas com som</h3>
               <p data-i18n="f2Desc">Várias pessoas podem transmitir suas partidas ao mesmo tempo com áudio do jogo, sem retorno de eco no microfone.</p>
             </div>
 
-            <div class="feature-item animate-in delay-10">
-              <h3><span data-i18n="f3Title">Chat completo dentro da chamada</span> <span class="feature-tag" data-i18n="f3Tag">Mensagens</span></h3>
+            <div class="feature-item spotlight-card gsap-feature-card">
+              <div class="card-top-row">
+                <span class="feature-tag" data-i18n="f3Tag">Mensagens</span>
+              </div>
+              <h3 data-i18n="f3Title">Chat completo dentro da chamada</h3>
               <p data-i18n="f3Desc">Respostas, reações com emojis, edição, menções com @ e reprodução de áudio e vídeo diretamente na conversa.</p>
             </div>
 
-            <div class="feature-item animate-in delay-11">
-              <h3><span data-i18n="f4Title">Perfis e identidade própria</span> <span class="feature-tag" data-i18n="f4Tag">Personalização</span></h3>
+            <div class="feature-item spotlight-card gsap-feature-card">
+              <div class="card-top-row">
+                <span class="feature-tag" data-i18n="f4Tag">Personalização</span>
+              </div>
+              <h3 data-i18n="f4Title">Perfis e identidade própria</h3>
               <p data-i18n="f4Desc">Avatares e banners em GIF liberados, cargos com cores personalizadas no servidor e indicador de quem está online.</p>
             </div>
 
-            <div class="feature-item animate-in delay-12">
-              <h3><span data-i18n="f5Title">Atualização automática e segura</span> <span class="feature-tag" data-i18n="f5Tag">Praticidade</span></h3>
+            <div class="feature-item spotlight-card gsap-feature-card">
+              <div class="card-top-row">
+                <span class="feature-tag" data-i18n="f5Tag">Praticidade</span>
+              </div>
+              <h3 data-i18n="f5Title">Atualização automática e segura</h3>
               <p data-i18n="f5Desc">O aplicativo avisa quando há novidades e atualiza com um único clique, preservando todas as suas contas e preferências.</p>
             </div>
           </div>
 
-          <div class="interactive-side">
+          <div class="interactive-side gsap-interactive-card">
             <!-- Real Interactive Live Interface Preview [data-ui] -->
-            <div class="live-demo-card" data-ui>
+            <div class="live-demo-card spotlight-card" data-ui>
               <div class="live-demo-header">
                 <span class="live-demo-title">
                   <span class="live-indicator" aria-hidden="true"></span>
@@ -192,7 +221,7 @@
             </div>
 
             <!-- Chat real screenshot outside data-ui -->
-            <div class="chat-media-card">
+            <div class="chat-media-card spotlight-card">
               <div class="app-screen">
                 <img src="img/chat.png" width="1440" height="860" alt="Canal de texto no Huddle com histórico de mensagens, reações e prévia de mídia" loading="lazy" />
               </div>
@@ -205,7 +234,7 @@
     <!-- Installation Section -->
     <section class="section" id="instalar">
       <div class="container">
-        <div class="section-header">
+        <div class="section-header gsap-trigger-header">
           <h2 data-i18n="installH2">Instalação simples no seu Windows</h2>
           <p class="section-desc" data-i18n="installDesc">
             Três passos rápidos para entrar na sala. Sem configurações complicadas nem permissões desnecessárias.
@@ -213,32 +242,29 @@
         </div>
 
         <div class="steps-grid">
-          <div class="step-card">
-            <span class="step-number" aria-hidden="true">1</span>
-            <h3 data-i18n="step1Title">Baixe o arquivo</h3>
+          <div class="step-card spotlight-card gsap-step-card">
+            <h3 data-i18n="step1Title">1. Baixe o arquivo</h3>
             <p data-i18n="step1Desc">Clique em <strong>Baixar para Windows</strong> para receber o <strong>Instalar-Huddle.exe</strong> oficial.</p>
           </div>
-          <div class="step-card">
-            <span class="step-number" aria-hidden="true">2</span>
-            <h3 data-i18n="step2Title">Escolha a pasta</h3>
+          <div class="step-card spotlight-card gsap-step-card">
+            <h3 data-i18n="step2Title">2. Escolha a pasta</h3>
             <p data-i18n="step2Desc">Abra o instalador, escolha onde salvar pelo botão <strong>Procurar...</strong> (ou mantenha a pasta sugerida) e marque seus atalhos.</p>
           </div>
-          <div class="step-card">
-            <span class="step-number" aria-hidden="true">3</span>
-            <h3 data-i18n="step3Title">Clique em Instalar</h3>
+          <div class="step-card spotlight-card gsap-step-card">
+            <h3 data-i18n="step3Title">3. Clique em Instalar</h3>
             <p data-i18n="step3Desc">O instalador baixa o app, valida os arquivos com segurança e abre o Huddle pronto para o login.</p>
           </div>
         </div>
 
         <div class="install-details">
-          <div class="installer-box">
+          <div class="installer-box spotlight-card gsap-install-box">
             <img src="img/instalador.png" alt="Janela do instalador do Huddle mostrando o caminho da pasta e as opções de atalho" loading="lazy" />
           </div>
 
-          <div>
-            <div class="smartscreen-alert">
+          <div class="install-side-content">
+            <div class="smartscreen-alert spotlight-card gsap-smartscreen">
               <h3>
-                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 <span data-i18n="smartH3">Se aparecer "O Windows protegeu o computador"</span>
               </h3>
               <p data-i18n="smartP1">
@@ -250,7 +276,7 @@
             </div>
 
             <div class="secondary-options">
-              <details class="option-card">
+              <details class="option-card spotlight-card gsap-accordion">
                 <summary data-i18n="opt1Summary">Já tem o Huddle instalado no computador?</summary>
                 <div class="option-content">
                   <p data-i18n="opt1P1">Basta abrir o instalador e clicar em <strong>Atualizar</strong>: ele reconhece a pasta anterior e atualiza apenas os arquivos necessários, mantendo todas as suas conversas e credenciais intactas.</p>
@@ -258,7 +284,7 @@
                 </div>
               </details>
 
-              <details class="option-card" id="powershell">
+              <details class="option-card spotlight-card gsap-accordion" id="powershell">
                 <summary data-i18n="opt2Summary">Prefere instalar direto pelo PowerShell?</summary>
                 <div class="option-content">
                   <p data-i18n="opt2P">Copie e cole o comando abaixo no terminal do PowerShell:</p>
@@ -276,13 +302,15 @@
         </div>
 
         <!-- Bottom CTA -->
-        <div class="final-cta">
-          <h2 data-i18n="ctaH2">Pronto para jogar e conversar?</h2>
-          <p data-i18n="ctaP">Baixe o Huddle para Windows e conecte-se agora mesmo.</p>
-          <a class="btn-download" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
-            <span data-i18n="ctaBtn">Baixar para Windows</span>
-          </a>
+        <div class="final-cta spotlight-card gsap-final-cta">
+          <div class="final-cta-content">
+            <h2 data-i18n="ctaH2">Pronto para jogar e conversar?</h2>
+            <p data-i18n="ctaP">Baixe o Huddle para Windows e conecte-se agora mesmo.</p>
+            <a class="btn-download" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+              <span data-i18n="ctaBtn">Baixar para Windows</span>
+            </a>
+          </div>
         </div>
       </div>
     </section>
@@ -295,7 +323,7 @@
         <img src="img/favicon.ico" alt="" width="20" height="20" />
         <span data-i18n="footerBrand">Huddle · Chat, voz e tela para Windows</span>
       </div>
-      <div id="version-footer" data-i18n="footerSys">
+      <div id="version-footer" class="footer-meta" data-i18n="footerSys">
         Compatível com Windows 10 e 11 (64 bits)
       </div>
     </div>
