@@ -339,7 +339,7 @@ class InstallerForm : Form
 
     CheckBox MakeCheck(string label, Point at)
     {
-        return new CheckBox { Text = label, Checked = true, AutoSize = true, Location = at, ForeColor = text };
+        return new CheckBox { Text = label, Checked = true, AutoSize = true, Location = at, ForeColor = text, UseCompatibleTextRendering = true, Cursor = Cursors.Hand };
     }
 
     void Browse()
@@ -429,3 +429,4 @@ static class Uninstall
         return 0;
     }
 }
+
