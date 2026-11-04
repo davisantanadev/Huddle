@@ -367,3 +367,10 @@ kbd { font: 500 15px var(--mono); color: var(--ink); background: var(--panel-2);
   .scan::after, .ticker-track, .hud-dot, .btn-pulse::after { animation: none; }
   .btn, .btn:hover { transition: none; transform: none; }
 }
+
+/* Assinatura: ícone do GitHub + @ no rodapé */
+.made-by { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); text-decoration: none; transition: color 0.2s; }
+.made-by strong { font-weight: 600; color: var(--ink); transition: color 0.2s; }
+.made-by svg { flex-shrink: 0; transition: transform 0.3s var(--ease), color 0.2s; }
+.made-by:hover, .made-by:hover strong { color: var(--blue-hi); }
+.made-by:hover svg { transform: rotate(-8deg) scale(1.12); }

@@ -55,7 +55,7 @@
     o2P: "Copy and paste this command into PowerShell:",
     copyBtn: "Copy", copiedBtn: "Copied!",
     ctaH2: "Ready to play and talk?", ctaP: "Download Huddle for Windows and call the crew right now.", ctaBtn: "Download for Windows",
-    footBrand: "Huddle · Chat, voice and screen for Windows", footSys: "Windows 10 and 11 (64-bit)",
+    footBrand: "Huddle · Chat, voice and screen for Windows", footBy: "made by", footByLabel: "GitHub of davisantanadev", footSys: "Windows 10 and 11 (64-bit)",
     altCall: "A Huddle call: four people in the game room, with the call chat open beside it",
     altCall2: "Voice room with four people and the call chat open",
     altChat: "Text channel with message history, reactions and the member list",
@@ -73,6 +73,10 @@
     document.querySelectorAll("[data-i18n-alt]").forEach(function (el) {
       var k = el.getAttribute("data-i18n-alt");
       if (!(k in PT)) PT[k] = el.getAttribute("alt") || "";
+    });
+    document.querySelectorAll("[data-i18n-aria]").forEach(function (el) {
+      var k = el.getAttribute("data-i18n-aria");
+      if (!(k in PT)) PT[k] = el.getAttribute("aria-label") || "";
     });
     PT.docTitle = document.title;
     var meta = document.querySelector('meta[name="description"]');
@@ -103,6 +107,10 @@
     document.querySelectorAll("[data-i18n-alt]").forEach(function (el) {
       var k = el.getAttribute("data-i18n-alt");
       if (dict[k] != null) el.setAttribute("alt", dict[k]);
+    });
+    document.querySelectorAll("[data-i18n-aria]").forEach(function (el) {
+      var k = el.getAttribute("data-i18n-aria");
+      if (dict[k] != null) el.setAttribute("aria-label", dict[k]);
     });
     [["lang-pt", "pt"], ["lang-en", "en"]].forEach(function (p) {
       var b = document.getElementById(p[0]);
