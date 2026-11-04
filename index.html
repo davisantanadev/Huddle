@@ -157,7 +157,7 @@
           <h1>A call da turma, no seu PC.</h1>
           <p class="lead">Chat, voz e tela compartilhada num app só seu e dos seus amigos. Sem anúncio, sem servidor de estranho.</p>
           <div class="get">
-            <a class="btn" href="Instalar-Huddle.exe" download data-testid="download">
+            <a class="btn" href="https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe" download data-testid="download">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
               Baixar para Windows
             </a>
@@ -226,7 +226,7 @@
 
   <script>
     // The newest version comes from the same file the app checks for updates
-    fetch("version.json", { cache: "no-store" })
+    fetch("https://129-159-51-96.sslip.io/download/version.json", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((v) => {
         if (!v || !v.version) return;

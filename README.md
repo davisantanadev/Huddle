@@ -1,8 +1,8 @@
 # Huddle: site de download
 
-Página que apresenta o app Huddle e baixa o instalador (`Instalar-Huddle.exe`).
-Ela fica publicada em https://129-159-51-96.sslip.io/download/, ao lado do
-instalador e do `version.json`, de onde a página lê a versão atual.
+Página estática (só `index.html` e `img/`) que apresenta o app Huddle e baixa
+o instalador. Pode ser publicada como está na Vercel (sem build, sem framework).
 
-Para publicar uma mudança, copie `index.html` e a pasta `img/` para
-`/var/www/eco-download/` no servidor.
+O botão baixa https://129-159-51-96.sslip.io/download/Instalar-Huddle.exe e a
+versão mostrada vem de https://129-159-51-96.sslip.io/download/version.json,
+os dois no servidor do app, então a página não precisa mudar a cada versão nova.
