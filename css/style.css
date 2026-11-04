@@ -368,9 +368,10 @@ kbd { font: 500 15px var(--mono); color: var(--ink); background: var(--panel-2);
   .btn, .btn:hover { transition: none; transform: none; }
 }
 
-/* Assinatura: ícone do GitHub + @ no rodapé */
-.made-by { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); text-decoration: none; transition: color 0.2s; }
+/* Assinatura: botão com borda, ícone do GitHub e @ (leva ao GitHub) */
+.made-by { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); text-decoration: none; padding: 10px 16px; border: 1px solid var(--line); border-radius: 10px; background: rgba(10, 18, 38, 0.5); transition: color 0.2s, border-color 0.25s, background 0.25s, transform 0.2s var(--ease), box-shadow 0.3s var(--ease); }
 .made-by strong { font-weight: 600; color: var(--ink); transition: color 0.2s; }
 .made-by svg { flex-shrink: 0; transition: transform 0.3s var(--ease), color 0.2s; }
-.made-by:hover, .made-by:hover strong { color: var(--blue-hi); }
-.made-by:hover svg { transform: rotate(-8deg) scale(1.12); }
+.made-by:hover { color: var(--ink); border-color: var(--blue-hi); background: rgba(47, 107, 255, 0.14); transform: translateY(-2px); box-shadow: 0 10px 30px -14px var(--glow); }
+.made-by:hover svg { color: var(--blue-hi); transform: rotate(-8deg) scale(1.12); }
+.made-by:active { transform: translateY(0) scale(0.98); }
