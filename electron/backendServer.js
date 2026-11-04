@@ -1305,6 +1305,8 @@ class DiscordBackendServer {
         id: m.id,
         authorId: m.author_id,
         timestamp: m.timestamp_label,
+        // The app shows "Hoje às...", "Ontem às..." or the date from this, in the viewer's own clock
+        createdAt: Number(m.created_at) || null,
         content: m.content,
         replyToId: m.reply_to_id,
         attachment,
@@ -2536,6 +2538,7 @@ class DiscordBackendServer {
           id: msgId,
           authorId: actorId,
           timestamp: tsLabel,
+          createdAt: now,
           content: text,
           replyToId: replyToId || null,
           attachment: attachment || null,

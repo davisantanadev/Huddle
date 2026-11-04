@@ -7012,3 +7012,24 @@ body.call-fullscreen .call-stage {
   inset: 0;
   z-index: 900;
 }
+
+/* Where the day changes in a chat */
+.message-date-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 16px 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.message-date-divider::before,
+.message-date-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-faint);
+}
+.call-chat .message-date-divider {
+  margin: 12px 4px 4px;
+}

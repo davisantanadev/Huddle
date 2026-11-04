@@ -1,0 +1,136 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ns-bench</title></head>
+<body>
+<script type="module">
+// Noise-suppression benchmark: clean speech + realistic noise, played in real
+// time through each filter, compared with the clean speech.
+// Run: electron scripts/ns-bench.js <speech.wav>
+import { createDenoisedStream as rnnoise } from "../src/services/noiseSuppressor.js";
+
+const SR = 48000;
+const ctx = new AudioContext({ sampleRate: SR });
+
+function makeNoise(n) {
+  const out = new Float32Array(n);
+  // fan: pink-ish noise + 100 Hz hum; keyboard: clicks; street: slow rumble
+  let b0 = 0, b1 = 0, b2 = 0, rumble = 0;
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1;
+  const clickAt = new Set();
+  for (let t = 0.3; t < n / SR; t += 0.09 + Math.abs(rnd()) * 0.22) clickAt.add(Math.floor(t * SR));
+  let click = 0;
+  for (let i = 0; i < n; i++) {
+    const w = rnd();
+    b0 = 0.99765 * b0 + w * 0.099; b1 = 0.963 * b1 + w * 0.2965; b2 = 0.57 * b2 + w * 1.0527;
+    const pink = (b0 + b1 + b2 + w * 0.1848) * 0.05;
+    rumble = 0.999 * rumble + rnd() * 0.002;
+    if (clickAt.has(i)) click = 1;
+    const clk = click > 0.01 ? rnd() * click * 0.35 : 0;
+    click *= 0.93;
+    out[i] = pink + 0.02 * Math.sin((2 * Math.PI * 100 * i) / SR) + rumble * 3 + clk;
+  }
+  return out;
+}
+
+async function loadWav(url) {
+  const buf = await (await fetch(url)).arrayBuffer();
+  return (await ctx.decodeAudioData(buf)).getChannelData(0);
+}
+
+// Plays `input` through `filter` (or none) in real time and records the result
+async function runThrough(input, filter) {
+  const buffer = ctx.createBuffer(1, input.length, SR);
+  buffer.copyToChannel(input, 0);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const dest = ctx.createMediaStreamDestination();
+  src.connect(dest);
+  let stream = dest.stream, handle = null;
+  if (filter) {
+    handle = await filter(dest.stream);
+    stream = handle.stream;
+  }
+  const rec = ctx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(ctx, "bench-recorder");
+  const chunks = [];
+  node.port.onmessage = (e) => chunks.push(e.data);
+  rec.connect(node);
+  node.connect(ctx.destination);
+  await new Promise((r) => { src.onended = r; src.start(); });
+  await new Promise((r) => setTimeout(r, 600));
+  node.disconnect(); rec.disconnect();
+  if (handle) await (handle.dispose ? handle.dispose() : handle.destroy());
+  const out = new Float32Array(chunks.reduce((a, c) => a + c.length, 0));
+  let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; }
+  return out;
+}
+
+// Compares 10 ms loudness frames (robust to small timing differences)
+function frames(x) {
+  const n = Math.floor(x.length / 480), f = new Float64Array(n);
+  for (let i = 0; i < n; i++) { let e = 0; for (let j = i * 480; j < i * 480 + 480; j++) e += x[j] * x[j]; f[i] = e / 480; }
+  return f;
+}
+function score(clean, noise, out) {
+  const C = frames(clean), N = frames(noise), O = frames(out);
+  // timing: envelope cross-correlation
+  let lag = 0, best = -Infinity;
+  for (let l = 0; l < 30; l++) {
+    let c = 0; for (let i = 0; i < C.length; i++) c += Math.sqrt(C[i]) * Math.sqrt(O[i + l] || 0);
+    if (c > best) { best = c; lag = l; }
+  }
+  const peak = Math.max(...C);
+  let sp = 0, spIn = 0, nSp = 0, pause = 0, pauseIn = 0;
+  for (let i = 0; i < C.length; i++) {
+    const o = O[i + lag] || 0;
+    if (C[i] > peak * 0.05) { sp += o; spIn += C[i] + N[i]; nSp++; }
+    else if (C[i] < peak * 0.0005) { pause += o; pauseIn += N[i]; }
+  }
+  const db = (x) => +(10 * Math.log10(x)).toFixed(1);
+  return {
+    latencyMs: lag * 10,
+    voiceLevelDb: db(sp / spIn), // voice loudness after vs. before (0 = kept)
+    noiseInPausesDb: db(pause / pauseIn), // noise left when nobody talks (more negative = better)
+    voiceOverNoiseDb: db((sp / nSp) / (pause / Math.max(1, C.filter((c) => c < peak * 0.0005).length))) // higher = cleaner call
+  };
+}
+
+// A TV in the room: another voice, small-speaker sound, a bit of room echo
+function tvNoise(babble, n) {
+  const out = new Float32Array(n);
+  let lp = 0, hp = 0, prev = 0;
+  for (let i = 0; i < n; i++) {
+    const x = babble[i % babble.length];
+    lp += 0.35 * (x - lp); // muffled
+    hp = 0.97 * (hp + lp - prev); prev = lp; // thin, no bass
+    out[i] = hp + 0.35 * (out[i - 2400] || 0) + 0.2 * (out[i - 5300] || 0);
+  }
+  return out;
+}
+
+window.runBench = async (wavUrl, babbleUrl) => {
+  const rec = `registerProcessor("bench-recorder", class extends AudioWorkletProcessor {
+    process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(new Float32Array(ch)); return true; }
+  });`;
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([rec], { type: "application/javascript" })));
+  const clean = await loadWav(wavUrl);
+  const babble = await loadWav(babbleUrl);
+  const scenarios = { "ventilador + teclado (5 dB)": [makeNoise(clean.length), 5], "TV ligada no fundo (10 dB)": [tvNoise(babble, clean.length), 10], "TV mais longe (16 dB)": [tvNoise(babble, clean.length), 16] };
+  const all = {};
+  for (const [scene, [noise, snr]] of Object.entries(scenarios)) {
+    const mix = new Float32Array(clean.length);
+    let ec = 0, en = 0; for (let i = 0; i < clean.length; i++) { ec += clean[i] ** 2; en += noise[i] ** 2; }
+    const k = Math.sqrt(ec / en / Math.pow(10, snr / 10));
+    for (let i = 0; i < clean.length; i++) { noise[i] *= k; mix[i] = clean[i] + noise[i]; }
+    const res = {};
+    for (const [name, f] of [["sem filtro", null], ["só RNNoise", (s) => rnnoise(s, { gate: false })], ["RNNoise + portão de voz", rnnoise]]) {
+      try { res[name] = score(clean, noise, await runThrough(mix, f)); }
+      catch (e) { res[name] = { error: String(e && e.stack || e).slice(0, 300) }; }
+    }
+    all[scene] = res;
+  }
+  return all;
+};
+document.title = "ready";
+</script>
+</body></html>

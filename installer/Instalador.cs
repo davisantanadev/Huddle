@@ -337,9 +337,17 @@ class InstallerForm : Form
         return b;
     }
 
+    // The Windows theme paints a checkbox's own text black on some PCs, whatever
+    // ForeColor says: the box has no text and a label beside it carries it
+    // (clicking the label toggles the box, like the built-in text would)
     CheckBox MakeCheck(string label, Point at)
     {
-        return new CheckBox { Text = label, Checked = true, AutoSize = true, Location = at, ForeColor = text, UseCompatibleTextRendering = true, Cursor = Cursors.Hand };
+        CheckBox box = new CheckBox { Text = "", Checked = true, AutoSize = true, Location = at, Cursor = Cursors.Hand, AccessibleName = label };
+        Label caption = new Label { Text = label, AutoSize = true, Location = new Point(at.X + 20, at.Y + 1), ForeColor = text, BackColor = bg, Cursor = Cursors.Hand };
+        caption.Click += delegate { if (box.Enabled) box.Checked = !box.Checked; };
+        box.EnabledChanged += delegate { caption.ForeColor = box.Enabled ? text : muted; };
+        Controls.Add(caption);
+        return box;
     }
 
     void Browse()
@@ -429,4 +437,3 @@ static class Uninstall
         return 0;
     }
 }
-

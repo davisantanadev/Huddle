@@ -49,7 +49,7 @@ const uiState = {
   activeModal: null, // "create-server" | "create-channel" | "invite" | "quick-switcher" | "rea-info" | "custom-status" | "screenshare-picker"
   modalPayload: null,
   settingsOverlay: null, // null | { type: "user", tab: "account" } | { type: "server", tab: "overview" }
-  userPopout: null, // null | { userId }
+  userPopout: null, // null | { userId, anchor? } (anchor: rect of what was clicked)
   statusMenuOpen: false,
   serverMenuOpen: false,
   emojiPickerForMessageId: null, // null | "composer" | messageId
@@ -1773,6 +1773,46 @@ const FULLSCREEN_ICON = `<svg width="20" height="20" viewBox="0 0 24 24" fill="n
 const FULLSCREEN_EXIT_ICON = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`;
 
 // Edit, reactions, reply and delete work here as in the regular chat
+// Message times in the viewer's clock: "Hoje às 21:05", "Ontem às 09:12",
+// "03/11/2026 18:40". Messages from older servers only carry a ready label.
+function sameDay(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+function clockTime(d) {
+  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+function messageTime(m) {
+  if (!m.createdAt) return String(m.timestamp || "").replace("Today at ", "Hoje às ");
+  const d = new Date(m.createdAt);
+  const now = new Date();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (sameDay(d, now)) return `Hoje às ${clockTime(d)}`;
+  if (sameDay(d, yesterday)) return `Ontem às ${clockTime(d)}`;
+  return `${d.toLocaleDateString("pt-BR")} ${clockTime(d)}`;
+}
+function messageClock(m) {
+  return m.createdAt ? clockTime(new Date(m.createdAt)) : String(m.timestamp || "").replace("Today at ", "");
+}
+function messageDayKey(m) {
+  if (!m?.createdAt) return null;
+  const d = new Date(m.createdAt);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+// A line with the date where the day changes, so each day's messages stand apart
+function dateDivider(m, prev) {
+  const key = messageDayKey(m);
+  if (!key || key === messageDayKey(prev)) return "";
+  const d = new Date(m.createdAt);
+  const now = new Date();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const label = sameDay(d, now)
+    ? "Hoje"
+    : sameDay(d, yesterday)
+      ? "Ontem"
+      : d.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  return `<div class="message-date-divider" role="separator" data-key="day-${key}"><span>${escapeHtml(label)}</span></div>`;
+}
+
 function renderCallChatTools(state, ch, m) {
   const guild = state.guilds.find((g) => (g.channels || []).some((c) => c.id === ch.id)) || null;
   const mine = m.authorId === state.auth.currentUserId;
@@ -1801,7 +1841,9 @@ function renderCallChatPanel(state, ch) {
       : messages
           .map((m, idx) => {
             const author = state.users[m.authorId] || { id: m.authorId, displayName: "Usuário", avatarColor: "#5865f2" };
-            const grouped = idx > 0 && messages[idx - 1].authorId === m.authorId && !m.replyToId;
+            const prevMsg = idx > 0 ? messages[idx - 1] : null;
+            const divider = dateDivider(m, prevMsg);
+            const grouped = Boolean(prevMsg) && !divider && prevMsg.authorId === m.authorId && !m.replyToId;
             const replyTarget = m.replyToId ? messages.find((item) => item.id === m.replyToId) : null;
             const replyHtml = replyTarget
               ? `<div class="message-reply-preview"><span>↱</span><strong style="color:var(--header-primary);">@${escapeHtml(state.users[replyTarget.authorId]?.username || "user")}</strong><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(replyTarget.content)}</span></div>`
@@ -1822,14 +1864,14 @@ function renderCallChatPanel(state, ch) {
                   </div>`
                 : `<div class="message-text">${formatMessageMarkdown(m.content)}${m.edited ? `<span style="font-size:10px;color:var(--text-muted);margin-left:4px;">(editado)</span>` : ""}${m.pinned ? `<span style="font-size:10px;color:var(--status-yellow);margin-left:4px;">📌</span>` : ""}</div>`;
             const attachment = renderAttachment(m.attachment) + renderPollCard(m, ch.id);
-            return `
+            return `${divider}
               <div class="call-chat-msg ${grouped ? "grouped" : ""} ${mentionsMe(m.content) ? "mentioned" : ""}" data-message-id="${m.id}">
                 ${grouped ? "" : `<div data-action="open-user-popout" data-user-id="${author.id}" style="cursor:pointer;">${renderAvatar(author)}</div>`}
                 <div class="call-chat-msg-body">
                   ${
                     grouped
                       ? ""
-                      : `<div class="call-chat-msg-head"><span class="message-author" data-action="open-user-popout" data-user-id="${author.id}">${escapeHtml(author.displayName)}</span><span class="message-timestamp">${escapeHtml(m.timestamp)}</span></div>`
+                      : `<div class="call-chat-msg-head"><span class="message-author" data-action="open-user-popout" data-user-id="${author.id}">${escapeHtml(author.displayName)}</span><span class="message-timestamp">${escapeHtml(messageTime(m))}</span></div>`
                   }
                   ${replyHtml}
                   ${textHtml}
@@ -2049,7 +2091,8 @@ function renderChatStage(state) {
               avatarUrl: ""
             };
             const prev = idx > 0 ? visibleMessages[idx - 1] : null;
-            const isGrouped = !isCompact && prev && prev.authorId === m.authorId && !m.replyToId;
+            const divider = dateDivider(m, prev);
+            const isGrouped = !isCompact && prev && !divider && prev.authorId === m.authorId && !m.replyToId;
             const isMentioned = mentionsMe(m.content) || /(^|\s)@everyone\b/i.test(m.content || "");
 
             const replyTarget = m.replyToId ? allMessages.find((item) => item.id === m.replyToId) : null;
@@ -2121,16 +2164,16 @@ function renderChatStage(state) {
                   </button>`
                 : "";
 
-            return `
+            return `${divider}
               <div
                 class="message-row ${isGrouped ? "compact-followup" : ""} ${isMentioned ? "mentioned" : ""}"
                 data-message-id="${m.id}"
               >
                 ${
                   isCompact
-                    ? `<span class="message-timestamp" style="min-width:55px;padding-top:3px;">${escapeHtml(m.timestamp.replace("Today at ", ""))}</span>`
+                    ? `<span class="message-timestamp" style="min-width:55px;padding-top:3px;">${escapeHtml(messageClock(m))}</span>`
                     : isGrouped
-                      ? `<div class="message-gutter-time">${escapeHtml(m.timestamp.replace("Today at ", ""))}</div>`
+                      ? `<div class="message-gutter-time">${escapeHtml(messageClock(m))}</div>`
                       : `<div data-action="open-user-popout" data-user-id="${author.id}" style="cursor:pointer;">
                           ${renderAvatar(author, "lg", false)}
                         </div>`
@@ -2145,7 +2188,7 @@ function renderChatStage(state) {
                           </span>
                           <span style="font-size:11px;color:var(--text-muted);">@${escapeHtml(author.username)}</span>
                           ${m.pinned ? `<span style="font-size:11px;color:var(--status-yellow);">📌 Fixada</span>` : ""}
-                          <span class="message-timestamp">${escapeHtml(m.timestamp)}</span>
+                          <span class="message-timestamp">${escapeHtml(messageTime(m))}</span>
                         </div>`
                       : ""
                   }
@@ -2639,6 +2682,27 @@ function renderPopoutRoles(state, guild, u, memberRoles, assignableRoles, canMan
     </div>`;
 }
 
+// Next to whatever was clicked (a name in the chat, someone in the call...):
+// to its right when there is room, otherwise to its left. Without an anchor,
+// beside the member list as before.
+const USER_POPOUT_WIDTH = 330;
+const USER_POPOUT_GAP = 12;
+function userPopoutPosition(anchor) {
+  if (!anchor) return "top:84px;right:255px;";
+  const fitsRight = anchor.right + USER_POPOUT_GAP + USER_POPOUT_WIDTH <= window.innerWidth - USER_POPOUT_GAP;
+  const left = fitsRight ? anchor.right + USER_POPOUT_GAP : Math.max(USER_POPOUT_GAP, anchor.left - USER_POPOUT_GAP - USER_POPOUT_WIDTH);
+  return `left:${Math.round(left)}px;top:${Math.round(Math.max(USER_POPOUT_GAP, anchor.top))}px;`;
+}
+
+// Its height is only known once drawn: moved up if it would leave the window
+function keepUserPopoutOnScreen() {
+  const el = document.querySelector(".user-popout");
+  if (!el || !uiState.userPopout?.anchor) return;
+  const r = el.getBoundingClientRect();
+  const overflow = r.bottom - (window.innerHeight - USER_POPOUT_GAP);
+  if (overflow > 0) el.style.top = `${Math.max(USER_POPOUT_GAP, r.top - overflow)}px`;
+}
+
 function renderUserPopout(state) {
   if (!uiState.userPopout) return "";
   const u = state.users[uiState.userPopout.userId];
@@ -2658,7 +2722,7 @@ function renderUserPopout(state) {
     : [];
 
   return `
-    <div class="floating-popout user-popout ${profileCardClasses(u)}" style="top:84px;right:255px;width:330px;${profileThemeStyle(u)}" data-testid="user-profile-popout">
+    <div class="floating-popout user-popout ${profileCardClasses(u)}" style="${userPopoutPosition(uiState.userPopout.anchor)}width:330px;${profileThemeStyle(u)}" data-testid="user-profile-popout">
       <div style="position:relative;">
         ${renderBanner(u, 96)}
         <button
@@ -5376,6 +5440,7 @@ export function renderApp() {
 
   bindReplacingDuplicates(bindFormEvents);
   syncEmojiPicker(uiState.emojiPickerForMessageId, uiState.emojiPickerAnchor);
+  keepUserPopoutOnScreen();
   attachLiveScreenShareVideo();
   syncMediaEditor(state);
 }
@@ -7874,7 +7939,8 @@ async function handleGlobalClick(e) {
       const targetUserId = btn.getAttribute("data-user-id");
       const isSame = uiState.userPopout && uiState.userPopout.userId === targetUserId;
       closeAllFloatingMenus("userPopout");
-      uiState.userPopout = isSame ? null : { userId: targetUserId };
+      const r = btn.getBoundingClientRect();
+      uiState.userPopout = isSame ? null : { userId: targetUserId, anchor: { left: r.left, right: r.right, top: r.top, bottom: r.bottom } };
       renderApp();
       break;
     }
