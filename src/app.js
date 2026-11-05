@@ -2623,11 +2623,11 @@ function renderChatStage(state) {
             data-testid="jump-to-present-btn"
             ${uiState.isScrolledUp ? "" : "hidden"}
           >
-            <span id="jump-to-present-label">
+            <span id="jump-to-present-label" ${uiState.newMessagesWhileScrolledUp > 0 ? "" : "hidden"}>
               ${
                 uiState.newMessagesWhileScrolledUp > 0
-                  ? `🔔 ${uiState.newMessagesWhileScrolledUp} ${uiState.newMessagesWhileScrolledUp === 1 ? "nova mensagem" : "novas mensagens"} neste canal`
-                  : "Você está vendo mensagens antigas"
+                  ? `🔔 ${uiState.newMessagesWhileScrolledUp} ${uiState.newMessagesWhileScrolledUp === 1 ? "nova mensagem" : "novas mensagens"} ·`
+                  : ""
               }
             </span>
             <span class="jump-to-present-cta">Ir para mensagem recente ↓</span>
@@ -9707,10 +9707,13 @@ function syncJumpToPresentBar() {
   bar.removeAttribute("hidden");
   const count = Number(uiState.newMessagesWhileScrolledUp || 0);
   bar.classList.toggle("has-new", count > 0);
-  label.textContent =
-    count > 0
-      ? `🔔 ${count} ${count === 1 ? "nova mensagem" : "novas mensagens"} neste canal`
-      : "Você está vendo mensagens antigas";
+  if (count > 0) {
+    label.removeAttribute("hidden");
+    label.textContent = `🔔 ${count} ${count === 1 ? "nova mensagem" : "novas mensagens"} ·`;
+  } else {
+    label.setAttribute("hidden", "");
+    label.textContent = "";
+  }
 }
 
 function jumpToMessage(targetId, inCallChat = false) {
