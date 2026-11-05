@@ -5,13 +5,13 @@
 // Here unchanged nodes stay in place, so images keep animating, scroll
 // positions hold and the focused text box keeps its text and caret.
 //
-// Children are matched by key (data-key or id) when they have one, otherwise by
-// position and tag. An element with data-keep-children keeps
+// Children are matched by key (data-key, data-message-id, or id) when they have
+// one, otherwise by position and tag. An element with data-keep-children keeps
 // whatever is inside it (e.g. a slot a <video> was moved into).
 
 function keyOf(node) {
   if (node.nodeType !== 1) return null;
-  return node.getAttribute("data-key") || node.id || null;
+  return node.getAttribute("data-key") || node.getAttribute("data-message-id") || node.id || null;
 }
 
 function syncAttributes(from, to) {

@@ -409,8 +409,8 @@ class Store {
             }
           }
           this.notifyIncomingMessage(chId, msg.id);
-          this.onChannelMessageCreated?.(chId, msg);
           this.notify({ skipPersist: true });
+          this.onChannelMessageCreated?.(chId, msg);
           return;
         }
         this.requestSync().then(() => {
@@ -635,7 +635,8 @@ class Store {
   }
 
   getActiveChannel() {
-    if (this.state.navigation.view === "home" && this.state.navigation.homeSection === "dm") {
+    if (this.state.navigation.view === "home") {
+      if (this.state.navigation.homeSection !== "dm") return null;
       const dm = this.state.dms.find((d) => d.id === this.state.navigation.activeDmId) || this.state.dms[0];
       if (!dm) return null;
       const other = this.state.users[dm.userId];
@@ -1833,8 +1834,8 @@ class Store {
     };
     if (!this.state.messages[channelId]) this.state.messages[channelId] = [];
     this.state.messages[channelId].push(optimisticMsg);
-    this.onChannelMessageCreated?.(channelId, optimisticMsg);
     this.notify({ skipPersist: true });
+    this.onChannelMessageCreated?.(channelId, optimisticMsg);
 
     const res = await NativeBridge.rpc("sendMessage", {
       channelId,

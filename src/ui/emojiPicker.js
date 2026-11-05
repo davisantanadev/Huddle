@@ -1,6 +1,6 @@
-// Emoji picker (message reactions and the chat box). Built once and kept
-// outside the app tree: re-rendering the app never rebuilds its ~1900 buttons.
-// "Frequentes" comes first: the user's most used emoji, topped up with presets.
+// Emoji picker (message reactions and the chat box). Built once, mounted in
+// document.body, and toggled via hidden attribute so opening never rebuilds or
+// re-layouts ~1900 buttons from scratch.
 import { EMOJI_CATEGORIES } from "../data/emojis.js";
 
 const DEFAULT_FREQUENT = ["👍", "❤️", "😂", "🔥", "😭", "🙏", "😍", "💀", "👀", "🎉", "😮", "😢", "😡", "✅", "💯", "🤣", "🥰", "😎", "🤔", "👏", "🥺", "😅", "🤝", "💜"];
@@ -24,6 +24,8 @@ const categories = ORDER.map((id) => EMOJI_CATEGORIES.find((c) => c.id === id)).
 const names = new Map();
 for (const c of categories) for (const [emoji, name] of c.emojis) names.set(emoji, name);
 
+let frequentDirty = true;
+
 function readUsage() {
   try {
     return JSON.parse(localStorage.getItem(USAGE_KEY) || "{}") || {};
@@ -37,6 +39,7 @@ export function recordEmojiUse(emoji) {
     const usage = readUsage();
     usage[emoji] = (usage[emoji] || 0) + 1;
     localStorage.setItem(USAGE_KEY, JSON.stringify(usage));
+    frequentDirty = true;
   } catch (_) {}
 }
 
@@ -50,12 +53,25 @@ function frequentEmojis() {
 const button = (emoji, name) =>
   `<button type="button" class="emoji-btn" data-action="select-emoji" data-emoji="${emoji}" data-name="${name || ""}" title=":${name || ""}:">${emoji}</button>`;
 
-const view = { root: null, target: null };
+const view = { root: null, target: null, lastFrequentKey: "" };
+
+function refreshFrequentGrid(root) {
+  const list = frequentEmojis();
+  const key = list.join("|");
+  if (!frequentDirty && view.lastFrequentKey === key) return;
+  frequentDirty = false;
+  view.lastFrequentKey = key;
+  const grid = root.querySelector("[data-frequent-grid]");
+  if (grid) {
+    grid.innerHTML = list.map((e) => button(e, names.get(e) || "")).join("");
+  }
+}
 
 function build() {
   const root = document.createElement("div");
   root.className = "floating-popout emoji-picker";
   root.setAttribute("data-testid", "emoji-picker");
+  root.hidden = true;
   root.innerHTML = `
     <div class="emoji-picker-head">
       <input type="text" class="emoji-search" placeholder="Buscar emoji (ex.: grinning, heart, fire)" autocomplete="off" data-testid="emoji-search" />
@@ -93,6 +109,8 @@ function build() {
     </div>
   `;
 
+  refreshFrequentGrid(root);
+
   const search = root.querySelector(".emoji-search");
   search.addEventListener("input", () => filter(search.value));
   root.querySelector(".emoji-cats").addEventListener("click", (e) => {
@@ -111,6 +129,30 @@ function build() {
     root.querySelector(".emoji-foot-name").textContent = `:${btn.getAttribute("data-name")}:`;
   });
   return root;
+}
+
+function ensureMounted() {
+  if (!view.root) view.root = build();
+  if (!view.root.isConnected && document.body) {
+    document.body.appendChild(view.root);
+  }
+  return view.root;
+}
+
+// Pre-warm the emoji picker DOM during browser idle time so the very first click
+// opens instantaneously without waiting for ~1900 buttons to parse & mount.
+if (typeof window !== "undefined") {
+  const warm = () => {
+    const schedule = window.requestIdleCallback || ((cb) => setTimeout(cb, 120));
+    schedule(() => {
+      if (document.body && !view.root) ensureMounted();
+    });
+  };
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", warm, { once: true });
+  } else {
+    warm();
+  }
 }
 
 // Searching shows one "Resultados" list: exact name first, then names that
@@ -139,29 +181,30 @@ function filter(query) {
 // button that opened it
 export function syncEmojiPicker(target, anchor) {
   if (!target) {
-    view.root?.remove();
+    if (view.root) view.root.hidden = true;
     view.target = null;
     return;
   }
-  if (!view.root) view.root = build();
-  const root = view.root;
-  if (view.target !== target || !root.isConnected) {
+  const root = ensureMounted();
+  const wasHidden = root.hidden;
+  if (view.target !== target || wasHidden) {
     view.target = target;
     root.setAttribute("data-emoji-target", target);
-    root.querySelector("[data-frequent-grid]").innerHTML = frequentEmojis()
-      .map((e) => button(e, names.get(e) || ""))
-      .join("");
+    refreshFrequentGrid(root);
     const search = root.querySelector(".emoji-search");
-    search.value = "";
-    filter("");
-    root.querySelector(".emoji-scroll").scrollTop = 0;
+    if (search.value) {
+      search.value = "";
+      filter("");
+    }
+    const scrollEl = root.querySelector(".emoji-scroll");
+    if (scrollEl) scrollEl.scrollTop = 0;
 
     const a = anchor || { left: window.innerWidth - WIDTH - 280, right: window.innerWidth - 280, top: window.innerHeight - 90, bottom: window.innerHeight - 90 };
     const left = Math.max(8, Math.min(a.right - WIDTH, window.innerWidth - WIDTH - 8));
     const top = a.top - HEIGHT - 8 >= 8 ? a.top - HEIGHT - 8 : Math.min(a.bottom + 8, window.innerHeight - HEIGHT - 8);
     root.style.left = `${left}px`;
     root.style.top = `${Math.max(8, top)}px`;
-    document.body.appendChild(root);
+    root.hidden = false;
     requestAnimationFrame(() => search.focus());
   }
 }

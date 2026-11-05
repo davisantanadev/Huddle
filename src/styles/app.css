@@ -230,7 +230,12 @@ button {
   overflow: hidden;
 }
 
-.guild-item-wrap:hover .guild-btn,
+.guild-item-wrap:hover .guild-btn {
+  border-radius: 16px;
+  background-color: var(--brand-hover, var(--brand-purple));
+  color: #ffffff;
+}
+
 .guild-item-wrap.active .guild-btn {
   border-radius: 16px;
   background-color: var(--brand-purple);
@@ -703,6 +708,11 @@ button {
 .icon-btn:hover {
   background-color: var(--bg-modifier-hover);
   color: var(--interactive-hover);
+}
+
+.icon-btn.active {
+  background-color: var(--bg-modifier-selected);
+  color: var(--interactive-active);
 }
 
 .icon-btn.danger-active {
@@ -1711,7 +1721,7 @@ button {
 }
 
 .context-menu-item:hover {
-  background-color: var(--brand-purple);
+  background-color: var(--brand-hover, var(--brand-purple));
   color: #fff;
 }
 
@@ -4202,7 +4212,7 @@ body.is-resizing {
 }
 
 .audio-device-item:hover {
-  background-color: var(--brand-purple);
+  background-color: var(--brand-hover, var(--brand-purple));
   color: #ffffff;
 }
 
@@ -4766,7 +4776,7 @@ body.is-resizing {
 }
 
 .composer-plus-item:hover {
-  background-color: var(--brand-purple);
+  background-color: var(--brand-hover, var(--brand-purple));
   color: #ffffff;
 }
 
@@ -5606,6 +5616,11 @@ a.message-file-box:hover {
 
 .emoji-btn:hover {
   background: var(--bg-modifier-hover, rgba(255, 255, 255, 0.08));
+}
+
+.emoji-picker .emoji-section:not([data-emoji-section="frequent"]):not([data-emoji-section="people"]):not([data-emoji-section="results"]) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 260px;
 }
 
 .emoji-btn[hidden],
@@ -7576,7 +7591,7 @@ body.is-resizing-row * {
 }
 
 .composer-gif-btn:hover {
-  background: var(--brand-purple, #5865f2);
+  background: var(--brand-hover, var(--brand-purple, #5865f2));
   color: #fff;
 }
 
@@ -7605,18 +7620,13 @@ body.is-resizing-row * {
 .messages-scroller {
   will-change: scroll-position;
   overscroll-behavior: contain;
-  overflow-anchor: auto;
+  overflow-anchor: none;
   scrollbar-gutter: stable;
 }
 
 .messages-scroller.is-scrolling .message-row,
 .messages-scroller.is-scrolling .message-row * {
   pointer-events: none;
-}
-
-.messages-scroller .message-row:not(:hover):not(:focus-within):not(.reply-jump-highlight) {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 64px;
 }
 
 /* ===== Kamui accent color picker (Aparência) ===== */

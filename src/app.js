@@ -2477,12 +2477,16 @@ function renderChatStage(state) {
         </form>
       </aside>
     `;
-  } else if (state.navigation.showMemberList && !isDm) {
-    const guild = store.getActiveGuild();
-    const memberIds = Array.isArray(guild?.memberIds) ? guild.memberIds : [];
-    const guildUsers = memberIds.map((id) => state.users[id]).filter(Boolean);
-    const onlineUsers = guildUsers.filter((u) => u.status !== "offline");
-    const offlineUsers = guildUsers.filter((u) => u.status === "offline");
+  } else if (state.navigation.showMemberList) {
+    const guild = isDm ? null : store.getActiveGuild();
+    const memberIds = isDm
+      ? [state.auth.currentUserId, channel.userId].filter(Boolean)
+      : Array.isArray(guild?.memberIds)
+        ? guild.memberIds
+        : [];
+    const dmOrGuildUsers = memberIds.map((id) => state.users[id]).filter(Boolean);
+    const onlineUsers = dmOrGuildUsers.filter((u) => u.status !== "offline");
+    const offlineUsers = dmOrGuildUsers.filter((u) => u.status === "offline");
 
     rightSidebarHtml = `
       <div class="members-resizer-anchor"><div class="sidebar-resizer left" data-sidebar-resizer="members" title="Arraste para mudar a largura" role="separator" aria-orientation="vertical"></div></div>
@@ -2513,6 +2517,7 @@ function renderChatStage(state) {
                   ${renderAvatar(u)}
                   <div style="min-width:0;flex:1;">
                     <div class="member-name" style="${nameColorStyle(guild, u.id)}">${escapeHtml(store.memberNickname(guild, u.id) || u.displayName)}</div>
+                    <div class="member-activity">@${escapeHtml(u.username)}</div>
                   </div>
                 </div>
               `
@@ -2574,16 +2579,12 @@ function renderChatStage(state) {
             ${Icons.pin}
             ${pinnedList.length > 0 ? `<span style="font-size:10px;margin-left:2px;color:var(--brand-purple);font-weight:700;">${pinnedList.length}</span>` : ""}
           </button>
-          ${
-            !isDm
-              ? `<button
-                  class="icon-btn ${state.navigation.showMemberList ? "active" : ""}"
-                  data-action="toggle-member-list"
-                  title="Alternar Lista de Membros"
-                  data-testid="toggle-members-btn"
-                >${Icons.friends}</button>`
-              : ""
-          }
+          <button
+            class="icon-btn ${state.navigation.showMemberList ? "active" : ""}"
+            data-action="toggle-member-list"
+            title="Alternar Lista de Membros"
+            data-testid="toggle-members-btn"
+          >${Icons.friends}</button>
           <div class="header-search-box">
             <input
               type="text"
@@ -2642,7 +2643,6 @@ function renderChatStage(state) {
                 placeholder="${perms.send ? `Conversar em ${isDm ? `@${channel.name}` : `#${channel.name}`}` : "Você não tem permissão para enviar mensagens neste canal"}"
                 autocomplete="off"
               />
-              <button type="button" class="icon-btn" data-action="insert-slash-shrug" title="Inserir /shrug">¯\\_(ツ)_/¯</button>
               ${perms.send ? `<button type="button" class="composer-gif-btn" data-action="open-gif-picker" data-target="chat" title="Enviar GIF" data-testid="composer-gif-btn">GIF</button>` : ""}
               <button type="button" class="icon-btn" data-action="open-emoji-picker" data-message-id="composer" title="Escolher Emoji">${Icons.smile}</button>
             </form>
@@ -6110,27 +6110,33 @@ function bindFormEvents() {
   if (mainScroller && activeCh) {
     const count = mainScroller.querySelectorAll(".message-row[data-message-id]").length;
     const key = activeCh.id;
-    const channelChanged = mainScroller.dataset.seenKey !== key;
+    const channelChanged = mainScroller._seenKey !== key;
     if (channelChanged) {
       uiState.isScrolledUp = false;
       uiState.newMessagesWhileScrolledUp = 0;
-      mainScroller.scrollTop = mainScroller.scrollHeight;
+      scrollChatToBottom(mainScroller);
       requestAnimationFrame(() => {
-        const sc = document.getElementById("messages-scroller");
-        if (sc) sc.scrollTop = sc.scrollHeight;
         const activeTag = document.activeElement?.tagName;
         if (!uiState.activeModal && !uiState.settingsOverlay && activeTag !== "INPUT" && activeTag !== "TEXTAREA") {
           document.getElementById("composer-text-input")?.focus();
         }
       });
-    } else if (Number(mainScroller.dataset.seenCount) !== count && !uiState.isScrolledUp) {
-      mainScroller.scrollTop = mainScroller.scrollHeight;
+    } else if (mainScroller._seenCount !== count && !uiState.isScrolledUp) {
+      scrollChatToBottom(mainScroller);
     }
-    mainScroller.dataset.seenKey = key;
-    mainScroller.dataset.seenCount = String(count);
+    mainScroller._seenKey = key;
+    mainScroller._seenCount = count;
 
-    if (!mainScroller.dataset.scrollBound) {
-      mainScroller.dataset.scrollBound = "1";
+    if (!mainScroller._scrollBound) {
+      mainScroller._scrollBound = true;
+      // When message media (images, avatars, attachments) loads, keep view pinned to bottom if user hasn't scrolled up
+      mainScroller.addEventListener(
+        "load",
+        () => {
+          if (!uiState.isScrolledUp) scrollChatToBottom(mainScroller);
+        },
+        true
+      );
       // One check per frame, and hover effects paused while the list moves
       let scrollFrame = 0;
       let scrollIdleTimer = null;
@@ -7080,9 +7086,11 @@ function bindFormEvents() {
       const count = scroller.querySelectorAll("[data-message-id]").length;
       const key = callChatForm.getAttribute("data-channel-id");
       const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-      if (scroller.dataset.seenKey !== key || (Number(scroller.dataset.seenCount) !== count && nearBottom)) scroller.scrollTop = scroller.scrollHeight;
-      scroller.dataset.seenKey = key;
-      scroller.dataset.seenCount = count;
+      if (scroller._seenKey !== key || (scroller._seenCount !== count && nearBottom)) {
+        scrollChatToBottom(scroller);
+      }
+      scroller._seenKey = key;
+      scroller._seenCount = count;
     }
     callChatForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -7929,23 +7937,42 @@ async function handleGlobalClick(e) {
       break;
     case "select-home":
       closeAllFloatingMenus();
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
       store.selectHome("friends");
       break;
     case "home-nav":
       closeAllFloatingMenus();
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
       store.selectHome(btn.getAttribute("data-section"));
       break;
     case "open-dm":
       closeAllFloatingMenus();
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
       store.selectHome("dm", btn.getAttribute("data-dm-id"));
+      requestAnimationFrame(() => {
+        scrollChatToBottom(document.getElementById("messages-scroller"));
+      });
       break;
     case "select-guild":
       closeAllFloatingMenus();
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
       store.selectGuild(btn.getAttribute("data-guild-id"));
+      requestAnimationFrame(() => {
+        scrollChatToBottom(document.getElementById("messages-scroller"));
+      });
       break;
     case "select-channel":
       closeAllFloatingMenus();
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
       store.selectChannel(btn.getAttribute("data-channel-id"));
+      requestAnimationFrame(() => {
+        scrollChatToBottom(document.getElementById("messages-scroller"));
+      });
       break;
     case "select-discovery":
       closeAllFloatingMenus();
@@ -8737,12 +8764,16 @@ async function handleGlobalClick(e) {
       e.stopPropagation();
       const msgId = btn.getAttribute("data-message-id");
       const isSame = uiState.emojiPickerForMessageId === msgId;
-      closeAllFloatingMenus("emojiPicker");
+      const closedOthers = closeAllFloatingMenus("emojiPicker");
       uiState.emojiPickerForMessageId = isSame ? null : msgId;
       // Opened from the message's right-click menu the toolbar button is hidden: anchor at the message
       const r = (btn.offsetParent ? btn : btn.closest("[data-message-id]") || btn).getBoundingClientRect();
       uiState.emojiPickerAnchor = { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
-      renderApp();
+      if (closedOthers) {
+        renderApp();
+      } else {
+        syncEmojiPicker(uiState.emojiPickerForMessageId, uiState.emojiPickerAnchor);
+      }
       break;
     }
     case "select-emoji": {
@@ -8909,6 +8940,17 @@ async function handleGlobalClick(e) {
 }
 
 document.addEventListener("click", handleGlobalClick);
+
+function scrollChatToBottom(scroller) {
+  if (!scroller) return;
+  scroller.scrollTop = scroller.scrollHeight;
+  requestAnimationFrame(() => {
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    requestAnimationFrame(() => {
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+  });
+}
 
 function channelIdOrFallback(ch) {
   return ch ? ch.id : "c_general";
@@ -9843,16 +9885,23 @@ function jumpToMessage(targetId, inCallChat = false) {
 
 store.onChannelMessageCreated = (channelId, msg) => {
   const active = store.getActiveChannel();
-  if (!active || active.id !== channelId) return;
+  const callChatChId = document.getElementById("call-chat-form")?.getAttribute("data-channel-id");
   const isMe = msg?.authorId === store.getState().auth.currentUserId;
-  if (!isMe && uiState.isScrolledUp) {
-    uiState.newMessagesWhileScrolledUp = Number(uiState.newMessagesWhileScrolledUp || 0) + 1;
-    syncJumpToPresentBar();
-  } else {
-    requestAnimationFrame(() => {
+  if (active && active.id === channelId) {
+    if (!isMe && uiState.isScrolledUp) {
+      uiState.newMessagesWhileScrolledUp = Number(uiState.newMessagesWhileScrolledUp || 0) + 1;
+      syncJumpToPresentBar();
+    } else {
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
+      syncJumpToPresentBar();
       const scroller = document.getElementById("messages-scroller");
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
-    });
+      scrollChatToBottom(scroller);
+    }
+  }
+  if (callChatChId === channelId) {
+    const callScroller = document.getElementById("call-chat-scroller");
+    scrollChatToBottom(callScroller);
   }
 };
 

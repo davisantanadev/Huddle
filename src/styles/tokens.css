@@ -166,12 +166,17 @@
   --bg-input: #0b0e17;
   --brand-purple: #6366f1;
   --brand-hover: #4f46e5;
+  --bg-modifier-hover: rgba(148, 163, 184, 0.1);
+  --bg-modifier-active: rgba(148, 163, 184, 0.16);
+  --bg-modifier-selected: rgba(148, 163, 184, 0.22);
   --header-primary: #eef2ff;
-  --header-secondary: #c7d2fe;
+  --header-secondary: #aeb7d0;
   --text-normal: #e0e7ff;
-  --text-muted: #94a3b8;
-  --channels-default: #94a3b8;
-  --divider-subtle: rgba(148, 163, 184, 0.2);
+  --text-muted: #8b95af;
+  --channels-default: #8b95af;
+  --interactive-normal: #9aa4bf;
+  --interactive-hover: #dbe2f4;
+  --divider-subtle: rgba(148, 163, 184, 0.16);
 }
 
 /* 4. OLED / PRETO PROFUNDO (OLED / ONYX) */
@@ -191,10 +196,15 @@
   --bg-card: #12141a;
   --bg-card-secondary: #050507;
   --bg-input: #050507;
+  --bg-modifier-hover: rgba(255, 255, 255, 0.06);
+  --bg-modifier-active: rgba(255, 255, 255, 0.1);
+  --bg-modifier-selected: rgba(255, 255, 255, 0.14);
   --header-primary: #ffffff;
   --text-normal: #e5e7eb;
-  --text-muted: #9ca3af;
-  --divider-subtle: rgba(255, 255, 255, 0.1);
+  --text-muted: #8e95a2;
+  --channels-default: #8e95a2;
+  --interactive-normal: #9ca3af;
+  --divider-subtle: rgba(255, 255, 255, 0.09);
 }
 
 /* 5. AZUL PROFUNDO (OCEAN) */
@@ -216,12 +226,17 @@
   --brand-purple: #0ea5e9;
   --brand-hover: #0284c7;
   --brand-active: #0369a1;
+  --bg-modifier-hover: rgba(148, 196, 224, 0.1);
+  --bg-modifier-active: rgba(148, 196, 224, 0.16);
+  --bg-modifier-selected: rgba(148, 196, 224, 0.22);
   --header-primary: #f0f9ff;
-  --header-secondary: #bae6fd;
-  --text-normal: #e0f2fe;
-  --text-muted: #7dd3fc;
-  --channels-default: #93c5fd;
-  --divider-subtle: rgba(125, 211, 252, 0.2);
+  --header-secondary: #aac8dc;
+  --text-normal: #dceef8;
+  --text-muted: #84a7bf;
+  --channels-default: #89acc4;
+  --interactive-normal: #97b8ce;
+  --interactive-hover: #e0f2fe;
+  --divider-subtle: rgba(125, 211, 252, 0.14);
 }
 
 /* 6. ROXO / NEBULA (NEBULA) */
@@ -243,12 +258,17 @@
   --brand-purple: #a855f7;
   --brand-hover: #9333ea;
   --brand-active: #7e22ce;
+  --bg-modifier-hover: rgba(196, 170, 228, 0.1);
+  --bg-modifier-active: rgba(196, 170, 228, 0.16);
+  --bg-modifier-selected: rgba(196, 170, 228, 0.22);
   --header-primary: #faf5ff;
-  --header-secondary: #e9d5ff;
-  --text-normal: #f3e8ff;
-  --text-muted: #c084fc;
-  --channels-default: #d8b4fe;
-  --divider-subtle: rgba(216, 180, 254, 0.2);
+  --header-secondary: #c5b3dc;
+  --text-normal: #efe5fa;
+  --text-muted: #9e8ab8;
+  --channels-default: #a390bd;
+  --interactive-normal: #b29fcb;
+  --interactive-hover: #f3e8ff;
+  --divider-subtle: rgba(216, 180, 254, 0.14);
 }
 
 /* 7. VERDE ESCURO (EMERALD) */
@@ -270,12 +290,17 @@
   --brand-purple: #10b981;
   --brand-hover: #059669;
   --brand-active: #047857;
+  --bg-modifier-hover: rgba(148, 210, 188, 0.1);
+  --bg-modifier-active: rgba(148, 210, 188, 0.16);
+  --bg-modifier-selected: rgba(148, 210, 188, 0.22);
   --header-primary: #ecfdf5;
-  --header-secondary: #a7f3d0;
-  --text-normal: #d1fae5;
-  --text-muted: #6ee7b7;
-  --channels-default: #6ee7b7;
-  --divider-subtle: rgba(110, 231, 183, 0.2);
+  --header-secondary: #a8cfc0;
+  --text-normal: #d8f3e8;
+  --text-muted: #82ad9d;
+  --channels-default: #87b2a2;
+  --interactive-normal: #96bfaf;
+  --interactive-hover: #ecfdf5;
+  --divider-subtle: rgba(110, 231, 183, 0.14);
 }
 
 /* 8. ROSA / CARMESIM (ROSE) */
@@ -297,12 +322,17 @@
   --brand-purple: #f43f5e;
   --brand-hover: #e11d48;
   --brand-active: #be123c;
+  --bg-modifier-hover: rgba(232, 170, 184, 0.1);
+  --bg-modifier-active: rgba(232, 170, 184, 0.16);
+  --bg-modifier-selected: rgba(232, 170, 184, 0.22);
   --header-primary: #fff1f2;
-  --header-secondary: #fecdd3;
-  --text-normal: #ffe4e6;
-  --text-muted: #fda4af;
-  --channels-default: #fda4af;
-  --divider-subtle: rgba(253, 164, 175, 0.22);
+  --header-secondary: #d4b0b9;
+  --text-normal: #f9e2e6;
+  --text-muted: #b08993;
+  --channels-default: #b58e98;
+  --interactive-normal: #c29da6;
+  --interactive-hover: #fff1f2;
+  --divider-subtle: rgba(253, 164, 175, 0.15);
 }
 
 /* 9. CINZA NEUTRO / GRAFITE (GRAPHITE) */
@@ -324,12 +354,16 @@
   --brand-purple: #64748b;
   --brand-hover: #475569;
   --brand-active: #334155;
+  --bg-modifier-hover: rgba(148, 163, 184, 0.1);
+  --bg-modifier-active: rgba(148, 163, 184, 0.16);
+  --bg-modifier-selected: rgba(148, 163, 184, 0.22);
   --header-primary: #f8fafc;
   --header-secondary: #cbd5e1;
   --text-normal: #e2e8f0;
   --text-muted: #94a3b8;
   --channels-default: #94a3b8;
-  --divider-subtle: rgba(148, 163, 184, 0.22);
+  --interactive-normal: #a1adbe;
+  --divider-subtle: rgba(148, 163, 184, 0.16);
 }
 
 /* 10. ÂMBAR / QUENTE (SUNSET) */
@@ -351,12 +385,17 @@
   --brand-purple: #f97316;
   --brand-hover: #ea580c;
   --brand-active: #c2410c;
+  --bg-modifier-hover: rgba(230, 184, 156, 0.1);
+  --bg-modifier-active: rgba(230, 184, 156, 0.16);
+  --bg-modifier-selected: rgba(230, 184, 156, 0.22);
   --header-primary: #fff7ed;
-  --header-secondary: #fed7aa;
-  --text-normal: #ffedd5;
-  --text-muted: #fdba74;
-  --channels-default: #fdba74;
-  --divider-subtle: rgba(253, 186, 116, 0.22);
+  --header-secondary: #d4b8a5;
+  --text-normal: #faeadc;
+  --text-muted: #b0917d;
+  --channels-default: #b59682;
+  --interactive-normal: #c2a592;
+  --interactive-hover: #fff7ed;
+  --divider-subtle: rgba(253, 186, 116, 0.15);
 }
 
 /* 11. KAMUI (VÁCUO DIMENSIONAL — MAIS PROFUNDO QUE OLED) */
@@ -377,18 +416,23 @@
   --bg-input: #030305;
   /* --kamui-accent comes from Aparência > Cor de destaque do Kamui (set on <html>) */
   --kamui-color: var(--kamui-accent, #e11d48);
-  --bg-hover: color-mix(in srgb, var(--kamui-color) 8%, transparent);
-  --bg-active: color-mix(in srgb, var(--kamui-color) 15%, transparent);
-  --bg-selected: color-mix(in srgb, var(--kamui-color) 18%, transparent);
+  --bg-hover: color-mix(in srgb, var(--kamui-color) 6%, rgba(255, 255, 255, 0.03));
+  --bg-active: color-mix(in srgb, var(--kamui-color) 10%, rgba(255, 255, 255, 0.05));
+  --bg-selected: color-mix(in srgb, var(--kamui-color) 14%, rgba(255, 255, 255, 0.06));
+  --bg-modifier-hover: color-mix(in srgb, var(--kamui-color) 8%, rgba(255, 255, 255, 0.04));
+  --bg-modifier-active: color-mix(in srgb, var(--kamui-color) 13%, rgba(255, 255, 255, 0.06));
+  --bg-modifier-selected: color-mix(in srgb, var(--kamui-color) 16%, rgba(255, 255, 255, 0.07));
   --brand-purple: var(--kamui-color);
   --brand-hover: color-mix(in srgb, var(--kamui-color) 82%, #000000);
   --brand-active: color-mix(in srgb, var(--kamui-color) 66%, #000000);
-  --brand-subtle: color-mix(in srgb, var(--kamui-color) 16%, transparent);
+  --brand-subtle: color-mix(in srgb, var(--kamui-color) 12%, transparent);
   --header-primary: #f8fafc;
   --header-secondary: #94a3b8;
   --text-normal: #e2e8f0;
   --text-muted: #64748b;
   --channels-default: #71717a;
-  --divider-subtle: color-mix(in srgb, var(--kamui-color) 16%, transparent);
+  --interactive-normal: #8b929e;
+  --interactive-hover: #dbe1ea;
+  --divider-subtle: color-mix(in srgb, var(--kamui-color) 10%, rgba(255, 255, 255, 0.05));
   --border-subtle: rgba(255, 255, 255, 0.05);
 }
