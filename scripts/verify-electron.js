@@ -1297,8 +1297,10 @@ async function runVerification() {
       if (v === 32) store.notify();
       if (document.getElementById("media-editor-panx-slider") !== panX || !panX.isConnected) dragOk = false;
     }
-    const dragMovedPreview = imgEl.style.transform.includes("translate(44px");
-    const dragLabel = q("#editor-panx-label").textContent === "44px";
+    // Slider 44 picks the part of the picture 35% from the left (object-position),
+    // never pushes the picture (that left an empty strip and cut the other side)
+    const dragMovedPreview = imgEl.style.objectPosition.startsWith("35%") && !imgEl.style.transform.includes("translate");
+    const dragLabel = q("#editor-panx-label").textContent === "35%";
     const dragState = store.getState().mediaEditor.cropX === 44;
     panX.value = 14;
     panX.dispatchEvent(new Event("input", { bubbles: true }));

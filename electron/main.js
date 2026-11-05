@@ -136,8 +136,12 @@ function ensureNotificationShortcut() {
   const key = `HKCU\\Software\\Classes\\AppUserModelId\\${APP_USER_MODEL_ID}`;
   const regAdd = (name, type, data) =>
     execFile("reg.exe", ["add", key, "/v", name, "/t", type, "/d", data, "/f"], { windowsHide: true }, () => {});
+  // Once (not on every start): an app running reg.exe each time looks suspicious to antivirus programs
+  const registered = `${APP_DISPLAY_NAME}|${iconPath}`;
+  if (getSetting("AUMID_REGISTERED", "") === registered) return;
   regAdd("DisplayName", "REG_SZ", APP_DISPLAY_NAME);
   if (fs.existsSync(iconPath)) regAdd("IconUri", "REG_SZ", iconPath);
+  setSetting("AUMID_REGISTERED", registered);
 }
 
 function migrateFromSharedDiscordFolder() {
@@ -193,6 +197,62 @@ app.commandLine.appendSwitch(
 );
 app.commandLine.appendSwitch("disk-cache-size", "16777216");
 app.commandLine.appendSwitch("media-cache-size", "8388608");
+// ---------------------------------------------------------------------------
+// Diagnostics: %APPDATA%\Eco\logs\huddle.log (tray > "Abrir registro de erros").
+// What a friend sends when the app shows a white window or closes by itself.
+// ---------------------------------------------------------------------------
+const LOG_DIR = path.join(APP_DATA_DIR, "logs");
+const LOG_FILE = path.join(LOG_DIR, "huddle.log");
+function logLine(...parts) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    try {
+      if (fs.statSync(LOG_FILE).size > 1024 * 1024) fs.renameSync(LOG_FILE, `${LOG_FILE}.old`);
+    } catch (_) {}
+    const text = parts.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ");
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${text}\n`);
+  } catch (_) {}
+}
+
+// Start-up guard. Some antivirus programs (they inject code into other apps)
+// and some graphics drivers crash Chromium's GPU code or its sandbox: the
+// window stays white, or the whole app closes while opening. A start that did
+// not reach "healthy" makes the next one use a safer mode, one step at a time:
+//   1 = GPU in its own process (a GPU crash no longer takes the app down)
+//   2 = no hardware acceleration
+//   3 = no Chromium sandbox for the app's own pages
+const STARTUP_STATE_FILE = path.join(APP_DATA_DIR, "startup-state.json");
+const MAX_COMPAT_LEVEL = 3;
+function readStartupState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(STARTUP_STATE_FILE, "utf8"));
+    return { pending: Boolean(s.pending), compat: Math.min(MAX_COMPAT_LEVEL, Math.max(0, Number(s.compat) || 0)) };
+  } catch (_) {
+    return { pending: false, compat: 0 };
+  }
+}
+function writeStartupState(state) {
+  try {
+    fs.mkdirSync(APP_DATA_DIR, { recursive: true });
+    fs.writeFileSync(STARTUP_STATE_FILE, JSON.stringify(state));
+  } catch (_) {}
+}
+const startupState = readStartupState();
+if (startupState.pending && startupState.compat < MAX_COMPAT_LEVEL) startupState.compat += 1;
+const COMPAT_LEVEL = startupState.compat;
+// Restart in the next safer mode (the page or the GPU died while opening)
+function relaunchSafer(reason) {
+  const next = Math.min(MAX_COMPAT_LEVEL, COMPAT_LEVEL + 1);
+  logLine("relaunch:", reason, "compat", COMPAT_LEVEL, "->", next);
+  if (next === COMPAT_LEVEL) return false;
+  writeStartupState({ pending: false, compat: next });
+  app.relaunch();
+  app.exit(0);
+  return true;
+}
+if (COMPAT_LEVEL >= 3) app.commandLine.appendSwitch("no-sandbox");
+const PAGE_SANDBOX = COMPAT_LEVEL < 3;
+
 // GPU acceleration is on by default: without it GIFs, video and screen shares
 // are decoded and drawn on the CPU (choppy) and video can't be hardware-encoded.
 // It can be turned off in Configurações > Windows & Memória (saves ~100 MB).
@@ -206,12 +266,12 @@ function isGpuAccelerationEnabled() {
     return true;
   }
 }
-if (isGpuAccelerationEnabled()) {
+if (isGpuAccelerationEnabled() && COMPAT_LEVEL < 2) {
   // The GPU process is folded into the main one: the app shows as two
   // processes (app + page) instead of three. Only with acceleration on:
   // in-process GPU with acceleration off crashed the app on every start
   // (access violation before the window opened).
-  app.commandLine.appendSwitch("in-process-gpu");
+  if (COMPAT_LEVEL < 1) app.commandLine.appendSwitch("in-process-gpu");
 } else {
   app.disableHardwareAcceleration();
   // No SwiftShader: the compositor already rasterises on the CPU, and the GPU
@@ -327,6 +387,9 @@ function appInView() {
 }
 
 function trimProcessWorkingSets({ force = false } = {}) {
+  // Automatic trimming starts a helper that touches the app's processes every
+  // minute, which antivirus programs flag: only in "modo economia" (or when asked)
+  if (!force && !isMemorySaverOn()) return;
   if (!force && (mediaSessionActive || appInView())) return;
   const light = mediaSessionActive;
   if (light && !isLightTrimAvailable()) return;
@@ -619,6 +682,13 @@ function setupSystemTray() {
           }
         }
       },
+      {
+        label: "Abrir registro de erros",
+        click: () => {
+          fs.mkdirSync(LOG_DIR, { recursive: true });
+          shell.openPath(LOG_DIR);
+        }
+      },
       { type: "separator" },
       {
         label: `Sair do ${APP_DISPLAY_NAME}`,
@@ -642,6 +712,40 @@ function setupSystemTray() {
   } catch (e) {
     console.error("Failed to create system tray:", e);
   }
+}
+
+const STARTED_AT = Date.now();
+const HEALTHY_AFTER_MS = 15 * 1000;
+let markedHealthy = false;
+
+function watchPageHealth(win) {
+  const wc = win.webContents;
+  wc.on("did-finish-load", () => {
+    logLine("page loaded", wc.getURL().split("/").pop());
+    setTimeout(() => {
+      if (markedHealthy || win.isDestroyed() || wc.isCrashed()) return;
+      markedHealthy = true;
+      writeStartupState({ pending: false, compat: COMPAT_LEVEL });
+      logLine("healthy, compat", COMPAT_LEVEL);
+    }, HEALTHY_AFTER_MS);
+  });
+  wc.on("did-fail-load", (_e, code, description, url) => logLine("page failed to load", code, description, url));
+  wc.on("unresponsive", () => logLine("page unresponsive"));
+  wc.on("render-process-gone", (_e, details) => {
+    logLine("page process gone", details);
+    if (isQuitting || details.reason === "clean-exit") return;
+    // While opening: try the next safer mode. Later: just reload the page.
+    if (Date.now() - STARTED_AT < 60 * 1000 && relaunchSafer(`page ${details.reason}`)) return;
+    if (!win.isDestroyed()) wc.reload();
+  });
+  // Errors on the page (a white window is usually one of these)
+  wc.on("console-message", (...args) => {
+    const ev = args[0] && typeof args[0] === "object" && "message" in args[0] ? args[0] : null;
+    const level = ev ? ev.level : args[1];
+    const message = ev ? ev.message : args[2];
+    const source = ev ? ev.sourceId : args[4];
+    if (level === "error" || level === 3) logLine("page error:", String(message).slice(0, 500), String(source || "").split("/").pop());
+  });
 }
 
 function launchMainWindow(showImmediately = false) {
@@ -669,7 +773,8 @@ function launchMainWindow(showImmediately = false) {
       nodeIntegration: false,
       // The page runs in Chromium's sandbox; the preload only needs the
       // electron bridge (contextBridge/ipcRenderer/webFrame), which works there
-      sandbox: true,
+      // (off only in the start-up guard's last safe mode, see COMPAT_LEVEL)
+      sandbox: PAGE_SANDBOX,
       preload: path.join(__dirname, "mainScreenPreload.js"),
       spellcheck: false,
       contextIsolation: true,
@@ -698,6 +803,7 @@ function launchMainWindow(showImmediately = false) {
 
   mainWindow.on("resize", () => saveWindowConfig(mainWindow));
   mainWindow.on("move", () => saveWindowConfig(mainWindow));
+  watchPageHealth(mainWindow);
   mainWindow.on("maximize", () => webContentsSend("WINDOW_MAXIMIZED_CHANGE", true));
   mainWindow.on("unmaximize", () => webContentsSend("WINDOW_MAXIMIZED_CHANGE", false));
 
@@ -821,7 +927,7 @@ function launchSplashWindow() {
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: PAGE_SANDBOX,
       contextIsolation: true,
       webviewTag: false,
       devTools: !app.isPackaged,
@@ -898,14 +1004,9 @@ function registerIpcHandlers(backend) {
   // shared pages and reads several times higher)
   ipcMain.handle("DISCORD_MEMORY_GET_TASK_MANAGER_MB", async () => {
     if (process.platform !== "win32") return null;
-    const pids = app.getAppMetrics().map((mt) => mt.pid).filter(Boolean);
-    const script = `$ids = @(${pids.join(",")}); $sum = 0; Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Where-Object { $ids -contains $_.IDProcess } | ForEach-Object { $sum += $_.WorkingSetPrivate }; [math]::Round($sum / 1MB, 1)`;
-    return new Promise((resolve) => {
-      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 8000, windowsHide: true }, (err, stdout) => {
-        const value = Number(String(stdout).trim().replace(",", "."));
-        resolve(err || !Number.isFinite(value) ? null : value);
-      });
-    });
+    // privateBytes is Windows' private working-set figure (no PowerShell needed)
+    const kb = app.getAppMetrics().reduce((sum, mt) => sum + (mt.memory?.privateBytes || mt.memory?.workingSetSize || 0), 0);
+    return kb ? Math.round(kb / 1024) : null;
   });
 
   ipcMain.handle("DISCORD_MEMORY_GET_STATS", async () => {
@@ -1066,49 +1167,56 @@ function registerIpcHandlers(backend) {
       if (received !== manifest.size || hash.digest("hex") !== expected) throw new Error("hash");
       webContentsSend("UPDATE_PROGRESS", { received: total || received, total: total || received, done: true });
 
-      // Swap script: waits for this app to exit, replaces the install folder's
-      // files with the zip's and starts the app again
+      // Unpacked right away with Windows' own tar.exe, while the file is the
+      // one just checked; then a plain .cmd (robocopy) swaps the folder once
+      // the app has quit and opens it again. No PowerShell: antivirus programs
+      // block apps that start PowerShell scripts.
       const installDir = path.dirname(process.execPath);
       const exeName = path.basename(process.execPath);
-      const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
-      const script = [
-        "$ErrorActionPreference = 'Stop'",
-        `$installDir = ${q(installDir)}`,
-        `$zip = ${q(zipPath)}`,
-        // Checked again right before unpacking: the file sat in the temp folder meanwhile
-        `$expectedHash = ${q(expected)}`,
-        `$exe = Join-Path $installDir ${q(exeName)}`,
-        "Write-Host ''",
-        "Write-Host '  Instalando a atualização... o app abre sozinho em seguida.' -ForegroundColor Cyan",
-        "try {",
-        `  Wait-Process -Id ${process.pid} -Timeout 30 -ErrorAction SilentlyContinue`,
-        "  Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($installDir + '\\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force",
-        "  Start-Sleep -Milliseconds 800",
-        "  if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower() -ne $expectedHash) { throw 'O pacote mudou depois de conferido.' }",
-        "  $staging = Join-Path $env:TEMP 'eco-update\\staging'",
-        "  if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }",
-        "  Expand-Archive -Path $zip -DestinationPath $staging -Force",
-        "  if (-not (Get-ChildItem -LiteralPath $staging -Filter '*.exe' -File)) { throw 'Pacote de atualização inválido.' }",
-        "  Get-ChildItem -LiteralPath $installDir | Remove-Item -Recurse -Force",
-        "  Get-ChildItem -LiteralPath $staging | Move-Item -Destination $installDir -Force",
-        "  Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue",
-        "  Remove-Item $zip -Force -ErrorAction SilentlyContinue",
-        "} catch {",
-        "  Write-Host ('  Não foi possível instalar: ' + $_.Exception.Message) -ForegroundColor Red",
-        "  Start-Sleep -Seconds 8",
-        "}",
-        "if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe -WorkingDirectory $installDir }"
-      ].join("\r\n");
-      // BOM: Windows PowerShell 5 reads the accents correctly
-      fs.writeFileSync(path.join(dir, "apply-update.ps1"), "\ufeff" + script, "utf8");
-      // Opened like a double-click (shell.openPath): keeps running after this
-      // app closes. (Spawning PowerShell straight from the app died silently.)
-      const cmd = path.join(dir, "atualizar.cmd");
-      fs.writeFileSync(
-        cmd,
-        '@echo off\r\ntitle Atualizando\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0apply-update.ps1"\r\n',
-        "utf8"
+      const staging = path.join(dir, "staging");
+      fs.rmSync(staging, { recursive: true, force: true });
+      fs.mkdirSync(staging, { recursive: true });
+      const tarExe = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+      await new Promise((resolve, reject) =>
+        execFile(tarExe, ["-xf", zipPath, "-C", staging], { windowsHide: true, timeout: 180000 }, (e) => (e ? reject(e) : resolve()))
       );
+      if (!fs.existsSync(path.join(staging, exeName))) throw new Error("package");
+      fs.rmSync(zipPath, { force: true });
+      // %-signs are doubled for cmd; paths are quoted
+      const c = (s) => String(s).replace(/%/g, "%%");
+      const lines = [
+        "@echo off",
+        "chcp 65001 >nul",
+        "title Atualizando",
+        "echo.",
+        "echo   Instalando a atualização... o app abre sozinho em seguida.",
+        "set /a tries=0",
+        ":wait",
+        `tasklist /FI "PID eq ${process.pid}" 2>nul | find "${process.pid}" >nul`,
+        "if not errorlevel 1 (",
+        "  set /a tries+=1",
+        "  if %tries% lss 30 (",
+        "    timeout /t 1 /nobreak >nul",
+        "    goto wait",
+        "  )",
+        ")",
+        `taskkill /F /IM "${c(exeName)}" >nul 2>&1`,
+        "timeout /t 1 /nobreak >nul",
+        // Mirror the new files in; the uninstaller copied there by the installer stays
+        `robocopy "${c(staging)}" "${c(installDir)}" /MIR /XF Desinstalar.exe /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul`,
+        "if errorlevel 8 (",
+        "  echo   Não foi possível instalar a atualização. Feche o app e tente de novo.",
+        "  timeout /t 8 >nul",
+        ")",
+        `rmdir /s /q "${c(staging)}" >nul 2>&1`,
+        `start "" "${c(path.join(installDir, exeName))}"`,
+        "exit"
+      ];
+      // Opened like a double-click (shell.openPath): keeps running after this
+      // app closes. (Spawning it straight from the app died silently.)
+      const cmd = path.join(dir, "atualizar.cmd");
+      fs.writeFileSync(cmd, lines.join("\r\n") + "\r\n", "utf8");
+      logLine("update ready", manifest.version || "");
       const err = await shell.openPath(cmd);
       if (err) throw new Error(err);
     } catch (err) {
@@ -1383,6 +1491,14 @@ if (!gotSingleInstanceLock) {
 
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
+  // Cleared once the window has run for a while (watchPageHealth) or on a normal quit
+  writeStartupState({ pending: true, compat: COMPAT_LEVEL });
+  logLine(`start v${app.getVersion()}`, `windows ${os.release()}`, `compat ${COMPAT_LEVEL}`, `gpu ${isGpuAccelerationEnabled() ? "on" : "off"}`);
+  app.on("child-process-gone", (_e, details) => {
+    logLine("process gone", details);
+    // The graphics part crashing (driver or antivirus): turn acceleration off
+    if (details.type === "GPU" && details.reason !== "clean-exit" && !isQuitting && COMPAT_LEVEL < 2) relaunchSafer(`gpu ${details.reason}`);
+  });
   // Only the installed app claims eco:// (a dev checkout would steal the links)
   if (app.isPackaged) app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
   ipcMain.handle("DISCORD_DEEP_LINK_TAKE", () => {
@@ -1449,7 +1565,12 @@ app.on("will-quit", () => {
   try {
     globalShortcut.unregisterAll();
   } catch (_) {}
+  // A normal quit is not a failed start
+  if (gotSingleInstanceLock && !markedHealthy) writeStartupState({ pending: false, compat: COMPAT_LEVEL });
 });
+
+process.on("uncaughtException", (err) => logLine("uncaught exception:", String((err && err.stack) || err).slice(0, 1500)));
+process.on("unhandledRejection", (err) => logLine("unhandled rejection:", String((err && err.stack) || err).slice(0, 800)));
 
 app.on("before-quit", () => {
   isQuitting = true;

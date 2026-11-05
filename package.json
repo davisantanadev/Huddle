@@ -1,7 +1,7 @@
 {
   "name": "discord-desktop-replica",
   "productName": "Huddle",
-  "version": "1.2.15",
+  "version": "1.2.16",
   "description": "Discord Client for Desktop - Functional Reconstruction (REA Verified)",
   "main": "electron/main.js",
   "private": true,
@@ -12,7 +12,8 @@
     "server": "node scripts/server.js",
     "release": "node scripts/make-release.js",
     "build:installer": "node scripts/build-installer.js",
-    "test:security": "node scripts/verify-security.js"
+    "test:security": "node scripts/verify-security.js",
+    "new-signing-key": "node scripts/new-signing-key.js"
   },
   "author": "Discord Replica (REA Engineering)",
   "license": "UNLICENSED",

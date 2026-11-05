@@ -34,8 +34,8 @@ static class Program
     public const string UninstallerName = "Desinstalar.exe";
     // Public key that signs every release (ECDSA P-256; the private key never
     // leaves the developer's PC). Same key as electron/updateSignature.js.
-    const string SigningKeyX = "ZgzPHqLGm/2QSVqrbkq02bp6vQAoyQIEduVrmiiIFCU=";
-    const string SigningKeyY = "08iwH//T+KOm89s2XLmIE1ARjulzsc7q6jblkXtU8HQ=";
+    const string SigningKeyX = "LsNkEIar9FnMrqzQ4PPBKGBOU+ppnfco8GCfNpoaLnA=";
+    const string SigningKeyY = "+cwmOWJgflIBPzXm51zlMxAAcMCTMRQxFR3byXQ79ZY=";
 
     // True only if manifest.json was signed with the release key
     public static bool VerifyManifest(byte[] manifest, string signatureBase64)
@@ -234,8 +234,9 @@ class InstallJob
             Directory.CreateDirectory(Dir);
             foreach (string f in Directory.GetFiles(Dir)) File.Delete(f);
             foreach (string d in Directory.GetDirectories(Dir)) Directory.Delete(d, true);
-            foreach (string f in Directory.GetFiles(staging)) File.Move(f, Path.Combine(Dir, Path.GetFileName(f)));
-            foreach (string d in Directory.GetDirectories(staging)) Directory.Move(d, Path.Combine(Dir, Path.GetFileName(d)));
+            // Moved file by file: Directory.Move only works within one drive, and
+            // the temp folder is on C: while the chosen folder may be on D:, E:...
+            MoveTree(staging, Dir);
             Directory.Delete(staging, true);
             File.Delete(zip);
 
@@ -253,6 +254,19 @@ class InstallJob
             try { if (File.Exists(zip)) File.Delete(zip); } catch { }
             try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { }
         }
+    }
+
+    static void MoveTree(string from, string to)
+    {
+        Directory.CreateDirectory(to);
+        bool sameDrive = string.Equals(Path.GetPathRoot(from), Path.GetPathRoot(to), StringComparison.OrdinalIgnoreCase);
+        foreach (string f in Directory.GetFiles(from))
+        {
+            string target = Path.Combine(to, Path.GetFileName(f));
+            if (sameDrive) File.Move(f, target);
+            else File.Copy(f, target, true);
+        }
+        foreach (string d in Directory.GetDirectories(from)) MoveTree(d, Path.Combine(to, Path.GetFileName(d)));
     }
 
     public static string Describe(Exception e)

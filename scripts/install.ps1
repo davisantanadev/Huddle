@@ -40,8 +40,8 @@ try {
     $params = New-Object System.Security.Cryptography.ECParameters
     $params.Curve = [System.Security.Cryptography.ECCurve+NamedCurves]::nistP256
     $point = New-Object System.Security.Cryptography.ECPoint
-    $point.X = [Convert]::FromBase64String("ZgzPHqLGm/2QSVqrbkq02bp6vQAoyQIEduVrmiiIFCU=")
-    $point.Y = [Convert]::FromBase64String("08iwH//T+KOm89s2XLmIE1ARjulzsc7q6jblkXtU8HQ=")
+    $point.X = [Convert]::FromBase64String("LsNkEIar9FnMrqzQ4PPBKGBOU+ppnfco8GCfNpoaLnA=")
+    $point.Y = [Convert]::FromBase64String("+cwmOWJgflIBPzXm51zlMxAAcMCTMRQxFR3byXQ79ZY=")
     $params.Q = $point
     $ecdsa = [System.Security.Cryptography.ECDsa]::Create($params)
     if ($signature.Length -ne 64 -or -not $ecdsa.VerifyData($manifestBytes, $signature, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) {

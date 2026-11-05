@@ -441,9 +441,7 @@ function renderAvatar(user, sizeClass = "", includeStatus = false, extraStyle = 
   const scale = Number(u.avatarScale ?? u.avatar_scale ?? 1);
   const cropX = Number(u.avatarCropX ?? u.avatar_crop_x ?? 0);
   const cropY = Number(u.avatarCropY ?? u.avatar_crop_y ?? 0);
-  const transformStyle = scale !== 1 || cropX !== 0 || cropY !== 0
-    ? `transform: scale(${scale}) translate(${cropX}px, ${cropY}px);`
-    : "";
+  const transformStyle = scale !== 1 || cropX !== 0 || cropY !== 0 ? mediaFramingStyle(scale, cropX, cropY) : "";
 
   const inner = avatarUrl
     ? `<span class="avatar-clip">${animatedImageHtml(avatarUrl, { cls: "avatar-img", style: transformStyle, alt: u.displayName, mode: "animate" })}</span>`
@@ -457,6 +455,21 @@ function renderAvatar(user, sizeClass = "", includeStatus = false, extraStyle = 
   `;
 }
 
+// Framing of an avatar/banner (Configurações > Enquadrar). The X/Y sliders
+// (-150..150) pick WHICH PART of the picture shows (object-position), and the
+// zoom grows around that same point: the frame is always filled, any edge of
+// a GIF can be reached. (Moving the picture itself with translate() left an
+// empty strip on one side and cut the other, e.g. the bottom of a GIF.)
+function framingPercent(offset) {
+  return Math.round(Math.min(100, Math.max(0, 50 - Number(offset || 0) / 3)));
+}
+function mediaFramingStyle(scale = 1, cropX = 0, cropY = 0, fallbackPosY = 50) {
+  const x = framingPercent(cropX);
+  const y = Number(cropY) ? framingPercent(cropY) : Math.min(100, Math.max(0, Number(fallbackPosY) || 0));
+  const s = Math.max(1, Number(scale) || 1);
+  return `object-position:${x}% ${y}%;transform-origin:${x}% ${y}%;${s !== 1 ? `transform:scale(${s});` : ""}`;
+}
+
 function renderBanner(user, heightPx = 100, override = {}) {
   const bannerUrl = override.bannerUrl !== undefined ? override.bannerUrl : user?.bannerUrl || "";
   const bannerColor = override.bannerColor || user?.bannerColor || user?.avatarColor || "#5865f2";
@@ -465,14 +478,11 @@ function renderBanner(user, heightPx = 100, override = {}) {
   const scale = Number(override.bannerScale !== undefined ? override.bannerScale : user?.bannerScale ?? user?.banner_scale ?? 1);
   const cropX = Number(override.bannerCropX !== undefined ? override.bannerCropX : user?.bannerCropX ?? user?.banner_crop_x ?? 0);
   const cropY = Number(override.bannerCropY !== undefined ? override.bannerCropY : user?.bannerCropY ?? user?.banner_crop_y ?? 0);
-  const bannerTransform = scale !== 1 || cropX !== 0 || cropY !== 0
-    ? `transform: scale(${scale}) translate(${cropX}px, ${cropY}px);`
-    : "";
 
   if (bannerUrl) {
     return `
       <div class="profile-banner-box" style="height:${heightPx}px;background-color:${escapeHtml(bannerColor)};" data-testid="profile-banner">
-        ${animatedImageHtml(bannerUrl, { cls: "profile-banner-img", style: `object-position:center ${Number(posY)}%;${bannerTransform}`, alt: "Profile Banner", size: "full" })}
+        ${animatedImageHtml(bannerUrl, { cls: "profile-banner-img", style: mediaFramingStyle(scale, cropX, cropY, posY), alt: "Profile Banner", size: "full" })}
       </div>
     `;
   }
@@ -3922,7 +3932,7 @@ function renderMediaEditorModal(state) {
   const scale = Number(me.scale || 1);
   const cropX = Number(me.cropX || 0);
   const cropY = Number(me.cropY || 0);
-  const transform = `scale(${scale}) translate(${cropX}px, ${cropY}px)`;
+  const framing = mediaFramingStyle(scale, cropX, cropY);
 
   return `
     <div class="modal-backdrop" data-action="close-media-editor-backdrop">
@@ -3939,7 +3949,7 @@ function renderMediaEditorModal(state) {
                   id="media-editor-preview-img"
                   src="${escapeHtml(me.mediaUrl)}"
                   alt="Pré-visualização"
-                  style="width:100%;height:100%;object-fit:cover;transform:${transform};transform-origin:center center;"
+                  style="width:100%;height:100%;object-fit:cover;${framing}"
                 />
               </div>
             ` : `
@@ -3948,7 +3958,7 @@ function renderMediaEditorModal(state) {
                   id="media-editor-preview-img"
                   src="${escapeHtml(me.mediaUrl)}"
                   alt="Pré-visualização"
-                  style="width:100%;height:100%;object-fit:cover;transform:${transform};transform-origin:center center;"
+                  style="width:100%;height:100%;object-fit:cover;${framing}"
                 />
               </div>
             `}
@@ -3976,7 +3986,7 @@ function renderMediaEditorModal(state) {
               <div class="form-group" style="flex:1;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                   <label class="form-label">Posição X</label>
-                  <span id="editor-panx-label" style="font-size:11px;color:var(--text-muted);">${cropX}px</span>
+                  <span id="editor-panx-label" style="font-size:11px;color:var(--text-muted);">${framingPercent(cropX)}%</span>
                 </div>
                 <input
                   type="range"
@@ -3992,7 +4002,7 @@ function renderMediaEditorModal(state) {
               <div class="form-group" style="flex:1;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                   <label class="form-label">Posição Y</label>
-                  <span id="editor-pany-label" style="font-size:11px;color:var(--text-muted);">${cropY}px</span>
+                  <span id="editor-pany-label" style="font-size:11px;color:var(--text-muted);">${framingPercent(cropY)}%</span>
                 </div>
                 <input
                   type="range"
@@ -5769,13 +5779,13 @@ function bindMediaEditorSliders(root) {
     const s = zoomSlider ? Number(zoomSlider.value) : 1;
     const x = panXSlider ? Number(panXSlider.value) : 0;
     const y = panYSlider ? Number(panYSlider.value) : 0;
-    if (previewImg) previewImg.style.transform = `scale(${s}) translate(${x}px, ${y}px)`;
+    if (previewImg) previewImg.style.cssText = `width:100%;height:100%;object-fit:cover;${mediaFramingStyle(s, x, y)}`;
     const zLbl = root.querySelector("#editor-zoom-label");
     if (zLbl) zLbl.textContent = `${s.toFixed(2)}x`;
     const xLbl = root.querySelector("#editor-panx-label");
-    if (xLbl) xLbl.textContent = `${x}px`;
+    if (xLbl) xLbl.textContent = `${framingPercent(x)}%`;
     const yLbl = root.querySelector("#editor-pany-label");
-    if (yLbl) yLbl.textContent = `${y}px`;
+    if (yLbl) yLbl.textContent = `${framingPercent(y)}%`;
     store.updateMediaEditorCoords({ scale: s, cropX: x, cropY: y });
   };
 
@@ -8122,7 +8132,7 @@ async function handleGlobalClick(e) {
       const zs = document.getElementById("media-editor-zoom-slider"); if (zs) zs.value = 1.0;
       const xs = document.getElementById("media-editor-panx-slider"); if (xs) xs.value = 0;
       const ys = document.getElementById("media-editor-pany-slider"); if (ys) ys.value = 0;
-      const pi = document.getElementById("media-editor-preview-img"); if (pi) pi.style.transform = "scale(1) translate(0px, 0px)";
+      const pi = document.getElementById("media-editor-preview-img"); if (pi) pi.style.cssText = `width:100%;height:100%;object-fit:cover;${mediaFramingStyle()}`;
       const zl = document.getElementById("editor-zoom-label"); if (zl) zl.textContent = "1.00x";
       const xl = document.getElementById("editor-panx-label"); if (xl) xl.textContent = "0px";
       const yl = document.getElementById("editor-pany-label"); if (yl) yl.textContent = "0px";

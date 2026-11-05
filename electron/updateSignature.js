@@ -17,6 +17,10 @@ const crypto = require("crypto");
 // release, signs from the next, and the old one is removed later.
 const PUBLIC_KEYS = [
   `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAELsNkEIar9FnMrqzQ4PPBKGBOU+pp
+nfco8GCfNpoaLnD5zCY5YmB+UgE/NebnXOUzEABwwJMxFDEVHdvJdDv1lg==
+-----END PUBLIC KEY-----`,
+  `-----BEGIN PUBLIC KEY-----
 MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZgzPHqLGm/2QSVqrbkq02bp6vQAo
 yQIEduVrmiiIFCXTyLAf/9P4o6bz2zZcuYgTUBGO6XOxzurqNuWRe1TwdA==
 -----END PUBLIC KEY-----`
