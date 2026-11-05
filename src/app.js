@@ -2618,19 +2618,14 @@ function renderChatStage(state) {
           <button
             type="button"
             id="jump-to-present-bar"
-            class="jump-to-present-bar ${uiState.newMessagesWhileScrolledUp > 0 ? "has-new" : ""}"
+            class="jump-to-present-bar"
             data-action="jump-to-present"
             data-testid="jump-to-present-btn"
-            ${uiState.isScrolledUp ? "" : "hidden"}
+            title="Ir para as mensagens mais recentes"
+            ${shouldShowJumpBar() ? "" : "hidden"}
           >
-            <span id="jump-to-present-label" ${uiState.newMessagesWhileScrolledUp > 0 ? "" : "hidden"}>
-              ${
-                uiState.newMessagesWhileScrolledUp > 0
-                  ? `🔔 ${uiState.newMessagesWhileScrolledUp} ${uiState.newMessagesWhileScrolledUp === 1 ? "nova mensagem" : "novas mensagens"} ·`
-                  : ""
-              }
-            </span>
-            <span class="jump-to-present-cta">Ir para mensagem recente ↓</span>
+            <span id="jump-to-present-label">${jumpBarLabel()}</span>
+            <span class="jump-to-present-arrow" aria-hidden="true">↓</span>
           </button>
 
           <div class="composer-area">
@@ -5075,6 +5070,7 @@ function renderSettingsOverlay(state) {
             }).join("")}
           </div>
         </div>
+        ${s.theme === "kamui" ? renderKamuiAccentPicker() : ""}
         <div class="scale-settings">
           <div class="settings-slider">
             <div class="settings-slider-head">
@@ -6135,16 +6131,26 @@ function bindFormEvents() {
 
     if (!mainScroller.dataset.scrollBound) {
       mainScroller.dataset.scrollBound = "1";
+      // One check per frame, and hover effects paused while the list moves
+      let scrollFrame = 0;
+      let scrollIdleTimer = null;
       mainScroller.addEventListener(
         "scroll",
         () => {
-          const distFromBottom = mainScroller.scrollHeight - mainScroller.scrollTop - mainScroller.clientHeight;
-          const scrolledUp = distFromBottom > 180;
-          if (scrolledUp !== Boolean(uiState.isScrolledUp)) {
-            uiState.isScrolledUp = scrolledUp;
-            if (!scrolledUp) uiState.newMessagesWhileScrolledUp = 0;
-            syncJumpToPresentBar();
-          }
+          if (!mainScroller.classList.contains("is-scrolling")) mainScroller.classList.add("is-scrolling");
+          clearTimeout(scrollIdleTimer);
+          scrollIdleTimer = setTimeout(() => mainScroller.classList.remove("is-scrolling"), 140);
+          if (scrollFrame) return;
+          scrollFrame = requestAnimationFrame(() => {
+            scrollFrame = 0;
+            const distFromBottom = mainScroller.scrollHeight - mainScroller.scrollTop - mainScroller.clientHeight;
+            const scrolledUp = distFromBottom > 120;
+            if (scrolledUp !== Boolean(uiState.isScrolledUp)) {
+              uiState.isScrolledUp = scrolledUp;
+              if (!scrolledUp) uiState.newMessagesWhileScrolledUp = 0;
+              syncJumpToPresentBar();
+            }
+          });
         },
         { passive: true }
       );
@@ -8700,6 +8706,10 @@ async function handleGlobalClick(e) {
     case "set-theme":
       await store.updateSetting("theme", btn.getAttribute("data-theme"));
       break;
+    case "set-kamui-accent":
+      setKamuiAccent(btn.getAttribute("data-color"));
+      renderApp();
+      break;
     case "set-density":
       await store.updateSetting("messageDisplay", btn.getAttribute("data-density"));
       break;
@@ -9695,26 +9705,105 @@ setInterval(() => {
 
 let replyHighlightTimer = null;
 
+// The "new messages" pill only shows up while scrolled up AND after a good
+// number of messages arrived (a couple of new ones is not worth a button)
+const JUMP_BAR_MIN_NEW_MESSAGES = 8;
+function shouldShowJumpBar() {
+  return Boolean(uiState.isScrolledUp) && Number(uiState.newMessagesWhileScrolledUp || 0) >= JUMP_BAR_MIN_NEW_MESSAGES;
+}
+function jumpBarLabel() {
+  const count = Number(uiState.newMessagesWhileScrolledUp || 0);
+  return `${count > 99 ? "99+" : count} novas`;
+}
 function syncJumpToPresentBar() {
   const bar = document.getElementById("jump-to-present-bar");
   const label = document.getElementById("jump-to-present-label");
   if (!bar || !label) return;
-  if (!uiState.isScrolledUp) {
+  if (!shouldShowJumpBar()) {
     bar.setAttribute("hidden", "");
-    bar.classList.remove("has-new");
     return;
   }
+  label.textContent = jumpBarLabel();
   bar.removeAttribute("hidden");
-  const count = Number(uiState.newMessagesWhileScrolledUp || 0);
-  bar.classList.toggle("has-new", count > 0);
-  if (count > 0) {
-    label.removeAttribute("hidden");
-    label.textContent = `🔔 ${count} ${count === 1 ? "nova mensagem" : "novas mensagens"} ·`;
-  } else {
-    label.setAttribute("hidden", "");
-    label.textContent = "";
+}
+
+// Kamui: the accent color (crimson by default) can be any color the user picks.
+// Saved on this PC and applied as --kamui-accent on <html>.
+const KAMUI_ACCENT_STORAGE_KEY = "huddle.kamuiAccent";
+const KAMUI_DEFAULT_ACCENT = "#e11d48";
+const KAMUI_ACCENT_PRESETS = [
+  { color: "#e11d48", name: "Carmesim" },
+  { color: "#ef4444", name: "Vermelho" },
+  { color: "#f97316", name: "Laranja" },
+  { color: "#eab308", name: "Dourado" },
+  { color: "#22c55e", name: "Verde" },
+  { color: "#14b8a6", name: "Turquesa" },
+  { color: "#06b6d4", name: "Ciano" },
+  { color: "#3b82f6", name: "Azul" },
+  { color: "#6366f1", name: "Índigo" },
+  { color: "#8b5cf6", name: "Roxo" },
+  { color: "#d946ef", name: "Magenta" },
+  { color: "#f8fafc", name: "Branco" }
+];
+function normalizeHexColor(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(v)) return v;
+  if (/^#[0-9a-f]{3}$/.test(v)) return `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
+  return null;
+}
+function getKamuiAccent() {
+  try {
+    return normalizeHexColor(localStorage.getItem(KAMUI_ACCENT_STORAGE_KEY)) || KAMUI_DEFAULT_ACCENT;
+  } catch (_) {
+    return KAMUI_DEFAULT_ACCENT;
   }
 }
+function applyKamuiAccent(color) {
+  document.documentElement.style.setProperty("--kamui-accent", normalizeHexColor(color) || KAMUI_DEFAULT_ACCENT);
+}
+function setKamuiAccent(color, { persist = true } = {}) {
+  const hex = normalizeHexColor(color);
+  if (!hex) return;
+  applyKamuiAccent(hex);
+  if (persist) {
+    try {
+      localStorage.setItem(KAMUI_ACCENT_STORAGE_KEY, hex);
+    } catch (_) {}
+  }
+}
+function renderKamuiAccentPicker() {
+  const current = getKamuiAccent();
+  return `
+    <div class="kamui-accent-picker" data-testid="kamui-accent-picker">
+      <div class="form-label" style="margin-bottom:4px;">Cor de destaque do Kamui</div>
+      <p class="kamui-accent-hint">Troque o carmesim por qualquer cor: botões, seleção, bordas e menções usam essa cor.</p>
+      <div class="kamui-accent-row">
+        ${KAMUI_ACCENT_PRESETS.map(
+          (p) => `<button type="button" class="kamui-accent-swatch ${p.color === current ? "active" : ""}" data-action="set-kamui-accent" data-color="${p.color}" title="${escapeHtml(p.name)}" aria-label="${escapeHtml(p.name)}" style="--swatch:${p.color};"></button>`
+        ).join("")}
+        <label class="kamui-accent-custom" title="Escolher qualquer cor">
+          <input type="color" id="kamui-accent-input" value="${current}" aria-label="Escolher cor personalizada" />
+          <span>Personalizada</span>
+        </label>
+        <code class="kamui-accent-hex" id="kamui-accent-hex">${current.toUpperCase()}</code>
+        ${current !== KAMUI_DEFAULT_ACCENT ? `<button type="button" class="link-btn" data-action="set-kamui-accent" data-color="${KAMUI_DEFAULT_ACCENT}">Restaurar padrão</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+applyKamuiAccent(getKamuiAccent());
+// Live preview while dragging in the color picker; saved when it closes
+document.addEventListener("input", (e) => {
+  if (e.target?.id !== "kamui-accent-input") return;
+  setKamuiAccent(e.target.value, { persist: false });
+  const hex = document.getElementById("kamui-accent-hex");
+  if (hex) hex.textContent = String(e.target.value).toUpperCase();
+});
+document.addEventListener("change", (e) => {
+  if (e.target?.id !== "kamui-accent-input") return;
+  setKamuiAccent(e.target.value);
+  renderApp();
+});
 
 function jumpToMessage(targetId, inCallChat = false) {
   const scroller = document.getElementById(inCallChat ? "call-chat-scroller" : "messages-scroller");

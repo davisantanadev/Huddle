@@ -173,7 +173,8 @@ app.commandLine.appendSwitch(
 app.commandLine.appendSwitch("disable-site-isolation-trials");
 app.commandLine.appendSwitch("renderer-process-limit", "1");
 if (STARTUP_MEMORY_SAVER) {
-  app.commandLine.appendSwitch("num-raster-threads", "1");
+  // 2 raster threads: with 1 the chat stutters while scrolling
+  app.commandLine.appendSwitch("num-raster-threads", "2");
   app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
   app.commandLine.appendSwitch("disable-gpu-program-cache");
 }
@@ -331,9 +332,22 @@ function isMemorySaverOn() {
   return Boolean(getSetting("MEMORY_SAVER", false));
 }
 
+// The user is looking at the window and touched mouse/keyboard in the last
+// 20 s: hard RAM ceilings and purges here make every scroll fault pages back
+// in (choppy scrolling). Memory is squeezed again as soon as they stop.
+const ACTIVE_USE_IDLE_SECONDS = 20;
+function userIsInteracting() {
+  try {
+    if (!appInView() || !mainWindow.isFocused()) return false;
+    return powerMonitor.getSystemIdleTime() < ACTIVE_USE_IDLE_SECONDS;
+  } catch (_) {
+    return false;
+  }
+}
+
 function applyMemoryCaps({ force = false } = {}) {
   const metrics = app.getAppMetrics();
-  if (!isMemorySaverOn()) {
+  if (!isMemorySaverOn() || userIsInteracting()) {
     // Turned off while running: lift the ceilings that were set
     if (cappedPids) {
       capProcesses(metrics.map((mt) => ({ pid: mt.pid, mb: 0 })));
@@ -416,6 +430,7 @@ function trimProcessWorkingSets({ force = false } = {}) {
   if (!force && !isMemorySaverOn()) return;
   if (!force && mediaSessionActive) return;
   if (!force && appInView() && getResidentMemoryMB() < 82) return;
+  if (!force && userIsInteracting()) return;
   const light = mediaSessionActive;
   if (light && !isLightTrimAvailable()) return;
   if (!light) {
@@ -466,12 +481,14 @@ function startSystemIdleWatch() {
     applyMemoryCaps();
     if (mediaSessionActive) return;
     if (isMemorySaverOn() && getResidentMemoryMB() >= 82) {
+      // Not while scrolling/typing: wait until the user pauses
+      if (userIsInteracting()) return;
       trimProcessWorkingSets({ force: true });
       return;
     }
     if (appInView()) return;
     if (Date.now() - lastTrimAt >= HIDDEN_TRIM_INTERVAL_MS) trimProcessWorkingSets();
-  }, 8 * 1000).unref();
+  }, 5 * 1000).unref();
 }
 
 function getSettingsPath() {

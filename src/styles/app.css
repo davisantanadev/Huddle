@@ -7466,35 +7466,31 @@ body.is-resizing-row * {
   opacity: 0.72;
 }
 
-/* ===== Floating "Jump to recent message" bar when scrolled up ===== */
+/* ===== Small "N novas ↓" pill (bottom-right), only after many new messages ===== */
 .chat-column {
   position: relative;
 }
 
 .jump-to-present-bar {
   position: absolute;
-  left: 50%;
-  right: auto;
-  bottom: 76px;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: min(460px, calc(100% - 32px));
+  right: 20px;
+  bottom: 78px;
   z-index: 35;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 6px 14px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 12px;
   border-radius: 999px;
-  background: rgba(17, 18, 24, 0.94);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(88, 101, 242, 0.65);
+  background: var(--brand-purple, #5865f2);
   color: #ffffff;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
+  white-space: nowrap;
   cursor: pointer;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-  transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  animation: jumpPillIn 0.18s ease-out;
+  transition: transform 0.12s ease, filter 0.12s ease;
 }
 
 .jump-to-present-bar[hidden] {
@@ -7502,28 +7498,24 @@ body.is-resizing-row * {
 }
 
 .jump-to-present-bar:hover {
-  transform: translateX(-50%) translateY(-1px);
-  background: var(--brand-purple, #5865f2);
-  border-color: var(--brand-purple, #5865f2);
+  transform: translateY(-1px);
+  filter: brightness(1.1);
 }
 
-.jump-to-present-bar.has-new {
-  background: var(--brand-purple, #5865f2);
-  border-color: var(--brand-purple, #5865f2);
+.jump-to-present-arrow {
+  font-size: 13px;
+  line-height: 1;
 }
 
-.jump-to-present-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-weight: 700;
-  white-space: nowrap;
-  color: #dee0fc;
-}
-
-.jump-to-present-bar:hover .jump-to-present-cta,
-.jump-to-present-bar.has-new .jump-to-present-cta {
-  color: #ffffff;
+@keyframes jumpPillIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ===== Role & Everyone Mentions + Mention Autocomplete Badges ===== */
@@ -7602,5 +7594,110 @@ body.is-resizing-row * {
 
 .app-root[data-theme="kamui"] .composer-box {
   background-color: #040407;
-  border: 1px solid rgba(225, 29, 72, 0.24);
+  border: 1px solid color-mix(in srgb, var(--kamui-accent, #e11d48) 24%, transparent);
+}
+
+
+/* ===== Smooth chat scrolling =====
+   The list scrolls on the compositor (own layer), the browser doesn't chain
+   the scroll to the page, hover effects pause while it moves, and messages
+   far off screen skip layout/paint. */
+.messages-scroller {
+  will-change: scroll-position;
+  overscroll-behavior: contain;
+  overflow-anchor: auto;
+  scrollbar-gutter: stable;
+}
+
+.messages-scroller.is-scrolling .message-row,
+.messages-scroller.is-scrolling .message-row * {
+  pointer-events: none;
+}
+
+.messages-scroller .message-row:not(:hover):not(:focus-within):not(.reply-jump-highlight) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+
+/* ===== Kamui accent color picker (Aparência) ===== */
+.kamui-accent-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--bg-card, rgba(255, 255, 255, 0.03));
+  border: 1px solid color-mix(in srgb, var(--kamui-accent, #e11d48) 30%, transparent);
+}
+
+.kamui-accent-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.kamui-accent-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.kamui-accent-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--swatch);
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.kamui-accent-swatch:hover {
+  transform: scale(1.1);
+}
+
+.kamui-accent-swatch.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px var(--swatch);
+}
+
+.kamui-accent-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.kamui-accent-custom input[type="color"] {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.kamui-accent-custom input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.kamui-accent-custom input[type="color"]::-webkit-color-swatch {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+}
+
+.kamui-accent-hex {
+  font-family: var(--monospace-font);
+  font-size: 11px;
+  color: var(--text-muted);
 }

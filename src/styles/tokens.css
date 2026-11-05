@@ -375,18 +375,20 @@
   --bg-card: #020204;
   --bg-card-secondary: #000000;
   --bg-input: #030305;
-  --bg-hover: rgba(225, 29, 72, 0.08);
-  --bg-active: rgba(225, 29, 72, 0.15);
-  --bg-selected: rgba(225, 29, 72, 0.18);
-  --brand-purple: #e11d48;
-  --brand-hover: #be123c;
-  --brand-active: #9f1239;
-  --brand-subtle: rgba(225, 29, 72, 0.16);
+  /* --kamui-accent comes from Aparência > Cor de destaque do Kamui (set on <html>) */
+  --kamui-color: var(--kamui-accent, #e11d48);
+  --bg-hover: color-mix(in srgb, var(--kamui-color) 8%, transparent);
+  --bg-active: color-mix(in srgb, var(--kamui-color) 15%, transparent);
+  --bg-selected: color-mix(in srgb, var(--kamui-color) 18%, transparent);
+  --brand-purple: var(--kamui-color);
+  --brand-hover: color-mix(in srgb, var(--kamui-color) 82%, #000000);
+  --brand-active: color-mix(in srgb, var(--kamui-color) 66%, #000000);
+  --brand-subtle: color-mix(in srgb, var(--kamui-color) 16%, transparent);
   --header-primary: #f8fafc;
   --header-secondary: #94a3b8;
   --text-normal: #e2e8f0;
   --text-muted: #64748b;
   --channels-default: #71717a;
-  --divider-subtle: rgba(225, 29, 72, 0.16);
+  --divider-subtle: color-mix(in srgb, var(--kamui-color) 16%, transparent);
   --border-subtle: rgba(255, 255, 255, 0.05);
 }
