@@ -13,6 +13,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -21,8 +23,12 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Instalador do Huddle")]
+[assembly: AssemblyDescription("Instalador oficial do Huddle para Windows")]
+[assembly: AssemblyCompany("Huddle")]
 [assembly: AssemblyProduct("Huddle")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyCopyright("Huddle")]
+[assembly: AssemblyVersion("1.2.17.0")]
+[assembly: AssemblyFileVersion("1.2.17.0")]
 
 static class Program
 {
@@ -79,15 +85,25 @@ static class Program
             else if (a.StartsWith("/dir:")) dir = a.Substring(5);
             else if (a.StartsWith("/screenshot:")) return Screenshot(a.Substring(12));
         }
-        if (silent)
+
+        bool createdNew;
+        using (Mutex mutex = new Mutex(true, @"Local\HuddleInstallerMutex", out createdNew))
         {
-            InstallJob job = new InstallJob { Dir = SafeTarget(dir ?? DefaultFolder()), Desktop = shortcuts, StartMenu = shortcuts, Open = open };
-            job.Progress = (msg, p) => Console.WriteLine(msg);
-            try { job.Run(); Console.WriteLine("OK " + job.Dir); return 0; }
-            catch (Exception e) { Console.WriteLine("ERRO " + InstallJob.Describe(e)); return 1; }
+            if (!createdNew && !silent)
+            {
+                MessageBox.Show("O instalador do Huddle já está aberto.", "Instalar o Huddle", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return 0;
+            }
+            if (silent)
+            {
+                InstallJob job = new InstallJob { Dir = SafeTarget(dir ?? DefaultFolder()), Desktop = shortcuts, StartMenu = shortcuts, Open = open };
+                job.Progress = (msg, p) => Console.WriteLine(msg);
+                try { job.Run(); Console.WriteLine("OK " + job.Dir); return 0; }
+                catch (Exception e) { Console.WriteLine("ERRO " + InstallJob.Describe(e)); return 1; }
+            }
+            Application.Run(new InstallerForm());
+            return 0;
         }
-        Application.Run(new InstallerForm());
-        return 0;
     }
 
     // Draws the window off-screen into a PNG (for the website and for checking the layout)
@@ -150,31 +166,71 @@ static class Program
         return null;
     }
 
+    // Stops only the app's own processes (instead of enumerating every process in Windows)
     public static void StopRunningApp(string dir)
     {
         string prefix = dir.TrimEnd('\\') + "\\";
-        foreach (Process p in Process.GetProcesses())
+        string oldEcoDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Eco").TrimEnd('\\') + "\\";
+        int selfPid = Process.GetCurrentProcess().Id;
+        string[] appProcessNames = new[] { AppName, OldAppName, "Eco", "SystemAudio", "MemTrim" };
+        foreach (string procName in appProcessNames)
         {
-            try
+            Process[] list;
+            try { list = Process.GetProcessesByName(procName); }
+            catch { continue; }
+            foreach (Process p in list)
             {
-                string path = p.MainModule.FileName;
-                if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { p.Kill(); p.WaitForExit(5000); }
+                try
+                {
+                    if (p.Id == selfPid) continue;
+                    string path = p.MainModule.FileName;
+                    if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+                        path.StartsWith(oldEcoDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        p.Kill();
+                        p.WaitForExit(5000);
+                    }
+                }
+                catch { }
+                finally { p.Dispose(); }
             }
-            catch { }
         }
+    }
+
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class ShellLink { }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+    interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cchMaxPath, IntPtr pfd, int fFlags);
+        void GetIDList(out IntPtr ppidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cchMaxName);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cchMaxPath);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cchMaxPath);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out short pwHotkey);
+        void SetHotkey(short wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cchIconPath, out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, int dwReserved);
+        void Resolve(IntPtr hwnd, int fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
     }
 
     public static void CreateShortcut(string lnkPath, string target, string workDir)
     {
-        Type t = Type.GetTypeFromProgID("WScript.Shell");
-        object shell = Activator.CreateInstance(t);
-        object lnk = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
-        Type lt = lnk.GetType();
-        lt.InvokeMember("TargetPath", BindingFlags.SetProperty, null, lnk, new object[] { target });
-        lt.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { workDir });
-        lt.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { target + ",0" });
-        lt.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { AppName });
-        lt.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
+        IShellLinkW link = (IShellLinkW)new ShellLink();
+        link.SetPath(target);
+        link.SetWorkingDirectory(workDir);
+        link.SetIconLocation(target, 0);
+        link.SetDescription(AppName);
+        ((IPersistFile)link).Save(lnkPath, false);
     }
 
     public static string Desktop(string name) { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), name + ".lnk"); }
@@ -192,8 +248,9 @@ class InstallJob
 
     public void Run()
     {
-        string zip = Path.Combine(Path.GetTempPath(), "Huddle-instalador.zip");
-        string staging = Path.Combine(Path.GetTempPath(), "Huddle-instalador");
+        int pid = Process.GetCurrentProcess().Id;
+        string zip = Path.Combine(Path.GetTempPath(), "Huddle-instalador-" + pid + ".zip");
+        string staging = Path.Combine(Path.GetTempPath(), "Huddle-instalador-" + pid);
         try
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
@@ -204,7 +261,8 @@ class InstallJob
             using (WebClient wc = new WebClient())
             {
                 manifest = wc.DownloadData(Program.Base + "/manifest.json");
-                signature = wc.DownloadString(Program.Base + "/manifest.sig");
+                byte[] sigBytes = wc.DownloadData(Program.Base + "/manifest.sig");
+                signature = Encoding.UTF8.GetString(sigBytes).Trim();
             }
             if (!Program.VerifyManifest(manifest, signature))
                 throw new Exception("O pacote do servidor não tem a assinatura oficial do Huddle. Nada foi instalado.");
@@ -230,19 +288,45 @@ class InstallJob
             if (!Program.HasApp(staging)) throw new Exception("O pacote baixado está incompleto.");
 
             Program.StopRunningApp(Dir);
-            Thread.Sleep(800);
+            Thread.Sleep(1000);
             Directory.CreateDirectory(Dir);
-            foreach (string f in Directory.GetFiles(Dir)) File.Delete(f);
-            foreach (string d in Directory.GetDirectories(Dir)) Directory.Delete(d, true);
+            string selfExe = Application.ExecutablePath;
+            for (int attempt = 1; attempt <= 5; attempt++)
+            {
+                try
+                {
+                    foreach (string f in Directory.GetFiles(Dir))
+                    {
+                        if (string.Equals(f, selfExe, StringComparison.OrdinalIgnoreCase)) continue;
+                        File.Delete(f);
+                    }
+                    foreach (string d in Directory.GetDirectories(Dir)) Directory.Delete(d, true);
+                    break;
+                }
+                catch
+                {
+                    if (attempt == 5) throw;
+                    Program.StopRunningApp(Dir);
+                    Thread.Sleep(1000);
+                }
+            }
             // Moved file by file: Directory.Move only works within one drive, and
             // the temp folder is on C: while the chosen folder may be on D:, E:...
             MoveTree(staging, Dir);
             Directory.Delete(staging, true);
             File.Delete(zip);
 
+            // Clean up legacy Eco installation if present
+            string oldEcoDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Eco");
+            if (Directory.Exists(oldEcoDir) && !string.Equals(oldEcoDir, Dir, StringComparison.OrdinalIgnoreCase))
+            {
+                try { Directory.Delete(oldEcoDir, true); } catch { }
+            }
+
             string exe = File.Exists(Program.ExePath(Dir)) ? Program.ExePath(Dir) : Program.OldExePath(Dir);
             // Shortcuts with the old name go; the new ones point at Huddle
-            foreach (string old in new[] { Program.Desktop(Program.OldAppName), Program.StartMenu(Program.OldAppName) }) Program.DeleteQuietly(old);
+            foreach (string old in new[] { Program.Desktop(Program.OldAppName), Program.StartMenu(Program.OldAppName), Program.Desktop("Eco"), Program.StartMenu("Eco") })
+                Program.DeleteQuietly(old);
             if (Desktop) Program.CreateShortcut(Program.Desktop(Program.AppName), exe, Dir);
             if (StartMenu) Program.CreateShortcut(Program.StartMenu(Program.AppName), exe, Dir);
             RegisterUninstall(exe);
@@ -263,7 +347,7 @@ class InstallJob
         foreach (string f in Directory.GetFiles(from))
         {
             string target = Path.Combine(to, Path.GetFileName(f));
-            if (sameDrive) File.Move(f, target);
+            if (sameDrive && !File.Exists(target)) File.Move(f, target);
             else File.Copy(f, target, true);
         }
         foreach (string d in Directory.GetDirectories(from)) MoveTree(d, Path.Combine(to, Path.GetFileName(d)));
@@ -309,7 +393,10 @@ class InstallJob
     void RegisterUninstall(string exe)
     {
         string uninstaller = Path.Combine(Dir, Program.UninstallerName);
-        try { File.Copy(Application.ExecutablePath, uninstaller, true); } catch { }
+        if (!string.Equals(Application.ExecutablePath, uninstaller, StringComparison.OrdinalIgnoreCase))
+        {
+            try { File.Copy(Application.ExecutablePath, uninstaller, true); } catch { }
+        }
         string version = "";
         try { version = FileVersionInfo.GetVersionInfo(exe).ProductVersion; } catch { }
         using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Program.UninstallKey))
@@ -323,6 +410,16 @@ class InstallJob
             k.SetValue("NoModify", 1, RegistryValueKind.DWord);
             k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
         }
+        try
+        {
+            string iconPath = Path.Combine(Dir, "resources", "app", "assets", "app.ico");
+            using (RegistryKey aumid = Registry.CurrentUser.CreateSubKey(@"Software\Classes\AppUserModelId\com.invadominio.zakzak"))
+            {
+                aumid.SetValue("DisplayName", Program.AppName);
+                if (File.Exists(iconPath)) aumid.SetValue("IconUri", iconPath);
+            }
+        }
+        catch { }
     }
 }
 
@@ -479,7 +576,8 @@ static class Uninstall
         if (MessageBox.Show("Remover o Huddle deste computador?\n\nSuas contas e configurações ficam guardadas, caso você instale de novo.",
             "Desinstalar o Huddle", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return 0;
         Program.StopRunningApp(dir);
-        foreach (string name in new[] { Program.AppName, Program.OldAppName })
+        Thread.Sleep(800);
+        foreach (string name in new[] { Program.AppName, Program.OldAppName, "Eco" })
         {
             Program.DeleteQuietly(Program.Desktop(name));
             Program.DeleteQuietly(Program.StartMenu(name));
@@ -489,9 +587,6 @@ static class Uninstall
         foreach (string f in Directory.GetFiles(dir))
             if (!string.Equals(f, me, StringComparison.OrdinalIgnoreCase)) Program.DeleteQuietly(f);
         foreach (string d in Directory.GetDirectories(dir)) try { Directory.Delete(d, true); } catch { }
-        // The running uninstaller and the folder go once this process exits
-        Process.Start(new ProcessStartInfo("cmd.exe", "/c timeout /t 2 /nobreak >nul & del /f /q \"" + me + "\" & rmdir \"" + dir + "\"")
-        { WindowStyle = ProcessWindowStyle.Hidden, CreateNoWindow = true });
         MessageBox.Show("O Huddle foi removido.", "Desinstalar o Huddle");
         return 0;
     }

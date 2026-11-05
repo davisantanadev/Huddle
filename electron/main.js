@@ -130,18 +130,6 @@ function ensureNotificationShortcut() {
       console.error("Failed to set up the notification shortcut:", err);
     }
   }
-  // Also registered by id (Windows 10/11): the notification shows "Huddle"
-  // and its icon even if the shortcuts are deleted or renamed
-  const iconPath = path.join(__dirname, "..", "assets", "app.ico");
-  const key = `HKCU\\Software\\Classes\\AppUserModelId\\${APP_USER_MODEL_ID}`;
-  const regAdd = (name, type, data) =>
-    execFile("reg.exe", ["add", key, "/v", name, "/t", type, "/d", data, "/f"], { windowsHide: true }, () => {});
-  // Once (not on every start): an app running reg.exe each time looks suspicious to antivirus programs
-  const registered = `${APP_DISPLAY_NAME}|${iconPath}`;
-  if (getSetting("AUMID_REGISTERED", "") === registered) return;
-  regAdd("DisplayName", "REG_SZ", APP_DISPLAY_NAME);
-  if (fs.existsSync(iconPath)) regAdd("IconUri", "REG_SZ", iconPath);
-  setSetting("AUMID_REGISTERED", registered);
 }
 
 function migrateFromSharedDiscordFolder() {

@@ -63,6 +63,22 @@ async function build() {
     path.join(rootDir, "installer", "LegacyLauncher.cs")
   ]);
 
+  // Include Desinstalar.exe in the package so PowerShell and zip installs also have the uninstaller
+  execFileSync(csc, [
+    "/nologo",
+    "/optimize+",
+    "/target:winexe",
+    `/win32icon:${iconPath}`,
+    `/win32manifest:${path.join(rootDir, "installer", "app.manifest")}`,
+    "/r:System.Windows.Forms.dll",
+    "/r:System.Drawing.dll",
+    "/r:System.Core.dll",
+    "/r:System.IO.Compression.dll",
+    "/r:System.IO.Compression.FileSystem.dll",
+    `/out:${path.join(packagedDir, "Desinstalar.exe")}`,
+    path.join(rootDir, "installer", "Instalador.cs")
+  ]);
+
   // The small native helpers (PC sound for screen shares, memory trimming) go
   // in already compiled: compiling them on the user's PC made antivirus
   // programs block the app (and its screen share). They carry proper file

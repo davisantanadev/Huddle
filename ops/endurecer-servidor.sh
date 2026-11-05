@@ -103,6 +103,11 @@ if ! grep -q "Referrer-Policy" "$cf"; then
     echo "Config do Caddy inválida: voltando a anterior."; cp "$(ls -t $cf.bak-* | head -1)" "$cf"
   fi
 fi
+if ! grep -q "\*\.sig" "$cf"; then
+  cp "$cf" "$cf.bak-$(date +%Y%m%d%H%M)"
+  sed -i 's/@ps1 path \*\.ps1 \*\.sha256/@ps1 path *.ps1 *.sha256 *.sig/' "$cf"
+  caddy validate --config "$cf" --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy
+fi
 grep -q "^\s*log" "$cf" && echo "ATENÇÃO: há log de acesso no Caddy (a URL de eventos antiga leva o token)" || echo "Caddy sem log de acesso (bom)."
 
 say "Pronto"

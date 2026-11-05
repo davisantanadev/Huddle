@@ -8,7 +8,12 @@ using System.Linq;
 using System.Reflection;
 
 [assembly: AssemblyTitle("Huddle")]
+[assembly: AssemblyDescription("Huddle - inicializador de compatibilidade")]
+[assembly: AssemblyCompany("Huddle")]
 [assembly: AssemblyProduct("Huddle")]
+[assembly: AssemblyCopyright("Huddle")]
+[assembly: AssemblyVersion("1.2.17.0")]
+[assembly: AssemblyFileVersion("1.2.17.0")]
 
 static class LegacyLauncher
 {
