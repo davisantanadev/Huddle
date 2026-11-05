@@ -156,6 +156,90 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   const legacyStrict = await request(strict.port, "GET", `/api/events?token=${encodeURIComponent(r3.sessionToken)}`);
   check("Com ALLOW_LEGACY_EVENT_TOKEN=0 o token na URL é recusado", legacyStrict.status === 401, `HTTP ${legacyStrict.status}`);
 
+  // ---- SQL Injection, Password Hash Non-Leakage & DM/Server Permissions ----
+  const sqliLogin = await rpc(port, "login", { emailOrUsername: "' OR 1=1 --", password: "' OR '1'='1" });
+  check("SQL Injection no login é neutralizado (prepared statements)", !sqliLogin.ok && !sqliLogin.sessionToken);
+
+  const sqliSearch = await rpc(port, "searchUsers", { query: "'; DROP TABLE users; --" }, token);
+  const usersStillExist = server.db.prepare("SELECT COUNT(*) AS c FROM users").get().c >= 2;
+  check("SQL Injection na busca de usuários não afeta o banco", sqliSearch.ok && usersStillExist);
+
+  const fullState = await rpc(port, "getStateSnapshot", {}, token);
+  const serializedState = JSON.stringify(fullState);
+  check(
+    "Hash de senha (scrypt) e tokens nunca vazam no snapshot da API",
+    fullState.ok && !serializedState.includes("password_hash") && !serializedState.includes("scrypt$")
+  );
+
+  // Register fresh users (not rate-limited by the spam test above) to test DM & Server isolation and permissions
+  const regAuthor = await rpc(port, "register", {
+    email: "autor@example.test",
+    username: "autor_dm",
+    displayName: "Autor",
+    password: "falcao99dourado"
+  });
+  const tokenAuthor = regAuthor.sessionToken;
+
+  const regPeer = await rpc(port, "register", {
+    email: "peer@example.test",
+    username: "parceiro_dm",
+    displayName: "Parceiro",
+    password: "tigre77prateado"
+  });
+  const tokenPeer = regPeer.sessionToken;
+
+  const regOutsider = await rpc(port, "register", {
+    email: "outsider@example.test",
+    username: "intruso",
+    displayName: "Intruso",
+    password: "pantera88negra"
+  });
+  const tokenOutsider = regOutsider.sessionToken;
+
+  // Author opens DM with Peer and sends a message
+  const dmSec = await rpc(port, "openOrCreateDm", { targetUserId: regPeer.user.id }, tokenAuthor);
+  const dmMsgRes = await rpc(port, "sendMessage", { channelId: dmSec.dmId, content: "Mensagem privada na DM" }, tokenAuthor);
+  const dmMsgId = dmMsgRes.messageId;
+
+  // Outsider tries to send/delete in Author & Peer's DM
+  const outsiderSendDm = await rpc(port, "sendMessage", { channelId: dmSec.dmId, content: "Tentando invadir DM" }, tokenOutsider);
+  check("Terceiro fora da DM não consegue enviar mensagem na DM (403)", !outsiderSendDm.ok && outsiderSendDm.status === 403);
+
+  // Peer (the other DM participant) tries to delete Author's message in the DM -> MUST BE BLOCKED (403)
+  const peerDeleteDm = await rpc(port, "deleteMessage", { channelId: dmSec.dmId, messageId: dmMsgId }, tokenPeer);
+  check("Participante da DM NÃO consegue excluir mensagem da outra pessoa (403)", !peerDeleteDm.ok && peerDeleteDm.status === 403);
+
+  // Author deletes their own DM message -> MUST SUCCEED
+  const authorDeleteDm = await rpc(port, "deleteMessage", { channelId: dmSec.dmId, messageId: dmMsgId }, tokenAuthor);
+  check("Autor consegue excluir a própria mensagem na DM", authorDeleteDm.ok);
+
+  // Server permissions: Regular member vs Admin role deleting someone else's message
+  const guildRes = await rpc(port, "createGuild", { name: "Servidor Seguro" }, tokenAuthor);
+  const guildId = guildRes.guildId;
+  const guildChannelId = guildRes.generalChannelId;
+  const adminRole = server.db.prepare("SELECT id FROM guild_roles WHERE guild_id = ? AND name = 'Admin'").get(guildId);
+
+  // Outsider tries to read guild invites without being a member
+  const outsiderInvites = await rpc(port, "getGuildInvites", { guildId }, tokenOutsider);
+  check("Não-membro não consegue listar convites do servidor (403)", !outsiderInvites.ok && outsiderInvites.status === 403);
+
+  // Invite Peer to the server as a regular member
+  const invCreate = await rpc(port, "createInvite", { guildId }, tokenAuthor);
+  await rpc(port, "acceptInvite", { code: invCreate.invite.code }, tokenPeer);
+
+  // Owner (Author) posts a message in the server
+  const srvMsg = await rpc(port, "sendMessage", { channelId: guildChannelId, content: "Mensagem no servidor" }, tokenAuthor);
+  const srvMsgId = srvMsg.messageId;
+
+  // Peer (regular member without Admin/MANAGE_MESSAGES) tries to delete Author's message -> MUST FAIL (403)
+  const memberDeleteSrv = await rpc(port, "deleteMessage", { channelId: guildChannelId, messageId: srvMsgId }, tokenPeer);
+  check("Membro comum sem cargo Admin não exclui mensagem alheia no servidor (403)", !memberDeleteSrv.ok && memberDeleteSrv.status === 403);
+
+  // Grant Admin role to Peer, then Peer deletes Author's message -> MUST SUCCEED
+  await rpc(port, "assignMemberRole", { guildId, targetUserId: regPeer.user.id, roleId: adminRole.id }, tokenAuthor);
+  const adminDeleteSrv = await rpc(port, "deleteMessage", { channelId: guildChannelId, messageId: srvMsgId }, tokenPeer);
+  check("Membro com cargo Admin consegue excluir mensagem de outra pessoa no servidor", adminDeleteSrv.ok);
+
   // ---- Update signatures ------------------------------------------------------
   const { privateKey } = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const manifest = Buffer.from(JSON.stringify({ version: "99.0.0", sha256: "a".repeat(64), size: 1, publishedAt: "x" }));

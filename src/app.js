@@ -382,22 +382,31 @@ function giphyRenditions(url) {
 }
 
 // mode: "animate" (always plays), "hover" (still frame, plays on hover)
+function isMemorySaverActive() {
+  if (uiState.memorySaver === undefined) {
+    uiState.memorySaver = Boolean(window.DiscordNative?.processUtils?.getMemorySaver?.());
+  }
+  return Boolean(uiState.memorySaver);
+}
+
 function animatedImageHtml(url, { cls = "", style = "", alt = "", mode = "animate", size = "small", extra = "" } = {}) {
   const r = giphyRenditions(url);
   if (!r) {
-    return `<img class="${cls}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" style="${style}" decoding="async" ${extra} />`;
+    return `<img class="${cls}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" style="${style}" loading="lazy" decoding="async" ${extra} />`;
   }
+  const effectiveMode = isMemorySaverActive() ? "hover" : mode;
   const video = size === "full" ? r.full : r.small;
-  if (mode === "animate") {
-    return `<video class="${cls}" src="${escapeHtml(video)}" poster="${escapeHtml(r.still)}" style="${style}" autoplay loop muted playsinline disablepictureinpicture preload="auto" ${extra}></video>`;
+  if (effectiveMode === "animate") {
+    return `<video class="${cls}" src="${escapeHtml(video)}" poster="${escapeHtml(r.still)}" style="${style}" autoplay loop muted playsinline disablepictureinpicture preload="metadata" ${extra}></video>`;
   }
-  return `<img class="${cls}" src="${escapeHtml(r.still)}" alt="${escapeHtml(alt)}" style="${style}" decoding="async" ${extra} /><video class="${cls} hover-anim" data-anim-src="${escapeHtml(video)}" data-morph-keep-src style="${style}" loop muted playsinline disablepictureinpicture preload="none"></video>`;
+  return `<img class="${cls}" src="${escapeHtml(r.still)}" alt="${escapeHtml(alt)}" style="${style}" loading="lazy" decoding="async" ${extra} /><video class="${cls} hover-anim" data-anim-src="${escapeHtml(video)}" data-morph-keep-src style="${style}" loop muted playsinline disablepictureinpicture preload="none"></video>`;
 }
 
 // Animated banners/avatars must never freeze. The browser pauses a <video>
 // when it is moved in the page (and "autoplay" only acts once), and a network
 // hiccup can stall it: resume/reload anything meant to loop.
 function keepAnimating(video) {
+  if (isMemorySaverActive()) return;
   if (!video.isConnected || !video.autoplay || !video.loop) return;
   if (video.error) {
     const src = video.getAttribute("src");
@@ -525,11 +534,23 @@ function formatMessageMarkdown(rawText) {
   html = html.replace(/~~([^~]+)~~/g, "<del>$1</del>");
   html = html.replace(/(^|\n)&gt;\s*(.+)/g, "$1<blockquote>$2</blockquote>");
   const users = Object.values(store.getState().users || {});
-  html = html.replace(/(^|[^\w.])@([a-zA-Z0-9_.]+)/g, (whole, lead, name) => {
+  const activeGuild = store.getActiveGuild();
+  const guildRoles = activeGuild?.roles || [];
+  html = html.replace(/(^|[^\w.])@([\p{L}\p{N}_.-]+)/gu, (whole, lead, name) => {
     const clean = name.replace(/\.+$/, "");
-    const u = users.find((x) => x.username?.toLowerCase() === clean.toLowerCase());
+    const lower = clean.toLowerCase();
+    if (lower === "everyone" || lower === "here" || lower === "all" || lower === "todos") {
+      return `${lead}<span class="mention-pill mention-everyone" data-mention="${escapeHtml(clean)}">@${escapeHtml(clean)}</span>${name.slice(clean.length)}`;
+    }
+    const role = guildRoles.find((r) => r.name && r.name !== "@everyone" && r.name.toLowerCase() === lower);
+    if (role) {
+      const rColor = escapeHtml(role.color || "#dee0fc");
+      const rBg = escapeHtml(role.color ? `${role.color}33` : "rgba(88, 101, 242, 0.22)");
+      return `${lead}<span class="mention-pill mention-role" style="--role-mention-color:${rColor};--role-mention-bg:${rBg};" data-mention="${escapeHtml(role.name)}">@${escapeHtml(clean)}</span>${name.slice(clean.length)}`;
+    }
+    const u = users.find((x) => x.username?.toLowerCase() === lower);
     if (!u) return whole;
-    return `${lead}<span class="mention-pill" data-mention="${clean}" data-action="open-user-popout" data-user-id="${u.id}">@${clean}</span>${name.slice(clean.length)}`;
+    return `${lead}<span class="mention-pill" data-mention="${escapeHtml(clean)}" data-action="open-user-popout" data-user-id="${escapeHtml(u.id)}">@${escapeHtml(clean)}</span>${name.slice(clean.length)}`;
   });
   html = html.replace(/\n/g, "<br/>");
   html = html.replace(/\u0000(\d+)\u0000/g, (_m, i) => {
@@ -1693,7 +1714,10 @@ function renderComposerPlus(target, channelId) {
           ? `<div class="composer-plus-menu" data-testid="${target}-plus-menu">
               ${canAttach ? `<label class="composer-plus-item" for="${inputId}">
                 ${Icons.upload}<span>Enviar arquivo</span>
-              </label>` : ""}
+              </label>
+              <button type="button" class="composer-plus-item" data-action="open-gif-picker" data-target="${target}" data-testid="${target}-gif-menu-btn">
+                ${Icons.sparkles}<span>Enviar GIF animado</span>
+              </button>` : ""}
               ${canPoll ? `<button type="button" class="composer-plus-item" data-action="open-poll-modal" data-channel-id="${escapeHtml(channelId)}" data-testid="${target}-create-poll-btn">
                 ${Icons.poll}<span>Criar enquete</span>
               </button>` : ""}
@@ -1834,12 +1858,11 @@ function renderTypingIndicator(channelId) {
   return `<div class="typing-indicator active" data-testid="typing-indicator"><span class="typing-dots"><i></i><i></i><i></i></span><span>${text}</span></div>`;
 }
 
-// Does this message mention me (@my_username as a whole word)?
+// Does this message mention me (@my_username, @everyone/@all/@todos, or one of my roles)?
 function mentionsMe(content) {
-  const me = store.getCurrentUser()?.username;
-  if (!me || !content) return false;
-  const name = me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^\\w.])@${name}(?![\\w.])`, "i").test(content);
+  if (!content) return false;
+  const guild = store.getActiveGuild();
+  return store.messageMentionsMe(content, guild, {});
 }
 
 const FULLSCREEN_ICON = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`;
@@ -1889,7 +1912,8 @@ function dateDivider(m, prev) {
 function renderCallChatTools(state, ch, m) {
   const guild = state.guilds.find((g) => (g.channels || []).some((c) => c.id === ch.id)) || null;
   const mine = m.authorId === state.auth.currentUserId;
-  const canManage = store.can("MANAGE_MESSAGES", guild);
+  const canManage = Boolean(guild) && store.can("MANAGE_MESSAGES", guild);
+  const canDelete = store.canDeleteMessage(ch.id, m);
   const button = (action, title, icon, extra = "", cls = "") =>
     `<button class="toolbar-btn ${cls}" data-action="${action}" data-message-id="${m.id}" title="${title}" ${extra}>${icon}</button>`;
   return `
@@ -1902,7 +1926,7 @@ function renderCallChatTools(state, ch, m) {
       ${store.can("SEND_MESSAGES", guild) ? button("reply-message", "Responder", Icons.reply) : ""}
       ${store.can("PIN_MESSAGES", guild) || canManage ? button("pin-message", m.pinned ? "Desafixar" : "Fixar", Icons.pin) : ""}
       ${mine ? button("start-edit-message", "Editar", Icons.edit) : ""}
-      ${mine || canManage ? button("delete-message", "Excluir", Icons.trash, "", "danger") : ""}
+      ${canDelete ? button("delete-message", "Excluir", Icons.trash, "", "danger") : ""}
     </div>`;
 }
 
@@ -1918,8 +1942,11 @@ function renderCallChatPanel(state, ch) {
             const divider = dateDivider(m, prevMsg);
             const grouped = Boolean(prevMsg) && !divider && prevMsg.authorId === m.authorId && !m.replyToId;
             const replyTarget = m.replyToId ? messages.find((item) => item.id === m.replyToId) : null;
-            const replyHtml = replyTarget
-              ? `<div class="message-reply-preview"><span>↱</span><strong style="color:var(--header-primary);">@${escapeHtml(state.users[replyTarget.authorId]?.username || "user")}</strong><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(replyTarget.content)}</span></div>`
+            const replyPreviewText = replyTarget
+              ? replyTarget.content || (replyTarget.attachment ? `📎 ${replyTarget.attachment.name || "GIF/Anexo"}` : "Mensagem")
+              : "Mensagem original";
+            const replyHtml = m.replyToId
+              ? `<div class="message-reply-preview" data-action="jump-to-message" data-target-id="${escapeHtml(m.replyToId)}" title="Ir para a mensagem respondida"><span>↱</span><strong style="color:var(--header-primary);">@${escapeHtml(state.users[replyTarget?.authorId]?.username || "user")}</strong><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(replyPreviewText)}</span></div>`
               : "";
             const reactionsHtml = (m.reactions || []).length
               ? `<div class="message-reactions">${m.reactions
@@ -1938,7 +1965,7 @@ function renderCallChatPanel(state, ch) {
                 : `<div class="message-text">${formatMessageMarkdown(m.content)}${m.edited ? `<span style="font-size:10px;color:var(--text-muted);margin-left:4px;">(editado)</span>` : ""}${m.pinned ? `<span style="font-size:10px;color:var(--status-yellow);margin-left:4px;">📌</span>` : ""}</div>`;
             const attachment = renderAttachment(m.attachment) + renderPollCard(m, ch.id);
             return `${divider}
-              <div class="call-chat-msg ${grouped ? "grouped" : ""} ${mentionsMe(m.content) ? "mentioned" : ""}" data-message-id="${m.id}">
+              <div class="call-chat-msg ${grouped ? "grouped" : ""} ${mentionsMe(m.content) ? "mentioned" : ""} ${uiState.highlightedMessageId === m.id ? "reply-jump-highlight" : ""} ${m.pending ? "pending" : ""}" data-message-id="${m.id}">
                 ${grouped ? "" : `<div data-action="open-user-popout" data-user-id="${author.id}" style="cursor:pointer;">${renderAvatar(author)}</div>`}
                 <div class="call-chat-msg-body">
                   ${
@@ -1976,6 +2003,8 @@ function renderCallChatPanel(state, ch) {
         <form class="call-chat-box" id="call-chat-form" data-channel-id="${escapeHtml(ch.id)}">
           ${renderComposerPlus("call", ch.id)}
           <input class="call-chat-input" name="message" autocomplete="off" placeholder="Conversar em ${escapeHtml(ch.name)}" data-testid="call-chat-input" />
+          <button type="button" class="composer-gif-btn" data-action="open-gif-picker" data-target="call" title="Enviar GIF">GIF</button>
+          <button type="button" class="icon-btn" data-action="open-emoji-picker" data-message-id="call-composer" title="Escolher Emoji">${Icons.smile}</button>
         </form>
         ${renderTypingIndicator(ch.id)}
       </div>
@@ -2210,8 +2239,8 @@ function renderChatStage(state) {
   const perms = {
     send: store.can("SEND_MESSAGES", chatGuild),
     react: store.can("ADD_REACTIONS", chatGuild),
-    pin: store.can("PIN_MESSAGES", chatGuild) || store.can("MANAGE_MESSAGES", chatGuild),
-    manageMessages: store.can("MANAGE_MESSAGES", chatGuild)
+    pin: store.can("PIN_MESSAGES", chatGuild) || (Boolean(chatGuild) && store.can("MANAGE_MESSAGES", chatGuild)),
+    manageMessages: Boolean(chatGuild) && store.can("MANAGE_MESSAGES", chatGuild)
   };
   const searchQuery = (state.navigation.searchQuery || "").trim().toLowerCase();
   const pinnedList = allMessages.filter((m) => m.pinned);
@@ -2264,16 +2293,19 @@ function renderChatStage(state) {
             const prev = idx > 0 ? visibleMessages[idx - 1] : null;
             const divider = dateDivider(m, prev);
             const isGrouped = !isCompact && prev && !divider && prev.authorId === m.authorId && !m.replyToId;
-            const isMentioned = mentionsMe(m.content) || /(^|\s)@everyone\b/i.test(m.content || "");
+            const isMentioned = mentionsMe(m.content);
 
             const replyTarget = m.replyToId ? allMessages.find((item) => item.id === m.replyToId) : null;
             const replyAuthor = replyTarget ? state.users[replyTarget.authorId] : null;
+            const replyPreviewText = replyTarget
+              ? replyTarget.content || (replyTarget.attachment ? `📎 ${replyTarget.attachment.name || "GIF/Anexo"}` : "Mensagem")
+              : "Mensagem original";
 
-            const replyHeaderHtml = replyTarget
-              ? `<div class="message-reply-preview">
+            const replyHeaderHtml = m.replyToId
+              ? `<div class="message-reply-preview" data-action="jump-to-message" data-target-id="${escapeHtml(m.replyToId)}" title="Ir para a mensagem respondida" data-testid="reply-preview-${escapeHtml(m.id)}">
                   <span>↱</span>
                   <strong style="color:var(--header-primary);">@${escapeHtml(replyAuthor?.username || "user")}</strong>
-                  <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px;">${escapeHtml(replyTarget.content)}</span>
+                  <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px;">${escapeHtml(replyPreviewText)}</span>
                 </div>`
               : "";
 
@@ -2337,7 +2369,7 @@ function renderChatStage(state) {
 
             return `${divider}
               <div
-                class="message-row ${isGrouped ? "compact-followup" : ""} ${isMentioned ? "mentioned" : ""}"
+                class="message-row ${isGrouped ? "compact-followup" : ""} ${isMentioned ? "mentioned" : ""} ${uiState.highlightedMessageId === m.id ? "reply-jump-highlight" : ""} ${m.pending ? "pending" : ""}"
                 data-message-id="${m.id}"
               >
                 ${
@@ -2386,7 +2418,7 @@ function renderChatStage(state) {
                       : ""
                   }
                   ${
-                    m.authorId === state.auth.currentUserId || perms.manageMessages
+                    store.canDeleteMessage(channel.id, m)
                       ? `<button class="toolbar-btn danger" data-action="delete-message" data-message-id="${m.id}" title="Excluir">${Icons.trash}</button>`
                       : ""
                   }
@@ -2583,6 +2615,24 @@ function renderChatStage(state) {
             ${messagesHtml}
           </div>
 
+          <button
+            type="button"
+            id="jump-to-present-bar"
+            class="jump-to-present-bar ${uiState.newMessagesWhileScrolledUp > 0 ? "has-new" : ""}"
+            data-action="jump-to-present"
+            data-testid="jump-to-present-btn"
+            ${uiState.isScrolledUp ? "" : "hidden"}
+          >
+            <span id="jump-to-present-label">
+              ${
+                uiState.newMessagesWhileScrolledUp > 0
+                  ? `🔔 ${uiState.newMessagesWhileScrolledUp} ${uiState.newMessagesWhileScrolledUp === 1 ? "nova mensagem" : "novas mensagens"} neste canal`
+                  : "Você está vendo mensagens antigas"
+              }
+            </span>
+            <span class="jump-to-present-cta">Ir para mensagem recente ↓</span>
+          </button>
+
           <div class="composer-area">
             ${stagedHtml}
             ${bannerHtml}
@@ -2598,6 +2648,7 @@ function renderChatStage(state) {
                 autocomplete="off"
               />
               <button type="button" class="icon-btn" data-action="insert-slash-shrug" title="Inserir /shrug">¯\\_(ツ)_/¯</button>
+              ${perms.send ? `<button type="button" class="composer-gif-btn" data-action="open-gif-picker" data-target="chat" title="Enviar GIF" data-testid="composer-gif-btn">GIF</button>` : ""}
               <button type="button" class="icon-btn" data-action="open-emoji-picker" data-message-id="composer" title="Escolher Emoji">${Icons.smile}</button>
             </form>
             ${renderTypingIndicator(channel.id)}
@@ -3799,7 +3850,11 @@ function mountGifPicker(gp) {
           <div>
             <h2 id="gif-picker-title" style="font-size:18px;">Biblioteca de GIFs</h2>
             <div style="font-size:12px;color:var(--text-muted);">
-              Escolha uma animação para ${gp.target === "avatar" ? "o seu avatar" : gp.target === "guild-banner" ? "o banner do servidor" : "o seu banner"}
+              ${
+                gp.target === "chat" || gp.target === "call"
+                  ? "Escolha um GIF animado para enviar na conversa"
+                  : `Escolha uma animação para ${gp.target === "avatar" ? "o seu avatar" : gp.target === "guild-banner" ? "o banner do servidor" : "o seu banner"}`
+              }
             </div>
           </div>
           <button class="icon-btn" data-action="close-gif-picker" aria-label="Fechar">${Icons.close}</button>
@@ -4903,6 +4958,23 @@ function renderAccountSettingsPanel(me) {
       ${emailRow}
       ${passwordRow}
     </section>
+
+    <section class="settings-card" style="margin-top:16px;" data-testid="account-startup-card">
+      <div class="settings-card-head">
+        <div>
+          <h3>Inicialização do Sistema</h3>
+          <p>Inicie o ${escapeHtml(getAppName())} automaticamente quando o Windows ligar.</p>
+        </div>
+        <button
+          type="button"
+          class="btn ${NativeBridge.getOpenOnStartup() ? "btn-success" : "btn-secondary"} btn-sm"
+          data-action="toggle-open-on-startup"
+          data-testid="account-open-on-startup-toggle"
+        >
+          ${NativeBridge.getOpenOnStartup() ? "✓ Iniciar com o Windows (Ativo)" : "Ativar Iniciar com o Windows"}
+        </button>
+      </div>
+    </section>
   `;
 }
 
@@ -4973,7 +5045,7 @@ function renderSettingsOverlay(state) {
     panelHtml = `
       <h2 style="color:var(--header-primary);margin-bottom:6px;">Aparência</h2>
       <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">
-        Escolha entre 10 temas predefinidos com aplicação imediata e persistência automática.
+        Escolha entre ${AVAILABLE_THEMES.length} temas predefinidos (incluindo o novo tema Kamui abissal) com aplicação imediata e persistência automática.
       </p>
       <div style="background:var(--bg-channels);padding:18px;border-radius:8px;display:flex;flex-direction:column;gap:20px;">
         <div>
@@ -5177,7 +5249,7 @@ function renderSettingsOverlay(state) {
           <button class="settings-nav-item ${tab === "profile" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="profile" data-testid="settings-tab-profile">Perfil</button>
           <button class="settings-nav-item ${tab === "activity" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="activity" data-testid="settings-tab-activity">Atividade</button>
           <div class="settings-section-label">Configurações do App</div>
-          <button class="settings-nav-item ${tab === "appearance" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="appearance" data-testid="settings-tab-appearance">Aparência (10 Temas)</button>
+          <button class="settings-nav-item ${tab === "appearance" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="appearance" data-testid="settings-tab-appearance">Aparência (${AVAILABLE_THEMES.length} Temas)</button>
           <button class="settings-nav-item ${tab === "voice" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="voice" data-testid="settings-tab-voice">Voz, Vídeo & Sons</button>
           <button class="settings-nav-item ${tab === "windows" ? "active" : ""}" data-action="settings-tab" data-type="user" data-tab="windows" data-testid="settings-tab-windows">Windows & Memória</button>
           <div style="height:1px;background:var(--divider-subtle);margin:8px 0;"></div>
@@ -6036,10 +6108,52 @@ function bindFormEvents() {
     });
   }
 
-  // Message Composer Form
+  // Message Composer Form & Auto-Scroll / Auto-Focus on Channel/DM Open
+  const mainScroller = document.getElementById("messages-scroller");
+  const activeCh = store.getActiveChannel();
+  if (mainScroller && activeCh) {
+    const count = mainScroller.querySelectorAll(".message-row[data-message-id]").length;
+    const key = activeCh.id;
+    const channelChanged = mainScroller.dataset.seenKey !== key;
+    if (channelChanged) {
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
+      mainScroller.scrollTop = mainScroller.scrollHeight;
+      requestAnimationFrame(() => {
+        const sc = document.getElementById("messages-scroller");
+        if (sc) sc.scrollTop = sc.scrollHeight;
+        const activeTag = document.activeElement?.tagName;
+        if (!uiState.activeModal && !uiState.settingsOverlay && activeTag !== "INPUT" && activeTag !== "TEXTAREA") {
+          document.getElementById("composer-text-input")?.focus();
+        }
+      });
+    } else if (Number(mainScroller.dataset.seenCount) !== count && !uiState.isScrolledUp) {
+      mainScroller.scrollTop = mainScroller.scrollHeight;
+    }
+    mainScroller.dataset.seenKey = key;
+    mainScroller.dataset.seenCount = String(count);
+
+    if (!mainScroller.dataset.scrollBound) {
+      mainScroller.dataset.scrollBound = "1";
+      mainScroller.addEventListener(
+        "scroll",
+        () => {
+          const distFromBottom = mainScroller.scrollHeight - mainScroller.scrollTop - mainScroller.clientHeight;
+          const scrolledUp = distFromBottom > 180;
+          if (scrolledUp !== Boolean(uiState.isScrolledUp)) {
+            uiState.isScrolledUp = scrolledUp;
+            if (!scrolledUp) uiState.newMessagesWhileScrolledUp = 0;
+            syncJumpToPresentBar();
+          }
+        },
+        { passive: true }
+      );
+    }
+  }
+
   const composerForm = document.getElementById("message-composer-form");
   if (composerForm) {
-    composerForm.addEventListener("submit", async (e) => {
+    composerForm.addEventListener("submit", (e) => {
       e.preventDefault();
       const input = document.getElementById("composer-text-input");
       const channel = store.getActiveChannel();
@@ -6051,12 +6165,15 @@ function bindFormEvents() {
       const attachment = uiState.stagedAttachment;
       uiState.replyingToMessageId = null;
       uiState.stagedAttachment = null;
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
       input.value = "";
 
-      await store.sendMessage(channel.id, text, { replyToId, attachment });
-      renderApp();
+      // Send optimistically without blocking typing or waiting for HTTP round-trip
+      store.sendMessage(channel.id, text, { replyToId, attachment });
       const scroller = document.getElementById("messages-scroller");
       if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      document.getElementById("composer-text-input")?.focus();
     });
   }
 
@@ -6092,14 +6209,61 @@ function bindFormEvents() {
   bindPasteAttach(document.getElementById("composer-text-input"), "stagedAttachment");
   bindPasteAttach(document.querySelector("#call-chat-form input[name=message]"), "callStagedAttachment");
 
-  // "@" mentions: the people who can see the channel of each box
+  // "@" mentions: the people, @everyone/@all/@todos, and server roles in the channel
   const peopleOfChannel = (channelId) => {
     const st = store.getState();
     const dm = st.dms.find((d) => d.id === channelId);
-    const ids = dm
-      ? [dm.userId, st.auth.currentUserId]
-      : st.guilds.find((g) => g.channels.some((c) => c.id === channelId))?.memberIds || [];
-    return ids.map((id) => st.users[id]).filter(Boolean);
+    if (dm) {
+      return [dm.userId, st.auth.currentUserId].map((id) => st.users[id]).filter(Boolean);
+    }
+    const guild = st.guilds.find((g) => g.channels.some((c) => c.id === channelId));
+    if (!guild) return [];
+    const specialMentions = [
+      {
+        id: "mention_todos",
+        kind: "group",
+        username: "todos",
+        insertText: "todos",
+        displayName: "@todos",
+        subtitle: "Marcar todos os membros do servidor",
+        aliases: ["todos", "all", "everyone"]
+      },
+      {
+        id: "mention_all",
+        kind: "group",
+        username: "all",
+        insertText: "all",
+        displayName: "@all",
+        subtitle: "Marcar todos os membros do servidor",
+        aliases: ["all", "todos", "everyone"]
+      },
+      {
+        id: "mention_everyone",
+        kind: "group",
+        username: "everyone",
+        insertText: "everyone",
+        displayName: "@everyone",
+        subtitle: "Marcar todos os membros do servidor",
+        aliases: ["everyone", "all", "todos"]
+      }
+    ];
+    const roleMentions = (guild.roles || [])
+      .filter((r) => r && r.name && r.name !== "@everyone")
+      .map((r) => ({
+        id: `role_${r.id}`,
+        kind: "role",
+        username: r.name,
+        insertText: r.name,
+        displayName: r.name,
+        color: r.color || "#99aab5",
+        subtitle: "Cargo do servidor",
+        aliases: [r.name.toLowerCase()]
+      }));
+    const memberUsers = (guild.memberIds || [])
+      .map((id) => st.users[id])
+      .filter(Boolean)
+      .map((u) => ({ ...u, kind: "user" }));
+    return [...specialMentions, ...roleMentions, ...memberUsers];
   };
   const mentionAvatar = (u) => renderAvatar(u, "", false, "width:24px;height:24px;min-width:24px;font-size:10px;");
   attachMentionAutocomplete(document.getElementById("composer-text-input"), () => peopleOfChannel(store.getActiveChannel()?.id), mentionAvatar);
@@ -7059,10 +7223,16 @@ function bindFormEvents() {
   }
   const memorySaverBox = document.getElementById("setting-memory-saver");
   if (memorySaverBox) {
-    memorySaverBox.addEventListener("change", () => {
+    memorySaverBox.addEventListener("change", async () => {
       const on = window.DiscordNative?.processUtils?.setMemorySaver?.(memorySaverBox.checked);
+      uiState.memorySaver = Boolean(on);
       memorySaverBox.checked = Boolean(on);
-      showToast(on ? "Economia de memória ligada." : "Economia de memória desligada: o app fica mais fluido.");
+      if (on) {
+        await NativeBridge.purgeMemory();
+      }
+      renderApp();
+      showToast(on ? "Economia de memória ligada (< 100 MB)." : "Economia de memória desligada: o app fica mais fluido.");
+      setTimeout(refreshMemoryUsageLabel, 500);
       setTimeout(refreshMemoryUsageLabel, 1500);
     });
   }
@@ -8034,6 +8204,7 @@ async function handleGlobalClick(e) {
       showToast("Reproduzindo áudio de teste de saída!");
       break;
     case "open-gif-picker":
+      uiState.composerMenu = null;
       store.openGifPicker(btn.getAttribute("data-target") || "avatar");
       break;
     case "close-gif-picker":
@@ -8100,12 +8271,46 @@ async function handleGlobalClick(e) {
       await store.loadMoreGifs();
       break;
     case "pick-gif-item": {
-      if (store.getState().gifPicker.target === "guild-banner") {
+      const gifTarget = store.getState().gifPicker.target;
+      const gifUrl = btn.getAttribute("data-gif-large-url") || btn.getAttribute("data-gif-url");
+      const gifTitle = btn.getAttribute("data-gif-title") || "GIF";
+      if (gifTarget === "guild-banner") {
         const guild = store.getActiveGuild();
         store.closeGifPicker();
         if (!guild) break;
-        const res = await store.updateGuild(guild.id, { bannerUrl: btn.getAttribute("data-gif-large-url") || btn.getAttribute("data-gif-url") });
+        const res = await store.updateGuild(guild.id, { bannerUrl: gifUrl });
         showToast(res.ok ? "GIF aplicado ao banner do servidor!" : res.error || "Não foi possível salvar o banner.");
+        break;
+      }
+      if (gifTarget === "chat" || gifTarget === "call") {
+        store.closeGifPicker();
+        uiState.composerMenu = null;
+        const chId =
+          gifTarget === "call"
+            ? document.getElementById("call-chat-form")?.getAttribute("data-channel-id") || store.getState().voice.connectedChannelId
+            : store.getActiveChannel()?.id;
+        if (!chId) break;
+        const replyToId = gifTarget === "call" ? uiState.callReplyToId : uiState.replyingToMessageId;
+        if (gifTarget === "call") uiState.callReplyToId = null;
+        else {
+          uiState.replyingToMessageId = null;
+          uiState.isScrolledUp = false;
+          uiState.newMessagesWhileScrolledUp = 0;
+        }
+        store.sendMessage(chId, "", {
+          replyToId,
+          attachment: {
+            id: `gif_${Date.now()}`,
+            name: `${gifTitle}.gif`,
+            size: "GIF",
+            url: gifUrl,
+            isImage: true,
+            isGif: true,
+            spoiler: false
+          }
+        });
+        const scroller = document.getElementById(gifTarget === "call" ? "call-chat-scroller" : "messages-scroller");
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
         break;
       }
       store.selectGif(btn.getAttribute("data-gif-url"));
@@ -8533,22 +8738,56 @@ async function handleGlobalClick(e) {
     case "select-emoji": {
       const target = btn.getAttribute("data-target") || btn.closest("[data-emoji-target]")?.getAttribute("data-emoji-target");
       const emoji = btn.getAttribute("data-emoji");
-      uiState.emojiPickerForMessageId = null;
       recordEmojiUse(emoji);
-      if (target === "composer") {
-        const inp = document.getElementById("composer-text-input");
+      if (target === "composer" || target === "call-composer") {
+        const inp =
+          target === "call-composer"
+            ? document.querySelector("#call-chat-form input[name=message]")
+            : document.getElementById("composer-text-input");
         if (inp) {
-          // Inserted where the cursor is, not always at the end
+          // Inserted where the cursor is, keeping the emoji picker open so the user can click multiple emojis
           const start = inp.selectionStart ?? inp.value.length;
           const end = inp.selectionEnd ?? inp.value.length;
           inp.value = inp.value.slice(0, start) + emoji + inp.value.slice(end);
           inp.focus();
           inp.setSelectionRange(start + emoji.length, start + emoji.length);
         }
-      } else {
-        const msgChannelId = channelIdOfMessage(target);
-        if (msgChannelId) await store.toggleReaction(msgChannelId, target, emoji);
+        break;
       }
+      uiState.emojiPickerForMessageId = null;
+      const msgChannelId = channelIdOfMessage(target);
+      if (msgChannelId) await store.toggleReaction(msgChannelId, target, emoji);
+      renderApp();
+      break;
+    }
+    case "jump-to-message": {
+      const targetId = btn.getAttribute("data-target-id");
+      if (targetId) jumpToMessage(targetId, Boolean(btn.closest(".call-chat")));
+      break;
+    }
+    case "jump-to-present": {
+      uiState.isScrolledUp = false;
+      uiState.newMessagesWhileScrolledUp = 0;
+      syncJumpToPresentBar();
+      const scroller = document.getElementById("messages-scroller");
+      if (scroller) {
+        const dist = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+        scroller.scrollTo({
+          top: scroller.scrollHeight,
+          behavior: dist <= 1400 ? "smooth" : "instant"
+        });
+      }
+      document.getElementById("composer-text-input")?.focus();
+      break;
+    }
+    case "toggle-open-on-startup": {
+      const next = !NativeBridge.getOpenOnStartup();
+      NativeBridge.setOpenOnStartup(next);
+      showToast(
+        next
+          ? `${getAppName()} configurado para iniciar automaticamente com o Windows.`
+          : "Inicialização automática com o Windows desativada."
+      );
       renderApp();
       break;
     }
@@ -9380,8 +9619,14 @@ NativeBridge.subscribeIpc("SYSTEM_TRAY_OPEN_VOICE_SETTINGS", () => {
   renderApp();
 });
 
-// Checks the server for a newer version; on startup only speaks up when there is one
-async function checkForUpdates({ quiet = true } = {}) {
+NativeBridge.subscribeIpc("MEMORY_SAVER_CHANGED", (enabled) => {
+  uiState.memorySaver = Boolean(enabled);
+  renderApp();
+  setTimeout(refreshMemoryUsageLabel, 600);
+});
+
+// Checks the server for a newer version; on startup immediately notifies the user when there is one
+async function checkForUpdates({ quiet = true, startup = false } = {}) {
   if (!window.DiscordNative?.app?.checkForUpdates) return;
   uiState.checkingUpdates = true;
   if (!quiet) renderApp();
@@ -9389,7 +9634,13 @@ async function checkForUpdates({ quiet = true } = {}) {
   uiState.checkingUpdates = false;
   // A failed background check keeps what an earlier one found
   if (info?.ok || !quiet || !uiState.updateInfo?.available) uiState.updateInfo = info || { ok: false, error: "Não foi possível verificar." };
-  if (!quiet && !info?.available) showToast(info?.ok ? "Você já está na versão mais recente." : uiState.updateInfo.error);
+  if (info?.available && (startup || !quiet) && uiState.notifiedUpdateVersion !== info.latest) {
+    uiState.notifiedUpdateVersion = info.latest;
+    uiState.updateBannerDismissed = null;
+    showToast(`🚀 Nova atualização disponível (v${info.latest})! Clique em "Atualizar agora" no topo da tela.`);
+  } else if (!quiet && !info?.available) {
+    showToast(info?.ok ? "Você já está na versão mais recente." : uiState.updateInfo.error);
+  }
   renderApp();
 }
 
@@ -9436,11 +9687,82 @@ NativeBridge.subscribeIpc("CHECK_FOR_UPDATES", () => {
   uiState.settingsOverlay = { type: "user", tab: "windows" };
   renderApp();
 });
-// Checks on its own: soon after opening, then every 30 minutes
-setTimeout(() => checkForUpdates({ quiet: true }), 4000);
+// Checks immediately upon opening the app, then every 30 minutes
+checkForUpdates({ quiet: true, startup: true });
 setInterval(() => {
-  if (!uiState.updatingApp) checkForUpdates({ quiet: true });
+  if (!uiState.updatingApp) checkForUpdates({ quiet: true, startup: true });
 }, 30 * 60 * 1000);
+
+let replyHighlightTimer = null;
+
+function syncJumpToPresentBar() {
+  const bar = document.getElementById("jump-to-present-bar");
+  const label = document.getElementById("jump-to-present-label");
+  if (!bar || !label) return;
+  if (!uiState.isScrolledUp) {
+    bar.setAttribute("hidden", "");
+    bar.classList.remove("has-new");
+    return;
+  }
+  bar.removeAttribute("hidden");
+  const count = Number(uiState.newMessagesWhileScrolledUp || 0);
+  bar.classList.toggle("has-new", count > 0);
+  label.textContent =
+    count > 0
+      ? `🔔 ${count} ${count === 1 ? "nova mensagem" : "novas mensagens"} neste canal`
+      : "Você está vendo mensagens antigas";
+}
+
+function jumpToMessage(targetId, inCallChat = false) {
+  const scroller = document.getElementById(inCallChat ? "call-chat-scroller" : "messages-scroller");
+  const selector = `[data-message-id="${CSS.escape(targetId)}"]`;
+  const targetEl = (scroller ? scroller.querySelector(selector) : null) || document.querySelector(selector);
+  if (!targetEl) {
+    showToast("A mensagem original não foi encontrada neste canal.");
+    return;
+  }
+  const container = scroller || targetEl.closest(".messages-scroller, .call-chat-messages");
+  if (container) {
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = targetEl.getBoundingClientRect();
+    const targetScrollTop =
+      container.scrollTop + (targetRect.top - containerRect.top) - container.clientHeight / 2 + targetRect.height / 2;
+    const distance = Math.abs(container.scrollTop - targetScrollTop);
+    // Smooth animation when nearby (<= 1100px), instant cut when far away
+    container.scrollTo({
+      top: Math.max(0, targetScrollTop),
+      behavior: distance <= 1100 ? "smooth" : "instant"
+    });
+  } else {
+    targetEl.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
+  uiState.highlightedMessageId = targetId;
+  document.querySelectorAll(".reply-jump-highlight").forEach((el) => el.classList.remove("reply-jump-highlight"));
+  // Force reflow so clicking the same reply preview again restarts the 3s animation
+  void targetEl.offsetWidth;
+  targetEl.classList.add("reply-jump-highlight");
+  clearTimeout(replyHighlightTimer);
+  replyHighlightTimer = setTimeout(() => {
+    if (uiState.highlightedMessageId === targetId) uiState.highlightedMessageId = null;
+    targetEl.classList.remove("reply-jump-highlight");
+  }, 3000);
+}
+
+store.onChannelMessageCreated = (channelId, msg) => {
+  const active = store.getActiveChannel();
+  if (!active || active.id !== channelId) return;
+  const isMe = msg?.authorId === store.getState().auth.currentUserId;
+  if (!isMe && uiState.isScrolledUp) {
+    uiState.newMessagesWhileScrolledUp = Number(uiState.newMessagesWhileScrolledUp || 0) + 1;
+    syncJumpToPresentBar();
+  } else {
+    requestAnimationFrame(() => {
+      const scroller = document.getElementById("messages-scroller");
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+  }
+};
 
 // Game covers come from the Steam CDN; if one fails, the card keeps its initials
 document.addEventListener(

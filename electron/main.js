@@ -155,8 +155,28 @@ process.env.ECO_DATA_DIR = APP_DATA_DIR;
 migrateFromSharedDiscordFolder();
 
 // Phase 7: V8 & Chromium Memory Optimization Flags
-app.commandLine.appendSwitch("js-flags", "--max-old-space-size=64 --initial-old-space-size=4 --OptimizeForSize --expose-gc");
+function isStartupMemorySaverEnabled() {
+  try {
+    const p = path.join(APP_DATA_DIR, "settings.json");
+    return Boolean(JSON.parse(fs.readFileSync(p, "utf8")).MEMORY_SAVER);
+  } catch (_) {
+    return false;
+  }
+}
+const STARTUP_MEMORY_SAVER = isStartupMemorySaverEnabled();
+app.commandLine.appendSwitch(
+  "js-flags",
+  STARTUP_MEMORY_SAVER
+    ? "--max-old-space-size=48 --initial-old-space-size=4 --OptimizeForSize --expose-gc --lite-mode"
+    : "--max-old-space-size=64 --initial-old-space-size=4 --OptimizeForSize --expose-gc"
+);
 app.commandLine.appendSwitch("disable-site-isolation-trials");
+app.commandLine.appendSwitch("renderer-process-limit", "1");
+if (STARTUP_MEMORY_SAVER) {
+  app.commandLine.appendSwitch("num-raster-threads", "1");
+  app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
+  app.commandLine.appendSwitch("disable-gpu-program-cache");
+}
 // Audio and network services run inside the main process instead of two extra
 // utility processes (measured: 105 MB -> 93 MB without trimming)
 app.commandLine.appendSwitch(
@@ -183,8 +203,8 @@ app.commandLine.appendSwitch(
     "RunVideoCaptureServiceInBrowserProcess"
   ].join(",")
 );
-app.commandLine.appendSwitch("disk-cache-size", "16777216");
-app.commandLine.appendSwitch("media-cache-size", "8388608");
+app.commandLine.appendSwitch("disk-cache-size", STARTUP_MEMORY_SAVER ? "4194304" : "16777216");
+app.commandLine.appendSwitch("media-cache-size", STARTUP_MEMORY_SAVER ? "2097152" : "8388608");
 // ---------------------------------------------------------------------------
 // Diagnostics: %APPDATA%\Eco\logs\huddle.log (tray > "Abrir registro de erros").
 // What a friend sends when the app shows a white window or closes by itself.
@@ -302,15 +322,16 @@ let lastTrimAt = 0;
 // non-stop: measured with a 1080p/60 share between two copies of the app, 37
 // FPS and stalls with the ceiling against 54-57 FPS and none without it, and
 // the window took twice as long to open (0.70 s vs 0.30 s).
-const MAIN_PROCESS_CAP_MB = 85; // app + GPU + capture/encoding (in-process)
-const PAGE_PROCESS_CAP_MB = 30; // each page (window)
+const MAIN_PROCESS_CAP_MB = 42; // app + capture/encoding (in-process)
+const GPU_PROCESS_CAP_MB = 10; // GPU process when separate
+const PAGE_PROCESS_CAP_MB = 26; // each page (window) -> total across all processes stays < 80 MB (< 100 MB)
 let cappedPids = "";
 
 function isMemorySaverOn() {
   return Boolean(getSetting("MEMORY_SAVER", false));
 }
 
-function applyMemoryCaps() {
+function applyMemoryCaps({ force = false } = {}) {
   const metrics = app.getAppMetrics();
   if (!isMemorySaverOn()) {
     // Turned off while running: lift the ceilings that were set
@@ -321,8 +342,11 @@ function applyMemoryCaps() {
     return;
   }
   const key = metrics.map((mt) => mt.pid).sort().join(",");
-  if (key === cappedPids) return;
-  const entries = metrics.map((mt) => ({ pid: mt.pid, mb: mt.type === "Browser" ? MAIN_PROCESS_CAP_MB : PAGE_PROCESS_CAP_MB }));
+  if (!force && key === cappedPids) return;
+  const entries = metrics.map((mt) => ({
+    pid: mt.pid,
+    mb: mt.type === "Browser" ? MAIN_PROCESS_CAP_MB : mt.type === "GPU" ? GPU_PROCESS_CAP_MB : PAGE_PROCESS_CAP_MB
+  }));
   if (capProcesses(entries)) cappedPids = key;
 }
 
@@ -374,18 +398,36 @@ function appInView() {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized());
 }
 
+function getResidentMemoryMB() {
+  const kb = app.getAppMetrics().reduce((sum, mt) => {
+    const ws = Number(mt.memory?.workingSetSize || 0);
+    const priv = Number(mt.memory?.privateBytes || 0);
+    // workingSetSize is physical RAM in use by the process; privateBytes on Windows
+    // is pagefile commit charge (which stays high even after pages are trimmed from RAM).
+    const resident = ws > 0 ? (priv > 0 ? Math.min(ws, priv) : ws) : priv;
+    return sum + resident;
+  }, 0);
+  return kb ? Math.round(kb / 1024) : 0;
+}
+
 function trimProcessWorkingSets({ force = false } = {}) {
   // Automatic trimming starts a helper that touches the app's processes every
   // minute, which antivirus programs flag: only in "modo economia" (or when asked)
   if (!force && !isMemorySaverOn()) return;
-  if (!force && (mediaSessionActive || appInView())) return;
+  if (!force && mediaSessionActive) return;
+  if (!force && appInView() && getResidentMemoryMB() < 82) return;
   const light = mediaSessionActive;
   if (light && !isLightTrimAvailable()) return;
   if (!light) {
     try {
+      webContentsSend("MEMORY_SAVER_PURGE");
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.session.clearCodeCaches({}).catch(() => {});
+      }
       if (typeof global.gc === "function") global.gc();
     } catch (_) {}
   }
+  applyMemoryCaps({ force: true });
   const pids = app
     .getAppMetrics()
     .map((mt) => mt.pid)
@@ -417,15 +459,19 @@ function cancelIdleTrim() {
   idleTrimTimer = null;
 }
 
-// Out of sight: empty the working sets every HIDDEN_TRIM_INTERVAL_MS. Also
-// re-applies the ceilings when a process was replaced (e.g. a page reload).
-const HIDDEN_TRIM_INTERVAL_MS = 60 * 1000;
+// Out of sight or in Memory Saver mode: keep physical RAM strictly under 100 MB (~50-80 MB).
+const HIDDEN_TRIM_INTERVAL_MS = 30 * 1000;
 function startSystemIdleWatch() {
   setInterval(() => {
     applyMemoryCaps();
-    if (mediaSessionActive || appInView()) return;
+    if (mediaSessionActive) return;
+    if (isMemorySaverOn() && getResidentMemoryMB() >= 82) {
+      trimProcessWorkingSets({ force: true });
+      return;
+    }
+    if (appInView()) return;
     if (Date.now() - lastTrimAt >= HIDDEN_TRIM_INTERVAL_MS) trimProcessWorkingSets();
-  }, 10 * 1000).unref();
+  }, 8 * 1000).unref();
 }
 
 function getSettingsPath() {
@@ -529,6 +575,9 @@ function applyOpenOnStartup(enabled) {
     console.error("Failed to update login item:", e);
   }
   setSetting("OPEN_ON_STARTUP", Boolean(enabled));
+  if (tray && !tray.isDestroyed()) {
+    setupSystemTray();
+  }
   return isOpenOnStartupEnabled();
 }
 
@@ -619,8 +668,19 @@ function setupSystemTray() {
   try {
     const iconPath = path.join(__dirname, "..", "assets", "app.ico");
     if (!fs.existsSync(iconPath)) return;
-    tray = new Tray(iconPath);
-    tray.setToolTip(APP_DISPLAY_NAME);
+    if (!tray || tray.isDestroyed()) {
+      tray = new Tray(iconPath);
+      tray.setToolTip(APP_DISPLAY_NAME);
+      tray.on("click", () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          if (mainWindow.isVisible()) {
+            mainWindow.focus();
+          } else {
+            mainWindow.show();
+          }
+        }
+      });
+    }
 
     const contextMenu = Menu.buildFromTemplate([
       {
@@ -661,6 +721,14 @@ function setupSystemTray() {
       },
       { type: "separator" },
       {
+        label: "Iniciar com o Windows",
+        type: "checkbox",
+        checked: isOpenOnStartupEnabled(),
+        click: (menuItem) => {
+          applyOpenOnStartup(Boolean(menuItem.checked));
+        }
+      },
+      {
         label: "Verificar atualizações...",
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -688,15 +756,6 @@ function setupSystemTray() {
     ]);
 
     tray.setContextMenu(contextMenu);
-    tray.on("click", () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isVisible()) {
-          mainWindow.focus();
-        } else {
-          mainWindow.show();
-        }
-      }
-    });
   } catch (e) {
     console.error("Failed to create system tray:", e);
   }
@@ -861,6 +920,24 @@ function launchMainWindow(showImmediately = false) {
     return { action: "deny" };
   });
 
+  // Block DevTools in production builds unless explicitly enabled via HUDDLE_DEVTOOLS=1
+  if (app.isPackaged && process.env.HUDDLE_DEVTOOLS !== "1") {
+    mainWindow.webContents.on("devtools-opened", () => {
+      try {
+        mainWindow.webContents.closeDevTools();
+      } catch (_) {}
+    });
+    mainWindow.webContents.on("before-input-event", (event, input) => {
+      const key = String(input.key || "").toUpperCase();
+      if (
+        key === "F12" ||
+        (input.control && input.shift && (key === "I" || key === "J" || key === "C"))
+      ) {
+        event.preventDefault();
+      }
+    });
+  }
+
   const indexPath = path.join(__dirname, "..", "src", "index.html");
   // The page's own <title> would replace the app name in the taskbar
   mainWindow.on("page-title-updated", (e) => e.preventDefault());
@@ -987,14 +1064,14 @@ function registerIpcHandlers(backend) {
     return { ok: true };
   });
 
-  // Same figure as the "Memory" column of Windows' Task Manager: the private
-  // working set of every app process (getAppMetrics' workingSetSize includes
-  // shared pages and reads several times higher)
+  // Physical RAM Working Set across all app processes (in MB).
+  // Note: mt.memory.privateBytes on Windows is PROCESS_MEMORY_COUNTERS_EX.PrivateUsage
+  // (virtual pagefile commit charge), which stays at 300-400 MB even when pages are
+  // paged out of physical RAM by SetProcessWorkingSetSizeEx / EmptyWorkingSet.
   ipcMain.handle("DISCORD_MEMORY_GET_TASK_MANAGER_MB", async () => {
     if (process.platform !== "win32") return null;
-    // privateBytes is Windows' private working-set figure (no PowerShell needed)
-    const kb = app.getAppMetrics().reduce((sum, mt) => sum + (mt.memory?.privateBytes || mt.memory?.workingSetSize || 0), 0);
-    return kb ? Math.round(kb / 1024) : null;
+    const mb = getResidentMemoryMB();
+    return mb || null;
   });
 
   ipcMain.handle("DISCORD_MEMORY_GET_STATS", async () => {
@@ -1374,8 +1451,14 @@ function registerIpcHandlers(backend) {
   });
 
   ipcMain.on("DISCORD_MEMORY_SAVER_SET_SYNC", (event, enabled) => {
-    setSetting("MEMORY_SAVER", Boolean(enabled));
-    applyMemoryCaps();
+    const on = Boolean(enabled);
+    setSetting("MEMORY_SAVER", on);
+    applyMemoryCaps({ force: true });
+    if (on) {
+      trimProcessWorkingSets({ force: true });
+      setTimeout(() => trimProcessWorkingSets({ force: true }), 600);
+    }
+    webContentsSend("MEMORY_SAVER_CHANGED", on);
     event.returnValue = isMemorySaverOn();
   });
 

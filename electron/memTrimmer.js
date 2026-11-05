@@ -40,14 +40,14 @@ function prepareHelper(dataDir) {
   if (process.platform !== "win32") return Promise.resolve(null);
   if (helperPath) return Promise.resolve(helperPath);
   if (compiling) return compiling;
-  if (app.isPackaged) {
+  if (app.isPackaged && fs.existsSync(SHIPPED_PATH)) {
     // Copies compiled here by older versions (what antivirus programs flagged)
     try {
       for (const f of fs.readdirSync(dataDir)) {
         if (/^eco-memtrim(-[0-9a-f]+)?\.(exe|cs)$/.test(f)) fs.unlinkSync(path.join(dataDir, f));
       }
     } catch (_) {}
-    helperPath = fs.existsSync(SHIPPED_PATH) ? SHIPPED_PATH : null;
+    helperPath = SHIPPED_PATH;
     return Promise.resolve(helperPath);
   }
   compiling = new Promise((resolve) => {

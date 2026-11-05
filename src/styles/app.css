@@ -7422,3 +7422,169 @@ body.is-resizing-row * {
   font-weight: 800;
   font-size: 14px;
 }
+
+/* ===== Reply click jump highlight (blue for 3s, then fades out) ===== */
+.message-reply-preview[data-action="jump-to-message"],
+.call-chat-reply[data-action="jump-to-message"] {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.message-reply-preview[data-action="jump-to-message"]:hover,
+.call-chat-reply[data-action="jump-to-message"]:hover {
+  background-color: rgba(0, 168, 252, 0.12);
+  color: #fff;
+}
+
+@keyframes replyJumpHighlightFade {
+  0% {
+    background-color: rgba(0, 168, 252, 0.32);
+    box-shadow: inset 3px 0 0 #00a8fc;
+  }
+  70% {
+    background-color: rgba(0, 168, 252, 0.22);
+    box-shadow: inset 3px 0 0 #00a8fc;
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 transparent;
+  }
+}
+
+.message-row.reply-jump-highlight,
+.call-chat-msg.reply-jump-highlight {
+  background-color: rgba(0, 168, 252, 0.25);
+  box-shadow: inset 3px 0 0 #00a8fc;
+  border-radius: 6px;
+  animation: replyJumpHighlightFade 3s ease-out forwards;
+}
+
+.message-row.pending {
+  opacity: 0.72;
+}
+
+/* ===== Floating "Jump to recent message" bar when scrolled up ===== */
+.chat-main {
+  position: relative;
+}
+
+.jump-to-present-bar {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 78px;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(17, 18, 24, 0.96), rgba(24, 26, 34, 0.96));
+  border: 1px solid var(--brand-purple, #5865f2);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  transition: transform 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.jump-to-present-bar:hover {
+  transform: translateY(-1px);
+  background: var(--brand-purple, #5865f2);
+}
+
+.jump-to-present-bar.has-new {
+  background: var(--brand-purple, #5865f2);
+}
+
+.jump-to-present-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ===== Role & Everyone Mentions + Mention Autocomplete Badges ===== */
+.mention-pill.mention-everyone {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fde68a;
+  font-weight: 700;
+}
+
+.mention-pill.mention-role {
+  background: var(--role-mention-bg, rgba(88, 101, 242, 0.22));
+  color: var(--role-mention-color, #dee0fc);
+  font-weight: 600;
+}
+
+.mention-badge-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 800;
+  flex-shrink: 0;
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+
+.mention-role-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ===== GIF button in chat composer & GIF message rendering ===== */
+.composer-gif-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-normal);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease, transform 0.1s ease;
+}
+
+.composer-gif-btn:hover {
+  background: var(--brand-purple, #5865f2);
+  color: #fff;
+}
+
+/* ===== Kamui deep pitch-black refinements ===== */
+.app-root[data-theme="kamui"] .guilds-rail,
+.app-root[data-theme="kamui"] .channels-pane,
+.app-root[data-theme="kamui"] .chat-main,
+.app-root[data-theme="kamui"] .members-sidebar,
+.app-root[data-theme="kamui"] .account-panel,
+.app-root[data-theme="kamui"] .voice-connection-panel,
+.app-root[data-theme="kamui"] .settings-sidebar,
+.app-root[data-theme="kamui"] .settings-content {
+  background-color: #000000 !important;
+}
+
+.app-root[data-theme="kamui"] .composer-box {
+  background-color: #040407;
+  border: 1px solid rgba(225, 29, 72, 0.24);
+}

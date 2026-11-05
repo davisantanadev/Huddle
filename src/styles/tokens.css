@@ -358,3 +358,35 @@
   --channels-default: #fdba74;
   --divider-subtle: rgba(253, 186, 116, 0.22);
 }
+
+/* 11. KAMUI (VÁCUO DIMENSIONAL — MAIS PROFUNDO QUE OLED) */
+.app-root[data-theme="kamui"] {
+  --bg-titlebar: #000000;
+  --bg-guilds: #000000;
+  --bg-channels: #000000;
+  --bg-account: #000000;
+  --bg-voice-panel: #000000;
+  --bg-chat: #000000;
+  --bg-members: #000000;
+  --bg-composer: #030305;
+  --bg-floating: #000000;
+  --bg-modal: #020204;
+  --bg-modal-footer: #000000;
+  --bg-card: #020204;
+  --bg-card-secondary: #000000;
+  --bg-input: #030305;
+  --bg-hover: rgba(225, 29, 72, 0.08);
+  --bg-active: rgba(225, 29, 72, 0.15);
+  --bg-selected: rgba(225, 29, 72, 0.18);
+  --brand-purple: #e11d48;
+  --brand-hover: #be123c;
+  --brand-active: #9f1239;
+  --brand-subtle: rgba(225, 29, 72, 0.16);
+  --header-primary: #f8fafc;
+  --header-secondary: #94a3b8;
+  --text-normal: #e2e8f0;
+  --text-muted: #64748b;
+  --channels-default: #71717a;
+  --divider-subtle: rgba(225, 29, 72, 0.16);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+}

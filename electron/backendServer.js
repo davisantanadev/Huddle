@@ -118,6 +118,8 @@ const RESERVED_USERNAMES = new Set([
   "mod",
   "everyone",
   "here",
+  "all",
+  "todos",
   "null",
   "undefined",
   "root",
@@ -134,6 +136,7 @@ const VALID_THEMES = new Set([
   "light",
   "midnight",
   "oled",
+  "kamui",
   "ocean",
   "nebula",
   "emerald",
@@ -763,6 +766,8 @@ class DiscordBackendServer {
           "MANAGE_GUILD",
           "MANAGE_CHANNELS",
           "MANAGE_ROLES",
+          "MANAGE_MESSAGES",
+          "PIN_MESSAGES",
           "CREATE_INSTANT_INVITE",
           "SEND_MESSAGES",
           "CONNECT_VOICE"
@@ -1438,8 +1443,36 @@ class DiscordBackendServer {
     };
   }
 
-  getChannelMessages(channelId, limit = 50, viewerId = null) {
+  serializeMessageRow(m, viewerId = null) {
+    if (!m) return null;
     const base = this.getPublicBaseUrl();
+    let attachment = m.attachment_json ? JSON.parse(m.attachment_json) : null;
+    if (attachment && attachment.url && attachment.url.startsWith("/uploads/")) {
+      const signed = `${base}${this.signUploadPath(attachment.url)}`;
+      attachment = { ...attachment, url: signed, dataUrl: signed };
+    }
+    return {
+      id: m.id,
+      channelId: m.channel_id,
+      authorId: m.author_id,
+      timestamp: m.timestamp_label,
+      createdAt: Number(m.created_at) || null,
+      content: m.content,
+      replyToId: m.reply_to_id,
+      attachment,
+      pinned: Boolean(m.pinned),
+      edited: Boolean(m.edited),
+      reactions: JSON.parse(m.reactions_json || "[]").map((r) =>
+        Array.isArray(r.users)
+          ? { emoji: r.emoji, count: r.users.length, users: r.users, me: viewerId ? r.users.includes(viewerId) : false }
+          : r
+      ),
+      replies: JSON.parse(m.replies_json || "[]"),
+      poll: m.poll_json ? JSON.parse(m.poll_json) : null
+    };
+  }
+
+  getChannelMessages(channelId, limit = 50, viewerId = null) {
     const rows = this.db
       .prepare(
         `SELECT * FROM (
@@ -1448,31 +1481,7 @@ class DiscordBackendServer {
       )
       .all(channelId, limit);
 
-    return rows.map((m) => {
-      let attachment = m.attachment_json ? JSON.parse(m.attachment_json) : null;
-      if (attachment && attachment.url && attachment.url.startsWith("/uploads/")) {
-        const signed = `${base}${this.signUploadPath(attachment.url)}`;
-        attachment = { ...attachment, url: signed, dataUrl: signed };
-      }
-      return {
-        id: m.id,
-        authorId: m.author_id,
-        timestamp: m.timestamp_label,
-        // The app shows "Hoje às...", "Ontem às..." or the date from this, in the viewer's own clock
-        createdAt: Number(m.created_at) || null,
-        content: m.content,
-        replyToId: m.reply_to_id,
-        attachment,
-        pinned: Boolean(m.pinned),
-        edited: Boolean(m.edited),
-        // Stored with who reacted; each viewer gets the count and whether they did
-        reactions: JSON.parse(m.reactions_json || "[]").map((r) =>
-          Array.isArray(r.users) ? { emoji: r.emoji, count: r.users.length, me: r.users.includes(viewerId) } : r
-        ),
-        replies: JSON.parse(m.replies_json || "[]"),
-        poll: m.poll_json ? JSON.parse(m.poll_json) : null
-      };
-    });
+    return rows.map((m) => this.serializeMessageRow(m, viewerId));
   }
 
   // Events carrying private data (screen images, WebRTC addresses) go only to
@@ -2700,6 +2709,7 @@ class DiscordBackendServer {
               name: attachment.name,
               size: attachment.size,
               isImage: Boolean(attachment.isImage),
+              isGif: Boolean(attachment.isGif),
               mimeType: attachment.mimeType || "",
               spoiler: Boolean(attachment.spoiler),
               url: this.normalizeStoredUploadUrl(attachment.relativeUrl || attachment.url || attachment.dataUrl)
@@ -2715,24 +2725,17 @@ class DiscordBackendServer {
           )
           .run(msgId, channelId, actorId, text, replyToId || null, storedAtt, now, tsLabel, poll ? JSON.stringify(poll) : null);
 
-        const messageObj = {
-          id: msgId,
-          authorId: actorId,
-          timestamp: tsLabel,
-          createdAt: now,
-          content: text,
-          replyToId: replyToId || null,
-          attachment: attachment || null,
-          pinned: false,
-          edited: false,
-          reactions: [],
-          replies: [],
-          poll
-        };
+        const savedRow = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(msgId);
+        const messageObj = this.serializeMessageRow(savedRow, actorId);
 
         // A new message brings a closed DM back for both people
         this.db.prepare(`UPDATE dm_channels SET hidden_for_json = '[]', updated_at = ? WHERE id = ?`).run(now, channelId);
-        this.broadcastEvent("MESSAGE_CREATED", { channelId, messageId: msgId, authorId: actorId });
+        this.sendEventToUsers(this.channelAudience(channelId), "MESSAGE_CREATED", {
+          channelId,
+          messageId: msgId,
+          authorId: actorId,
+          message: this.serializeMessageRow(savedRow, null)
+        });
         return { ok: true, messageId: msgId, message: messageObj };
       }
 
@@ -2742,13 +2745,21 @@ class DiscordBackendServer {
         const actorId = this.resolveUserId(params.actorId || params.userId);
         const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(params.messageId);
         if (!msg || !msg.poll_json) return { ok: false, error: "Enquete não encontrada." };
+        if (!this.channelAudience(msg.channel_id).includes(actorId)) {
+          return { ok: false, status: 403, error: "Você não tem acesso a este canal." };
+        }
         const poll = JSON.parse(msg.poll_json);
         if (!poll.options.some((o) => o.id === params.optionId)) return { ok: false, error: "Opção inválida." };
         const already = (poll.votes[params.optionId] || []).includes(actorId);
         for (const id of Object.keys(poll.votes)) poll.votes[id] = poll.votes[id].filter((u) => u !== actorId);
         if (!already) poll.votes[params.optionId] = [...(poll.votes[params.optionId] || []), actorId];
         this.db.prepare(`UPDATE messages SET poll_json = ? WHERE id = ?`).run(JSON.stringify(poll), msg.id);
-        this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId: msg.id });
+        const updated = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(msg.id);
+        this.sendEventToUsers(this.channelAudience(msg.channel_id), "MESSAGE_UPDATED", {
+          channelId: msg.channel_id,
+          messageId: msg.id,
+          message: this.serializeMessageRow(updated, null)
+        });
         return { ok: true, poll };
       }
 
@@ -2758,12 +2769,17 @@ class DiscordBackendServer {
         const { messageId, newContent } = params;
         const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
         if (!msg) return { ok: false, error: "Mensagem não encontrada." };
-        if (msg.author_id !== actorId) return { ok: false, error: "Você só pode editar suas próprias mensagens." };
+        if (msg.author_id !== actorId) return { ok: false, status: 403, error: "Você só pode editar suas próprias mensagens." };
         const clean = String(newContent || "").trim();
         if (!clean) return { ok: false, error: "O conteúdo não pode ficar vazio." };
         this.db.prepare(`UPDATE messages SET content = ?, edited = 1 WHERE id = ?`).run(clean, messageId);
-        this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId });
-        return { ok: true };
+        const updated = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
+        this.sendEventToUsers(this.channelAudience(msg.channel_id), "MESSAGE_UPDATED", {
+          channelId: msg.channel_id,
+          messageId,
+          message: this.serializeMessageRow(updated, null)
+        });
+        return { ok: true, message: this.serializeMessageRow(updated, actorId) };
       }
 
       case "DELETE_MESSAGE":
@@ -2772,15 +2788,24 @@ class DiscordBackendServer {
         const { messageId } = params;
         const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
         if (!msg) return { ok: false, error: "Mensagem não encontrada." };
-        // Your own messages always; other people's with "Gerenciar mensagens"
+        if (!this.channelAudience(msg.channel_id).includes(actorId)) {
+          return { ok: false, status: 403, error: "Você não tem acesso a este canal." };
+        }
+        // In DMs, you can NEVER delete someone else's message.
+        // In servers, you can delete someone else's message only with ADMINISTRATOR / MANAGE_MESSAGES (or owner).
         if (msg.author_id !== actorId) {
           const guildId = this.guildIdOfChannel(msg.channel_id);
-          if (!guildId || !this.getMemberPermissions(guildId, actorId).has("MANAGE_MESSAGES")) {
-            return { ok: false, status: 403, error: "Você só pode excluir mensagens de outras pessoas com a permissão Gerenciar mensagens." };
+          if (!guildId) {
+            return { ok: false, status: 403, error: "Na DM, você só pode excluir suas próprias mensagens." };
+          }
+          const perms = this.getMemberPermissions(guildId, actorId);
+          if (!perms.has("ADMINISTRATOR") && !perms.has("MANAGE_MESSAGES")) {
+            return { ok: false, status: 403, error: "Apenas administradores ou cargos com permissão de Gerenciar mensagens podem excluir mensagens de outros membros." };
           }
         }
+        const audience = this.channelAudience(msg.channel_id);
         this.db.prepare(`DELETE FROM messages WHERE id = ?`).run(messageId);
-        this.broadcastEvent("MESSAGE_DELETED", { channelId: msg.channel_id, messageId });
+        this.sendEventToUsers(audience, "MESSAGE_DELETED", { channelId: msg.channel_id, messageId });
         return { ok: true };
       }
 
@@ -2798,7 +2823,12 @@ class DiscordBackendServer {
         if (!this.channelAudience(msg.channel_id).includes(actorId)) return { ok: false, status: 403, error: "Você não tem acesso a este canal." };
         const nextPin = msg.pinned ? 0 : 1;
         this.db.prepare(`UPDATE messages SET pinned = ? WHERE id = ?`).run(nextPin, messageId);
-        this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId });
+        const updated = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
+        this.sendEventToUsers(this.channelAudience(msg.channel_id), "MESSAGE_UPDATED", {
+          channelId: msg.channel_id,
+          messageId,
+          message: this.serializeMessageRow(updated, null)
+        });
         return { ok: true, pinned: Boolean(nextPin) };
       }
 
@@ -2809,6 +2839,9 @@ class DiscordBackendServer {
         const emoji = String(params.emoji || "").slice(0, 32);
         const msg = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
         if (!msg || !emoji) return { ok: false, error: "Mensagem não encontrada." };
+        if (!this.channelAudience(msg.channel_id).includes(actorId)) {
+          return { ok: false, status: 403, error: "Você não tem acesso a este canal." };
+        }
         // Each reaction keeps who reacted, so one person's click never undoes another's
         let reactions = JSON.parse(msg.reactions_json || "[]").map((r) =>
           Array.isArray(r.users) ? r : { emoji: r.emoji, users: Array.from({ length: Math.max(0, r.count || 0) }, (_, i) => `legacy_${i}`) }
@@ -2824,7 +2857,12 @@ class DiscordBackendServer {
           entry.users.push(actorId);
         }
         this.db.prepare(`UPDATE messages SET reactions_json = ? WHERE id = ?`).run(JSON.stringify(reactions), messageId);
-        this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId });
+        const updated = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
+        this.sendEventToUsers(this.channelAudience(msg.channel_id), "MESSAGE_UPDATED", {
+          channelId: msg.channel_id,
+          messageId,
+          message: this.serializeMessageRow(updated, null)
+        });
         return { ok: true };
       }
 
@@ -2846,7 +2884,12 @@ class DiscordBackendServer {
           content: clean
         });
         this.db.prepare(`UPDATE messages SET replies_json = ? WHERE id = ?`).run(JSON.stringify(replies), parentMessageId);
-        this.broadcastEvent("MESSAGE_UPDATED", { channelId: msg.channel_id, messageId: parentMessageId });
+        const updated = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(parentMessageId);
+        this.sendEventToUsers(this.channelAudience(msg.channel_id), "MESSAGE_UPDATED", {
+          channelId: msg.channel_id,
+          messageId: parentMessageId,
+          message: this.serializeMessageRow(updated, null)
+        });
         return { ok: true };
       }
 
@@ -3325,7 +3368,16 @@ class DiscordBackendServer {
 
       case "GET_GUILD_INVITES":
       case "getGuildInvites": {
+        const actorId = this.resolveUserId(params.actorId || params.userId);
         const { guildId } = params;
+        const member = this.db.prepare(`SELECT 1 FROM guild_members WHERE guild_id = ? AND user_id = ?`).get(guildId, actorId);
+        if (!member) {
+          return { ok: false, status: 403, error: "Você não é membro deste servidor." };
+        }
+        const perms = this.getMemberPermissions(guildId, actorId);
+        if (!perms.has("CREATE_INSTANT_INVITE") && !perms.has("MANAGE_GUILD") && !perms.has("ADMINISTRATOR")) {
+          return { ok: false, status: 403, error: "Você não tem permissão para ver convites deste servidor." };
+        }
         const invites = this.db
           .prepare(`SELECT * FROM invites WHERE guild_id = ? AND revoked = 0 ORDER BY created_at DESC`)
           .all(guildId)

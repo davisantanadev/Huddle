@@ -104,6 +104,12 @@ export const AVAILABLE_THEMES = [
     name: "Âmbar Sunset",
     description: "Tons quentes de terracota e pôr do sol",
     colors: ["#23120b", "#331b11", "#402216", "#f97316"]
+  },
+  {
+    id: "kamui",
+    name: "Kamui (Vácuo Abissal)",
+    description: "Mais profundo que o OLED: preto absoluto #000000 em todas as camadas com fenda carmesim",
+    colors: ["#000000", "#000000", "#030305", "#e11d48"]
   }
 ];
 
@@ -380,11 +386,67 @@ class Store {
 
       if (event === "MESSAGE_CREATED" && payload?.channelId) {
         if (payload.authorId) this.setTyping(payload.channelId, payload.authorId, false);
-        this.requestSync().then(() => this.notifyIncomingMessage(payload.channelId, payload.messageId));
+        const chId = payload.channelId;
+        const knownDm = this.state.dms.some((d) => d.id === chId);
+        const knownGuildCh = this.state.guilds.some((g) => (g.channels || []).some((c) => c.id === chId));
+        const knownAuthor = !payload.authorId || Boolean(this.state.users[payload.authorId]);
+        if (payload.message && (knownDm || knownGuildCh) && knownAuthor) {
+          const msg = this.normalizeMessageForViewer(payload.message);
+          if (!this.state.messages[chId]) this.state.messages[chId] = [];
+          const list = this.state.messages[chId];
+          const existingIdx = list.findIndex((m) => m.id === msg.id);
+          if (existingIdx >= 0) {
+            list[existingIdx] = msg;
+          } else {
+            const tempIdx =
+              msg.authorId === this.state.auth.currentUserId
+                ? list.findIndex((m) => m.pending && m.content === msg.content)
+                : -1;
+            if (tempIdx >= 0) {
+              list[tempIdx] = msg;
+            } else {
+              list.push(msg);
+            }
+          }
+          this.notifyIncomingMessage(chId, msg.id);
+          this.onChannelMessageCreated?.(chId, msg);
+          this.notify({ skipPersist: true });
+          return;
+        }
+        this.requestSync().then(() => {
+          this.notifyIncomingMessage(payload.channelId, payload.messageId);
+          const msg = (this.state.messages[payload.channelId] || []).find((m) => m.id === payload.messageId);
+          if (msg) this.onChannelMessageCreated?.(payload.channelId, msg);
+        });
         return;
       }
 
-      // For structural state changes (messages, friendships, username/profile updates, guilds, voice)
+      if (event === "MESSAGE_UPDATED" && payload?.channelId && payload?.message) {
+        const chId = payload.channelId;
+        if (this.state.messages[chId]) {
+          const msg = this.normalizeMessageForViewer(payload.message);
+          const idx = this.state.messages[chId].findIndex((m) => m.id === msg.id);
+          if (idx >= 0) {
+            this.state.messages[chId][idx] = msg;
+            this.notify({ skipPersist: true });
+            return;
+          }
+        }
+      }
+
+      if (event === "MESSAGE_DELETED" && payload?.channelId && payload?.messageId) {
+        const chId = payload.channelId;
+        if (this.state.messages[chId]) {
+          this.state.messages[chId] = this.state.messages[chId].filter((m) => m.id !== payload.messageId);
+          if (this.state.navigation.activeThreadMessageId === payload.messageId) {
+            this.state.navigation.activeThreadMessageId = null;
+          }
+          this.notify({ skipPersist: true });
+          return;
+        }
+      }
+
+      // For structural state changes (friendships, username/profile updates, guilds, voice)
       this.requestSync();
     });
   }
@@ -1438,17 +1500,17 @@ class Store {
     this.showDesktopNotification(msg, dm, guild, channelId);
   }
 
-  // @me, and (unless turned off in that server) @everyone/@here and my roles
-  messageMentionsMe(content, guild, prefs) {
+  // @me, and (unless turned off in that server) @everyone/@here/@all/@todos and my roles
+  messageMentionsMe(content, guild, prefs = {}) {
     const text = String(content || "");
     const me = this.getCurrentUser();
     const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const has = (name) => new RegExp(`(^|[^\\w.])@${esc(name)}(?![\\w.])`, "i").test(text);
     if (me?.username && has(me.username)) return true;
-    if (!prefs.suppressEveryone && /(^|\s)@(everyone|here)\b/i.test(text)) return true;
+    if (!prefs.suppressEveryone && /(^|\s)@(everyone|here|all|todos)\b/i.test(text)) return true;
     if (!prefs.suppressRoles && guild) {
       const mine = (guild.members || []).find((m) => m.userId === me?.id)?.roles || [];
-      if (guild.roles.some((r) => mine.includes(r.id) && has(r.name))) return true;
+      if ((guild.roles || []).some((r) => mine.includes(r.id) && has(r.name))) return true;
     }
     return false;
   }
@@ -1729,6 +1791,18 @@ class Store {
   // ==========================================================================
   // Message CRUD & Slash Commands
   // ==========================================================================
+  normalizeMessageForViewer(rawMsg) {
+    if (!rawMsg) return rawMsg;
+    const myId = this.state.auth.currentUserId;
+    const reactions = Array.isArray(rawMsg.reactions)
+      ? rawMsg.reactions.map((r) => ({
+          ...r,
+          me: Array.isArray(r.users) ? r.users.includes(myId) : Boolean(r.me)
+        }))
+      : [];
+    return { ...rawMsg, reactions, pending: false };
+  }
+
   async sendMessage(channelId, rawContent, options = {}) {
     const text = String(rawContent || "").trim();
     if (!text && !options.attachment && !options.poll) return null;
@@ -1740,6 +1814,28 @@ class Store {
     else if (text.startsWith("/me ")) finalContent = `*${text.slice(4)}*`;
 
     const meId = this.state.auth.currentUserId;
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const nowStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const optimisticMsg = {
+      id: tempId,
+      authorId: meId,
+      timestamp: `Hoje às ${nowStr}`,
+      createdAt: Date.now(),
+      content: finalContent,
+      edited: false,
+      pinned: false,
+      replyToId: options.replyToId || null,
+      attachment: options.attachment || null,
+      poll: null,
+      reactions: [],
+      replies: [],
+      pending: true
+    };
+    if (!this.state.messages[channelId]) this.state.messages[channelId] = [];
+    this.state.messages[channelId].push(optimisticMsg);
+    this.onChannelMessageCreated?.(channelId, optimisticMsg);
+    this.notify({ skipPersist: true });
+
     const res = await NativeBridge.rpc("sendMessage", {
       channelId,
       authorId: meId,
@@ -1749,15 +1845,27 @@ class Store {
       poll: options.poll || null
     });
 
-    if (!res.ok) return { error: res.error };
+    const list = this.state.messages[channelId] || [];
+    if (!res.ok) {
+      this.state.messages[channelId] = list.filter((m) => m.id !== tempId);
+      this.notify({ skipPersist: true });
+      return { error: res.error };
+    }
     if (res.ok && res.message) {
-      if (!this.state.messages[channelId]) this.state.messages[channelId] = [];
-      const exists = this.state.messages[channelId].some((m) => m.id === res.message.id);
-      if (!exists) {
-        this.state.messages[channelId].push(res.message);
+      const serverMsg = this.normalizeMessageForViewer(res.message);
+      const alreadyHasServer = list.some((m) => m.id === serverMsg.id);
+      if (alreadyHasServer) {
+        this.state.messages[channelId] = list.filter((m) => m.id !== tempId);
+      } else {
+        const tempIdx = list.findIndex((m) => m.id === tempId);
+        if (tempIdx >= 0) {
+          list[tempIdx] = serverMsg;
+        } else {
+          list.push(serverMsg);
+        }
       }
-      this.notify();
-      return res.message;
+      this.notify({ skipPersist: true });
+      return serverMsg;
     }
     return null;
   }
@@ -1792,19 +1900,32 @@ class Store {
   }
 
   async deleteMessage(channelId, messageId) {
+    const list = this.state.messages[channelId] || [];
+    const targetMsg = list.find((m) => m.id === messageId);
+    if (targetMsg && !this.canDeleteMessage(channelId, targetMsg)) {
+      this.onPermissionNotice?.("Você só pode excluir suas próprias mensagens nesta conversa.");
+      return false;
+    }
+    const backup = [...list];
     if (this.state.messages[channelId]) {
-      this.state.messages[channelId] = this.state.messages[channelId].filter((m) => m.id !== messageId);
+      this.state.messages[channelId] = list.filter((m) => m.id !== messageId);
     }
     if (this.state.navigation.activeThreadMessageId === messageId) {
       this.state.navigation.activeThreadMessageId = null;
     }
-    this.notify();
+    this.notify({ skipPersist: true });
     const res = await NativeBridge.rpc("deleteMessage", {
       channelId,
       messageId,
       userId: this.state.auth.currentUserId
     });
-    return Boolean(res.ok);
+    if (!res.ok) {
+      this.state.messages[channelId] = backup;
+      this.onPermissionNotice?.(res.error || "Sem permissão para excluir esta mensagem.");
+      this.notify({ skipPersist: true });
+      return false;
+    }
+    return true;
   }
 
   async togglePinMessage(channelId, messageId) {
@@ -1825,7 +1946,7 @@ class Store {
       userId: this.state.auth.currentUserId,
       emoji
     });
-    if (res.ok) {
+    if (res.ok && !this.state.messages[channelId]) {
       await this.syncFromBackend();
     }
   }
@@ -1837,7 +1958,7 @@ class Store {
       authorId: this.state.auth.currentUserId,
       content
     });
-    if (res.ok) {
+    if (res.ok && !this.state.messages[channelId]) {
       await this.syncFromBackend();
     }
   }
@@ -2389,8 +2510,37 @@ class Store {
 
   // My permissions in a server (computed by the backend), owner = everything
   can(flag, guild = this.getActiveGuild()) {
-    if (!guild) return true; // DMs
-    return (guild.myPermissions || []).includes(flag);
+    if (!guild) {
+      const DM_ALLOWED = new Set([
+        "VIEW_CHANNELS",
+        "SEND_MESSAGES",
+        "ATTACH_FILES",
+        "ADD_REACTIONS",
+        "PIN_MESSAGES",
+        "CONNECT",
+        "CONNECT_VOICE",
+        "SPEAK",
+        "SPEAK_VOICE",
+        "VIDEO",
+        "STREAM",
+        "SHARE_SCREEN"
+      ]);
+      return DM_ALLOWED.has(flag);
+    }
+    if (guild.ownerId === this.state.auth.currentUserId) return true;
+    const perms = guild.myPermissions || [];
+    return perms.includes("ADMINISTRATOR") || perms.includes(flag);
+  }
+
+  canDeleteMessage(channelId, message) {
+    if (!message) return false;
+    const meId = this.state.auth.currentUserId;
+    if (message.authorId === meId) return true;
+    const isDm = this.state.dms.some((d) => d.id === channelId);
+    if (isDm) return false;
+    const guild = this.state.guilds.find((g) => (g.channels || []).some((c) => c.id === channelId));
+    if (!guild) return false;
+    return this.can("MANAGE_MESSAGES", guild) || this.can("ADMINISTRATOR", guild);
   }
 
   async banMember(guildId, targetUserId, reason = "") {

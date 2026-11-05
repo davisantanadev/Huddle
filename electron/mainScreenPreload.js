@@ -103,7 +103,15 @@ const DiscordNative = {
   },
   processUtils: {
     getMemorySaver: () => ipcRenderer.sendSync("DISCORD_MEMORY_SAVER_GET_SYNC"),
-    setMemorySaver: (enabled) => ipcRenderer.sendSync("DISCORD_MEMORY_SAVER_SET_SYNC", Boolean(enabled)),
+    setMemorySaver: (enabled) => {
+      if (enabled) {
+        try {
+          webFrame.clearCache();
+          if (typeof window.gc === "function") window.gc();
+        } catch (_) {}
+      }
+      return ipcRenderer.sendSync("DISCORD_MEMORY_SAVER_SET_SYNC", Boolean(enabled));
+    },
     purgeMemory: async () => {
       try {
         webFrame.clearCache();
@@ -139,6 +147,13 @@ const DiscordNative = {
     }
   }
 };
+
+ipcRenderer.on("DISCORD_MEMORY_SAVER_PURGE", () => {
+  try {
+    webFrame.clearCache();
+    if (typeof window.gc === "function") window.gc();
+  } catch (_) {}
+});
 
 contextBridge.exposeInMainWorld("DiscordNative", DiscordNative);
 
