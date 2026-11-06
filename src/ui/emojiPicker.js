@@ -72,6 +72,7 @@ function build() {
   root.className = "floating-popout emoji-picker";
   root.setAttribute("data-testid", "emoji-picker");
   root.hidden = true;
+  root.style.display = "none";
   root.innerHTML = `
     <div class="emoji-picker-head">
       <input type="text" class="emoji-search" placeholder="Buscar emoji (ex.: grinning, heart, fire)" autocomplete="off" data-testid="emoji-search" />
@@ -179,14 +180,23 @@ function filter(query) {
 
 // Opens/updates/closes the picker to match the app state; anchor = rect of the
 // button that opened it
+export function isEmojiPickerOpen() {
+  return Boolean(view.root && !view.root.hidden && view.root.style.display !== "none" && view.target);
+}
+
+// Opens/updates/closes the picker to match the app state; anchor = rect of the
+// button that opened it
 export function syncEmojiPicker(target, anchor) {
   if (!target) {
-    if (view.root) view.root.hidden = true;
+    if (view.root) {
+      view.root.hidden = true;
+      view.root.style.display = "none";
+    }
     view.target = null;
     return;
   }
   const root = ensureMounted();
-  const wasHidden = root.hidden;
+  const wasHidden = root.hidden || root.style.display === "none";
   if (view.target !== target || wasHidden) {
     view.target = target;
     root.setAttribute("data-emoji-target", target);
@@ -205,10 +215,30 @@ export function syncEmojiPicker(target, anchor) {
     root.style.left = `${left}px`;
     root.style.top = `${Math.max(8, top)}px`;
     root.hidden = false;
+    root.style.display = "flex";
     requestAnimationFrame(() => search.focus());
   }
 }
 
 export function emojiPickerTarget() {
   return view.target;
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!isEmojiPickerOpen()) return;
+      if (view.root && view.root.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('[data-action="open-emoji-picker"]')) return;
+      syncEmojiPicker(null);
+    },
+    true
+  );
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isEmojiPickerOpen()) {
+      syncEmojiPicker(null);
+    }
+  });
 }

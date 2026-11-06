@@ -5,7 +5,7 @@
 
 import { store, AVAILABLE_THEMES } from "./state/store.js";
 import { morphInnerHTML, bindReplacingDuplicates } from "./ui/morph.js";
-import { syncEmojiPicker, recordEmojiUse } from "./ui/emojiPicker.js";
+import { syncEmojiPicker, recordEmojiUse, isEmojiPickerOpen, emojiPickerTarget } from "./ui/emojiPicker.js";
 import { attachMentionAutocomplete } from "./ui/mentions.js";
 import { Icons } from "./components/icons.js";
 import {
@@ -290,8 +290,9 @@ export function closeAllFloatingMenus(except = null) {
     uiState.serverMenuOpen = false;
     changed = true;
   }
-  if (except !== "emojiPicker" && uiState.emojiPickerForMessageId !== null) {
+  if (except !== "emojiPicker" && (uiState.emojiPickerForMessageId !== null || isEmojiPickerOpen())) {
     uiState.emojiPickerForMessageId = null;
+    syncEmojiPicker(null);
     changed = true;
   }
   if (except !== "pinnedPopover" && uiState.pinnedPopoverOpen) {
@@ -319,6 +320,7 @@ function hasAnyOpenFloatingMenu() {
       uiState.statusMenuOpen ||
       uiState.serverMenuOpen ||
       uiState.emojiPickerForMessageId ||
+      isEmojiPickerOpen() ||
       uiState.pinnedPopoverOpen ||
       uiState.contextMenu ||
       uiState.audioMenu ||
@@ -8763,13 +8765,17 @@ async function handleGlobalClick(e) {
     case "open-emoji-picker": {
       e.stopPropagation();
       const msgId = btn.getAttribute("data-message-id");
-      const isSame = uiState.emojiPickerForMessageId === msgId;
+      const currentTarget = uiState.emojiPickerForMessageId || emojiPickerTarget();
+      const isSame = currentTarget === msgId && isEmojiPickerOpen();
       const closedOthers = closeAllFloatingMenus("emojiPicker");
       uiState.emojiPickerForMessageId = isSame ? null : msgId;
       // Opened from the message's right-click menu the toolbar button is hidden: anchor at the message
       const r = (btn.offsetParent ? btn : btn.closest("[data-message-id]") || btn).getBoundingClientRect();
       uiState.emojiPickerAnchor = { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
-      if (closedOthers) {
+      if (isSame) {
+        syncEmojiPicker(null);
+        renderApp();
+      } else if (closedOthers) {
         renderApp();
       } else {
         syncEmojiPicker(uiState.emojiPickerForMessageId, uiState.emojiPickerAnchor);

@@ -5531,6 +5531,10 @@ a.message-file-box:hover {
   overflow: hidden;
 }
 
+.emoji-picker[hidden] {
+  display: none !important;
+}
+
 .emoji-picker-head {
   padding: 10px;
   border-bottom: 1px solid var(--border-faint);
