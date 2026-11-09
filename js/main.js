@@ -55,7 +55,7 @@
     o2P: "Copy and paste this command into PowerShell:",
     copyBtn: "Copy", copiedBtn: "Copied!",
     ctaH2: "Ready to play and talk?", ctaP: "Download Huddle for Windows and call the crew right now.", ctaBtn: "Download for Windows",
-    footBrand: "Huddle · Chat, voice and screen for Windows", footBy: "made by", footByLabel: "GitHub of davisantanadev", footSys: "Windows 10 and 11 (64-bit)",
+    footBrand: "Huddle · Chat, voice and screen for Windows", footPrivacy: "Privacy", footTerms: "Terms of Use", footBy: "made by", footByLabel: "GitHub of davisantanadev", footSys: "Windows 10 and 11 (64-bit)",
     altCall: "A Huddle call: four people in the game room, with the call chat open beside it",
     altCall2: "Voice room with four people and the call chat open",
     altChat: "Text channel with message history, reactions and the member list",

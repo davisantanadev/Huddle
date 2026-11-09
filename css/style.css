@@ -375,3 +375,12 @@ kbd { font: 500 15px var(--mono); color: var(--ink); background: var(--panel-2);
 .made-by:hover { color: var(--ink); border-color: var(--blue-hi); background: rgba(47, 107, 255, 0.14); transform: translateY(-2px); box-shadow: 0 10px 30px -14px var(--glow); }
 .made-by:hover svg { color: var(--blue-hi); transform: rotate(-8deg) scale(1.12); }
 .made-by:active { transform: translateY(0) scale(0.98); }
+
+.foot-legal a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.foot-legal a:hover {
+  color: #fff;
+}

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Política de Privacidade — Huddle</title>
+<link rel="icon" href="img/favicon.ico" />
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0d12; color: #d7dbe6; font: 16px/1.65 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 20px 80px; }
+  a { color: #8b93ff; }
+  h1 { color: #fff; font-size: 30px; line-height: 1.2; }
+  h2 { color: #fff; font-size: 20px; margin-top: 36px; }
+  .legal-table { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid #262a36; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #141824; color: #fff; }
+  code { background: #141824; padding: 1px 5px; border-radius: 4px; }
+  .back { display: inline-block; margin-bottom: 24px; }
+</style>
+</head>
+<body><main><a class="back" href="index.html">← Voltar ao Huddle</a>
+<h1>Política de Privacidade do Huddle</h1>
+<p><strong>Versão</strong> 1.0 · <strong>Vigência</strong> a partir de 8 de novembro de 2026</p>
+<h2>Resumo</h2>
+<ul>
+<li>O Huddle é um app de chat, voz e compartilhamento de tela feito para um grupo de amigos. Ele é para <strong>maiores de 18 anos</strong>.</li>
+<li>Guardamos o que é preciso para o app funcionar: sua conta, seu perfil e o que você escreve e envia.</li>
+<li><strong>Não vendemos</strong> seus dados e <strong>não usamos</strong> seus dados para publicidade.</li>
+<li>Os servidores ficam no <strong>Brasil</strong> (São Paulo). Alguns serviços de apoio ficam fora do país (veja a seção 6).</li>
+<li>O texto das mensagens fica <strong>criptografado</strong> no banco de dados, mas o Huddle <strong>não tem criptografia de ponta a ponta</strong>: quem administra o servidor tem, tecnicamente, como acessar o conteúdo.</li>
+<li>Você pode <strong>baixar seus dados</strong> e <strong>excluir sua conta</strong> a qualquer momento em <em>Configurações &gt; Privacidade e dados</em>.</li>
+</ul>
+<h2>1. Quem é o responsável pelos seus dados</h2>
+<p>O Huddle é mantido por <strong>Davi Santana</strong> (pessoa física, Brasil), que é o <strong>controlador</strong> dos dados tratados pelo app (Lei nº 13.709/2018, a LGPD, Art. 5º, VI).</p>
+<p>Contato para qualquer assunto sobre seus dados: <strong>a definir</strong>.</p>
+<p>O Huddle é um projeto pessoal, sem fins lucrativos. Mesmo assim, ele segue a LGPD como boa prática.</p>
+<h2>2. Quais dados guardamos e por quê</h2>
+<div class="legal-table"><table><thead><tr><th>Dados</th><th>Para quê</th><th>Base legal (LGPD)</th></tr></thead><tbody><tr><td><strong>Conta</strong>: e-mail, @username, nome de exibição, senha (guardada só como um código irreversível, scrypt)</td><td>Criar sua conta, fazer login, recuperar acesso e confirmar o e-mail</td><td>Execução de contrato (Art. 7º, V)</td></tr><tr><td><strong>Perfil</strong>: foto, banner, pronomes, "sobre mim", status, cores e temas</td><td>Mostrar seu perfil para as pessoas com quem você conversa</td><td>Execução de contrato (Art. 7º, V)</td></tr><tr><td><strong>Conteúdo</strong>: mensagens, anexos, reações, enquetes, respostas em tópicos, mensagens fixadas</td><td>Entregar suas mensagens a quem pode lê-las</td><td>Execução de contrato (Art. 7º, V)</td></tr><tr><td><strong>Relações</strong>: amizades, pedidos, bloqueios, notas pessoais (visíveis só para você), servidores, cargos e apelidos</td><td>Fazer o app funcionar como você configurou</td><td>Execução de contrato (Art. 7º, V)</td></tr><tr><td><strong>Atividade</strong> (opcional): jogo que você está jogando e música do Spotify</td><td>Mostrar "jogando" ou "ouvindo" no seu perfil, se você ativar</td><td>Consentimento (Art. 7º, I): você liga e desliga nas configurações</td></tr><tr><td><strong>Segurança</strong>: datas de login e das sessões, tentativas de login, registro de pedidos de privacidade</td><td>Proteger sua conta, impedir abuso e provar o atendimento aos seus pedidos</td><td>Legítimo interesse (Art. 7º, IX) e exercício de direitos (Art. 7º, VI)</td></tr></tbody></table></div>
+<p><strong>Voz, vídeo e tela não são gravados.</strong> Eles vão direto entre os participantes da chamada (ou pelo nosso servidor de retransmissão, que não guarda nada).</p>
+<p><strong>No seu computador</strong> ficam: o login salvo, suas preferências e um registro de erros (<code>huddle.log</code>) que só sai do seu PC se você mesmo enviar.</p>
+<h2>3. Como os dados são tratados e por quanto tempo</h2>
+<ul>
+<li><strong>Onde</strong>: servidor da Oracle Cloud em São Paulo, Brasil.</li>
+<li><strong>Proteção</strong>: conexão sempre criptografada (HTTPS/TLS); texto das mensagens, respostas, enquetes e dados de anexos criptografados no banco (AES-256-GCM, com a chave guardada fora do banco e dos backups); backups criptografados; senhas guardadas só como código irreversível.</li>
+<li><strong>Por quanto tempo</strong>:</li>
+<li>conta, perfil e conteúdo: enquanto sua conta existir. O que você apaga (uma mensagem, por exemplo) sai do banco na hora;</li>
+<li>ao <strong>excluir a conta</strong>: tudo é apagado do banco na hora. Cópias de backup criptografadas somem em até <strong>14 dias</strong>;</li>
+<li>sessões de login: vencem após <strong>30 dias</strong> sem uso;</li>
+<li>códigos de verificação de e-mail: vencem em minutos;</li>
+<li>registros técnicos do servidor: até <strong>30 dias</strong>;</li>
+<li>registro de pedidos de privacidade: <strong>5 anos</strong>, sem identificar você (guardamos só um código irreversível no lugar da sua conta), para comprovar que o pedido foi atendido.</li>
+</ul>
+<h2>4. Quem pode ver seus dados</h2>
+<ul>
+<li><strong>As pessoas com quem você conversa</strong> veem seu perfil, suas mensagens e sua presença nos lugares onde vocês estão juntos.</li>
+<li><strong>Quem está numa chamada com você</strong> pode ver o endereço IP da sua conexão, porque a voz vai direto entre os participantes. Para evitar isso, ligue <em>Ocultar meu IP nas chamadas</em> em <em>Configurações &gt; Privacidade e dados</em>.</li>
+<li><strong>O administrador do servidor do Huddle</strong> tem acesso técnico ao banco de dados. Esse acesso é usado só para manter o serviço funcionando, resolver problemas ou cumprir a lei.</li>
+</ul>
+<h2>5. Com quem compartilhamos (operadores)</h2>
+<div class="legal-table"><table><thead><tr><th>Serviço</th><th>O que recebe</th><th>Para quê</th><th>Onde</th></tr></thead><tbody><tr><td>Oracle Cloud</td><td>todos os dados acima (armazenamento)</td><td>hospedar o servidor</td><td>Brasil</td></tr><tr><td>Supabase e Brevo</td><td>seu e-mail e o código de verificação</td><td>enviar o e-mail de confirmação</td><td>fora do Brasil</td></tr><tr><td>Giphy e KLIPY</td><td>o termo pesquisado (enviado pelo servidor do Huddle, sem dados seus) e o IP do seu PC ao carregar as imagens dos GIFs</td><td>buscar e mostrar GIFs</td><td>EUA</td></tr><tr><td>Apple (iTunes)</td><td>nome da música e do artista</td><td>mostrar a capa da música, se a atividade do Spotify estiver ligada</td><td>EUA</td></tr><tr><td>Steam (CDN)</td><td>o IP do seu PC</td><td>baixar as capas dos jogos</td><td>fora do Brasil</td></tr></tbody></table></div>
+<p>Não vendemos nem alugamos seus dados. Só entregamos dados a autoridades quando a lei obrigar (Art. 7º, II).</p>
+<h2>6. Transferência internacional</h2>
+<p>Alguns dos serviços acima ficam fora do Brasil. A transferência acontece só quando é necessária para fazer o que você pediu, como enviar o e-mail de confirmação ou buscar um GIF (LGPD, Art. 33, IX).</p>
+<h2>7. Seus direitos (LGPD, Art. 18)</h2>
+<p>Você pode, a qualquer momento:</p>
+<ul>
+<li><strong>confirmar</strong> que tratamos seus dados e <strong>acessá-los</strong>: <em>Configurações &gt; Privacidade e dados &gt; Baixar meus dados</em>;</li>
+<li><strong>corrigir</strong> dados incompletos ou errados: direto no seu perfil e na sua conta;</li>
+<li>pedir <strong>anonimização, bloqueio ou eliminação</strong> de dados desnecessários;</li>
+<li><strong>portar</strong> seus dados: o arquivo baixado é um JSON aberto;</li>
+<li><strong>eliminar</strong> seus dados: <em>Configurações &gt; Privacidade e dados &gt; Excluir minha conta</em>;</li>
+<li>saber <strong>com quem compartilhamos</strong> (seção 5) e as <strong>consequências de não consentir</strong> (as funções opcionais só deixam de funcionar);</li>
+<li><strong>revogar o consentimento</strong> das funções opcionais, desligando-as nas configurações.</li>
+</ul>
+<p>Pedidos que não dá para fazer pelo app vão para o contato da seção 1 e são respondidos em até <strong>15 dias</strong> (Art. 19, II). Você também pode reclamar com a <strong>Autoridade Nacional de Proteção de Dados (ANPD)</strong>: <a href="https://www.gov.br/anpd">https://www.gov.br/anpd</a></p>
+<h2>8. Crianças e adolescentes</h2>
+<p>O Huddle é só para <strong>maiores de 18 anos</strong>, e todo cadastro exige essa confirmação. Se percebermos que uma conta é de menor de idade, ela será excluída. Se você é responsável por um menor que usou o app, escreva para o contato da seção 1.</p>
+<h2>9. Segurança e incidentes</h2>
+<p>Tomamos medidas técnicas para proteger seus dados (seção 3), mas nenhum sistema é 100% seguro. Se acontecer um incidente de segurança que possa trazer risco ou dano relevante a você, avisaremos você e a ANPD em até <strong>3 dias úteis</strong> (Resolução CD/ANPD nº 15/2024).</p>
+<h2>10. Cookies</h2>
+<p>O app não usa cookies de rastreamento nem ferramentas de análise ou publicidade. O que fica guardado no seu computador (login e preferências) serve só para o app funcionar.</p>
+<h2>11. Mudanças nesta política</h2>
+<p>Se esta política mudar de forma importante, o app pedirá que você leia e aceite a nova versão antes de continuar.</p>
+<p><strong>Histórico</strong></p>
+<ul>
+<li>1.0 (8/11/2026): primeira versão.</li>
+</ul>
+</main></body></html>
